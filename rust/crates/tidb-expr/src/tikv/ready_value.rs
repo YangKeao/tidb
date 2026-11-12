@@ -884,22 +884,6 @@ impl EvaluatedBytesResult {
         }
     }
 
-    /// Reconstruct the DATE representation from the worker's actual core bits.
-    /// The signed carrier preserves all 64 bits, including the high year bit.
-    pub(crate) fn into_date_core_datum(self) -> Result<Datum, EvalError> {
-        match self.into_int_datum()? {
-            Datum::Null => Ok(Datum::Null),
-            Datum::Int(bits) => Time::new(
-                tidb_datatype::CoreTime::from_raw(bits as u64),
-                tidb_datatype::TimeType::Date,
-                0,
-            )
-            .map(Datum::Time)
-            .map_err(|_| result_kind_error().into_eval_error()),
-            _ => Err(result_kind_error().into_eval_error()),
-        }
-    }
-
     /// Pack only a computed boolean carrier; do not recalculate its truth.
     pub(crate) fn into_boolean_datum(self) -> Result<Datum, EvalError> {
         match self {
@@ -960,14 +944,6 @@ impl EvaluatedBytesResult {
             .map_err(|_| EvalError::Json(crate::JsonError::InvalidText))
     }
 
-    /// Move only the kernel's decoded outcome; do not inspect input or bytes.
-    pub(crate) fn into_uncompress(self) -> Result<UncompressOutcome, EvalError> {
-        match self {
-            Self::Uncompress(outcome) => Ok(outcome),
-            _ => Err(result_kind_error().into_eval_error()),
-        }
-    }
-
     /// Move only the kernel's typed report; do not parse or inspect the input.
     pub(crate) fn into_json_report(self) -> Result<JsonReportOutcome, EvalError> {
         match self {
@@ -1012,14 +988,6 @@ impl EvaluatedBytesResult {
     pub(crate) fn into_decimal_fast_outcome(self) -> Result<NativeDecimalFastOutcome, EvalError> {
         match self {
             Self::DecimalFast(outcome) => Ok(outcome),
-            _ => Err(result_kind_error().into_eval_error()),
-        }
-    }
-
-    /// Move the computed aligned vector without parsing or revalidation.
-    pub(crate) fn into_native_vector_datum(self) -> Result<Datum, EvalError> {
-        match self {
-            Self::NativeVector(value) => Ok(value.map_or(Datum::Null, Datum::VectorFloat32)),
             _ => Err(result_kind_error().into_eval_error()),
         }
     }
@@ -2511,8 +2479,6 @@ pub(crate) enum RegexpFunction {
     Substr,
     Instr,
     Replace,
-    LegacyCi,
-    LegacyBin,
     LegacyMissing,
 }
 
@@ -2589,8 +2555,6 @@ fn regexp_operation(function: RegexpFunction, ready: &EvaluatedArgs) -> Evaluate
             RegexpFunction::Substr => EvaluatedBytesOp::RegexpSubstrNative,
             RegexpFunction::Instr => EvaluatedBytesOp::RegexpInstrNative,
             RegexpFunction::Replace => EvaluatedBytesOp::RegexpReplaceNative,
-            RegexpFunction::LegacyCi => EvaluatedBytesOp::RegexpLikeLegacyCiNative,
-            RegexpFunction::LegacyBin => EvaluatedBytesOp::RegexpLikeLegacyBinNative,
             RegexpFunction::LegacyMissing => EvaluatedBytesOp::RegexpMissingLegacyNative,
         }
     }
@@ -2617,10 +2581,7 @@ pub(crate) fn evaluate_regexp_in(
             Ok((operation, ready))
         },
         |computed| match function {
-            RegexpFunction::Like
-            | RegexpFunction::LegacyCi
-            | RegexpFunction::LegacyBin
-            | RegexpFunction::LegacyMissing => computed.into_boolean_datum(),
+            RegexpFunction::Like | RegexpFunction::LegacyMissing => computed.into_boolean_datum(),
             RegexpFunction::Instr => computed.into_int_datum(),
             RegexpFunction::Substr | RegexpFunction::Replace => Ok(computed
                 .into_bytes()?

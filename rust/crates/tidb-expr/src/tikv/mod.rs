@@ -106,8 +106,8 @@ pub(crate) use convert_charset::{
 };
 mod date_arithmetic;
 pub(crate) use date_arithmetic::{
-    date_add_result_fsp_checked, date_add_scalar_values_bounded, date_add_scalar_values_in,
-    eval_date_add_default_in, eval_date_add_in,
+    date_add_result_fsp_checked, date_add_scalar_values_bounded, eval_date_add_default_in,
+    eval_date_add_in,
 };
 // The closed ready-argument families share this value boundary and one pool.
 mod extract;

@@ -34,11 +34,6 @@ pub fn eval_legacy_cast_integer_datum(value: &Datum) -> Option<LegacyCastInteger
     })
 }
 
-#[cfg(test)]
-fn input(value: &Datum) -> tidb_query_expr::NativeCastIntegerInput<'_> {
-    tidb_query_expr::native_cast_integer_input_from_numeric(value.as_shared_numeric_input())
-}
-
 fn invalid_result() -> EvalError {
     use super::adapter_failure::{ExpressionAdapterFailure, ScopeFailureKind};
     EvalError::ExpressionAdapterFailure(ExpressionAdapterFailure::from_scope(

@@ -307,24 +307,3 @@ pub(crate) fn date_add_scalar_values_bounded(
     }
     crate::cast::parse_computed_time(&value, ctx, kind, fsp)
 }
-
-pub(crate) fn date_add_scalar_values_in(
-    ctx: &dyn Columns,
-    unit: &str,
-    values: &mut [Datum; 2],
-    fields: [Option<&FieldType>; 2],
-    result: Option<&FieldType>,
-    sign: i64,
-    result_fsp: Option<u32>,
-) -> Result<Datum, EvalError> {
-    date_add_scalar_values_bounded(
-        ctx,
-        unit,
-        values,
-        fields,
-        result,
-        sign,
-        result_fsp,
-        super::identity_actual::default_budget(),
-    )
-}

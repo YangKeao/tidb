@@ -13,27 +13,7 @@
 // limitations under the License.
 
 use crate::{Columns, Datum, EvalError};
-#[cfg(test)]
-use tidb_query_expr::NativeCastFloatInput as Input;
 use tidb_query_expr::NativeCastFloatTarget as Target;
-
-#[cfg(test)]
-fn input(value: &Datum) -> Input<'_> {
-    match value {
-        Datum::Null => Input::Null,
-        Datum::MinNotNull => Input::MinNotNull,
-        Datum::MaxValue => Input::MaxValue,
-        Datum::Int(value) => Input::Int(*value),
-        Datum::UInt(value) => Input::UInt(*value),
-        Datum::Decimal(value) => Input::Decimal(value.as_shared_parse()),
-        Datum::Real(value) => Input::Real(*value),
-        Datum::Float32(value) => Input::Float32(*value),
-        Datum::String(value) => Input::String(value.bytes()),
-        Datum::Bytes(value) => Input::Bytes(value),
-        Datum::Json(_) => Input::Json,
-        _ => Input::Other,
-    }
-}
 
 pub fn eval_legacy_numeric_prefix(text: &str, allow_float: bool) -> Option<String> {
     tidb_query_datatype::codec::native_float_parse::native_legacy_numeric_prefix(text, allow_float)

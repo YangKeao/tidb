@@ -182,12 +182,6 @@ fn resource(message: &'static str) -> LocalError {
 fn contract(message: &'static str) -> LocalError {
     LocalError::BindingContract(message.into())
 }
-#[cfg(test)]
-fn array_bytes<T>(count: usize) -> LocalResult<usize> {
-    count
-        .checked_mul(size_of::<T>())
-        .ok_or_else(|| resource("control buffer byte size overflow"))
-}
 fn reserve<T>(values: &mut Vec<T>, additional: usize) -> LocalResult<()> {
     values
         .try_reserve_exact(additional)
