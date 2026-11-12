@@ -24,8 +24,8 @@
 //! values; its scalar-function caller supplies the source's context-keyed
 //! compiled-pattern and replacement-instruction caches.
 
+use tidb_query_expr::NativeRegexpInvocation;
 pub(crate) use tidb_query_expr::NativeReplacementPart as ReplacementPart;
-use tidb_query_expr::{regexp_replacement_parts, NativeRegexpInvocation};
 
 use super::BuiltinFuncCache;
 use crate::coerce::coerce_str;
@@ -249,11 +249,6 @@ fn prepare_instr(
         return_option,
         match_type,
     })
-}
-
-/// Keep the replacement-cache API while the shared leaf owns tokenization.
-pub(crate) fn replacement_parts(replacement: &str) -> Vec<ReplacementPart> {
-    regexp_replacement_parts(replacement.as_bytes())
 }
 
 #[cfg(test)]

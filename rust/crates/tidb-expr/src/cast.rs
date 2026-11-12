@@ -248,13 +248,13 @@ pub(crate) fn to_f64_for_cast(v: &Datum) -> f64 {
 ///
 /// It used to, and that was two sources of truth for one table. Go asks
 /// `Time.Check` the zero-in-date and invalid-date questions with the
-/// statement's flags; `time_fn::calendar::parse_date_ymd` asks NEITHER and
+/// statement's flags; `TikvTime::parse_native_date_ymd` asks NEITHER and
 /// rejects a zero month unconditionally, so `CAST('2024-00-01' AS DATE)`
 /// answered NULL where TiDB answers `2024-00-01`, and every failing cast
 /// answered NULL with NO warning where TiDB warns 1292.
 /// `tidb_datatype::parse_time` is the faithful port of Go's `ParseTime`,
 /// flags included, and is the same parser the WRITE path converts through.
-/// `parse_date_ymd` stays strict for its own callers, which Go does NOT
+/// `parse_native_date_ymd` stays strict for its own callers, which Go does NOT
 /// relax (see its doc).
 ///
 /// # The flags are the READ path's, not the write path's

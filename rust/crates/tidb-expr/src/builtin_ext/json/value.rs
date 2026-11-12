@@ -78,12 +78,6 @@ pub(crate) fn cast_as_json(value: &Datum) -> Result<Datum, EvalError> {
     ))
 }
 
-pub(super) fn binary_json_datum(json: Json) -> Result<Datum, EvalError> {
-    crate::tikv::native_binary_json_datum(json)
-        .map(binary_datum)
-        .map_err(coercion_error)
-}
-
 pub(crate) fn cast_as_json_typed(
     value: &Datum,
     field_type: Option<&FieldType>,

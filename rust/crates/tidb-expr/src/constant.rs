@@ -232,17 +232,6 @@ impl Constant {
         .map_err(|(_, error)| error)
     }
 
-    /// Go Constant.Eval returns a saved or unconverted Datum alongside an error.
-    /// Rewrites that mutate Value must retain it without evaluating twice.
-    /// Keep the caller's row, avoiding a new empty chunk at every deferred node.
-    pub(crate) fn eval_on_row_with_error_value(
-        &self,
-        ctx: &dyn crate::Columns,
-        row: tidb_chunk::row::Row<'_>,
-    ) -> Result<Datum, (Datum, EvalError)> {
-        self.eval_lazy_in(ctx, |expression| expression.eval(ctx, row))
-    }
-
     fn eval_lazy_in(
         &self,
         ctx: &dyn crate::Columns,

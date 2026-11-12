@@ -92,21 +92,6 @@ impl StrUnits {
         Ok(Some(Self::from_bytes(bytes, is_binary_str(value))))
     }
 
-    /// Views `value` under an explicitly chosen signature, for the functions
-    /// whose signature comes from the RESULT charset rather than from the
-    /// sliced argument alone — `insertFunctionClass.getFunction` tests
-    /// `types.IsBinaryStr(bf.tp)` after `addBinFlag`, so a binary
-    /// replacement string makes `INSERT` slice `str` by bytes too.
-    pub(crate) fn of_with_signature(
-        value: &Datum,
-        binary: bool,
-    ) -> Result<Option<Self>, EvalError> {
-        let Some(bytes) = coerce_str_bytes(value)? else {
-            return Ok(None);
-        };
-        Ok(Some(Self::from_bytes(bytes, binary)))
-    }
-
     fn from_bytes(bytes: Vec<u8>, binary: bool) -> Self {
         if binary {
             let bounds = (0..=bytes.len()).collect();
@@ -146,11 +131,6 @@ impl StrUnits {
         let start = start.min(self.len());
         let end = end.clamp(start, self.len());
         &self.bytes[self.bounds[start]..self.bounds[end]]
-    }
-
-    /// The whole payload, for the signatures that only reorder or search it.
-    pub(crate) fn bytes(&self) -> &[u8] {
-        &self.bytes
     }
 
     /// Rebuilds a result value in the charset this signature was selected

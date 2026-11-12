@@ -265,21 +265,6 @@ pub(super) fn json_modify_with_paths(
     )
 }
 
-pub(super) fn json_modify_with_document(
-    document: Json,
-    vals: &[Datum],
-    arg_types: &[Option<FieldType>],
-    mode: JsonModifyMode,
-    paths: &[JsonPath],
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    crate::tikv::evaluate_prepared_args_in(
-        ctx,
-        || prepare_json_modify_with_document(document, vals, arg_types, mode, paths),
-        EvaluatedBytesResult::into_json_datum,
-    )
-}
-
 pub(super) fn json_modify(
     vals: &[Datum],
     arg_types: &[Option<FieldType>],

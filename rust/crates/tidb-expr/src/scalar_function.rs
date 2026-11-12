@@ -1643,38 +1643,6 @@ impl ScalarFunction {
         }
     }
 
-    pub(crate) fn eval_like_value(
-        &self,
-        ctx: &dyn Columns,
-        row: Row<'_>,
-    ) -> Result<Datum, EvalError> {
-        use crate::tikv::wildcard_value::{Prepared, Step};
-        let maximum = crate::tikv::wildcard_value::default_budget();
-        let mut state = Prepared::Text;
-        loop {
-            let index = state.argument();
-            let value = self.args[index].eval(ctx, row)?;
-            match state.advance(&value, self.args[index].static_type(), ctx, maximum)? {
-                Step::Need(next) => state = next,
-                Step::Null => return Ok(Datum::Null),
-                Step::Match(values) => {
-                    // Original context read precedes collation/invocation
-                    // construction, and only follows the actual escape cast.
-                    let cached = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT
-                        && self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-                    let context = if cached { Some(ctx.context_id()) } else { None };
-                    let invocation = self.batch_like_invocation();
-                    let invocation = if let Some(id) = context {
-                        invocation.with_context_id(id)
-                    } else {
-                        invocation
-                    };
-                    return values.evaluate(&invocation, maximum);
-                }
-            }
-        }
-    }
-
     /// Immutable value-kernel handles only; capturing them does not resolve a
     /// pattern or observe the context. The shared driver demands arguments.
     pub(crate) fn batch_regexp_like_invocation(&self) -> tidb_query_expr::NativeRegexpInvocation {

@@ -77,34 +77,6 @@ pub(crate) fn date_part(
     Ok(component_date(vals)?.map_or(Datum::Null, |ymd| Datum::Int(f(ymd))))
 }
 
-/// Parses a date or datetime string's calendar date into `(year, month,
-/// day)`, calendar-validated (month 1-12, day valid for that specific
-/// month/year, including leap years) — `None` if it doesn't look like one.
-/// Mirrors MySQL's lenient separator handling (any run of non-digit
-/// characters between the numeric components, confirmed via `goeval` to
-/// accept `-`, `/`, and `.`) and leading/trailing whitespace tolerance. A
-/// trailing time-of-day component (space-separated) is accepted but
-/// ignored here — this function is deliberately scoped to the DATE part
-/// only; see [`TikvTime::parse_native_hms`] for `HOUR`/`MINUTE`/`SECOND`
-/// extraction, which needs a GENUINELY different algorithm (real TiDB's
-/// behavior on a string with no time component is non-obvious — e.g.
-/// `MINUTE('2021-01-01')` is NOT `0` — so it does not simply call this
-/// function and default a missing time to midnight).
-///
-/// A bare, separator-less digit run of EXACTLY 6 or 8 digits (e.g.
-/// `20240315` — including from an integer literal argument like
-/// `YEAR(20240315)`, `Datum::Int` already coerces to this same decimal
-/// string form) is a SEPARATE, positional `YYMMDD`/`YYYYMMDD` reading —
-/// confirmed via `goeval`, not assumed, and NOT limited to `HOUR`/
-/// `MINUTE`/`SECOND`'s own colon-less path, which this function does not
-/// share (that path decodes an ELAPSED-time magnitude via modulo
-/// arithmetic; this one slices fixed-width calendar fields). See
-/// [`expand_year`] for the 2-digit-year century pivot this shares with
-/// the separator-based path below.
-pub(crate) fn parse_date_ymd(s: &str) -> Option<(i64, u32, u32)> {
-    TikvTime::parse_native_date_ymd(s)
-}
-
 pub(crate) fn hour_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     crate::tikv::calendar_value::eval(tidb_query_expr::NativeCalendarOperation::Hour, vals, 0, ctx)
 }
@@ -150,7 +122,7 @@ pub(crate) fn hms_nanos_in(
 /// `goeval`, not assumed) depending on whether the value contains a `:`:
 ///
 /// - WITH a `:`: an optional `[DATE ]` prefix (validated the SAME way
-///   [`parse_date_ymd`] validates a DATE, split on the FIRST whitespace —
+///   [`TikvTime::parse_native_date_ymd`] validates a DATE, split on the FIRST whitespace —
 ///   `'junk 10:30:45'`'s `junk` prefix makes the WHOLE value invalid, not
 ///   just ignored) followed by a REQUIRED `H:M[:S]` time-of-day (`S`
 ///   defaults to `0` if omitted). `H` may be MULTI-DIGIT and exceed 23 —
@@ -183,66 +155,6 @@ fn parse_hms_extended(s: &str) -> Option<(u32, u32, u32)> {
     TikvTime::parse_native_hms(s)
 }
 
-/// Splits a string into the `(value, digit count)` of its maximal runs of
-/// ASCII digits, treating every other character as a separator — `None`
-/// if any component is empty (a leading, trailing, or doubled separator)
-/// or if there are not exactly 3 components. The digit count (not just
-/// the parsed value) is preserved for [`expand_year`]'s own century-pivot
-/// rule, which depends on how many digits the year was actually WRITTEN
-/// with, not on its numeric value alone.
-fn split_numeric_components(input: &str) -> Option<Vec<(u32, usize)>> {
-    TikvTime::native_split_date_components(input)
-}
-
-/// Splits numeric date components for the `TIMEDIFF` parser.
-pub(crate) fn split_numeric_components_for_time_diff(input: &str) -> Option<Vec<(u32, usize)>> {
-    split_numeric_components(input)
-}
-
-/// Expands a calendar-date component's own YEAR value per real MySQL/
-/// TiDB's century-pivot rule, confirmed via `goeval` to depend on the
-/// value's ORIGINAL WRITTEN digit count, not its numeric magnitude: a
-/// 1- or 2-digit year (`'1-03-15'` and `'01-03-15'` are indistinguishable
-/// once parsed to a plain integer, and both pivot identically) is
-/// EXPANDED — `0..=69` becomes `2000..=2069`, `70..=99` becomes
-/// `1970..=1999` — while a 3-or-more-digit year is taken LITERALLY, even
-/// when its own value happens to be under 100 (`'099-03-15'` is year
-/// `99`, NOT pivoted to `1999`/`2099` — confirmed via `goeval`, a real
-/// asymmetry from the 2-digit case that could not be guessed from the
-/// value alone).
-fn expand_year(value: u32, digits: usize) -> i64 {
-    TikvTime::native_expand_date_year(value, digits)
-}
-
-/// Expands a two-digit year using TiDB's date parsing window.
-pub(crate) fn expand_year_for_time_diff(value: u32, digits: usize) -> i64 {
-    expand_year(value, digits)
-}
-
-/// Computes TiDB's `calcDaynr` value for `TIMEDIFF` datetime arithmetic.
-/// Unlike normal calendar parsing, the source permits zero month/day
-/// components when `IgnoreZeroInDate` is enabled; mirroring `calcDaynr`
-/// preserves those values instead of forcing them through Gregorian
-/// month normalization.
-pub(crate) fn time_diff_daynr(year: i64, month: u32, day: u32) -> i64 {
-    TikvTime::native_time_diff_daynr(year, month, day)
-}
-
-fn is_leap_year(year: i64) -> bool {
-    TikvTime::native_is_leap_year(year)
-}
-
-/// The number of days in `month` of `year` (Gregorian, leap-year aware);
-/// `0` for an out-of-range month so a range check against it always fails.
-fn days_in_month(year: i64, month: u32) -> u32 {
-    TikvTime::native_days_in_month(year, month)
-}
-
-/// Returns the Gregorian month length for the `TIMEDIFF` parser.
-pub(crate) fn days_in_month_for_time_diff(year: i64, month: u32) -> u32 {
-    days_in_month(year, month)
-}
-
 /// TiDB's `types.CoreTime.Week` / `YearWeek` calculation, ported from
 /// `pkg/types/core_time.go:calcDaynr`, `weekMode`, and `calcWeek`.
 /// `mode` is masked to its low three bits exactly as the Go implementation
@@ -250,26 +162,6 @@ pub(crate) fn days_in_month_for_time_diff(year: i64, month: u32) -> u32 {
 #[cfg(test)]
 pub(crate) fn week_of_year(y: i64, m: u32, d: u32, mode: i64, with_year: bool) -> (i64, i64) {
     TikvTime::native_week_of_year(y, m, d, mode, with_year)
-}
-
-/// Gregorian days since 1970-01-01, delegated to the shared wide civil helper.
-/// The fixed epoch is also used by weekday offsets, inverse conversion and
-/// timestamp consumers; this is not MySQL's internal day-number domain.
-pub(crate) fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    TikvTime::native_days_from_civil(y, m, d)
-}
-
-/// The inverse of [`days_from_civil`]: the Gregorian calendar date for a day
-/// count `z` since the same 1970-01-01 epoch — Howard Hinnant's
-/// `civil_from_days` algorithm, from the same public source. Used by
-/// [`from_days_in`] (which converts through [`days_from_civil`]'s own epoch —
-/// see `TO_DAYS`'s `719_528` offset, so the exact epoch choice is internal
-/// and doesn't need to match MySQL's) and, unlike `from_days_in`, directly on
-/// its OWN public epoch by `crate::time_fn`'s `NOW()`/`CURRENT_TIMESTAMP()`
-/// (a true Unix timestamp's day count IS already `z` in this function's own
-/// terms, since both anchor to 1970-01-01).
-pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    TikvTime::native_civil_from_days(z)
 }
 
 /// `FROM_DAYS`: the inverse of `TO_DAYS` — an absolute day number back to a
@@ -462,26 +354,6 @@ pub(crate) fn extract_composite(
     cols: &dyn Columns,
 ) -> Result<Datum, EvalError> {
     crate::tikv::eval_extract_composite_in(cols, unit, vals)
-}
-
-/// Parses a `HH:MM:SS` time-of-day string into `(hour, minute, second)`,
-/// each range-validated (`0..=23`/`0..=59`/`0..=59`) — `None` if malformed
-/// or out of range. Strict about the `:` separator, unlike
-/// [`parse_date_ymd`]'s lenient date-separator handling: every date/
-/// datetime value this crate itself ever produces is `HH:MM:SS` exactly,
-/// and every corpus/test input uses the same well-formed shape, so
-/// leniency here has not been demonstrated as necessary the way the DATE
-/// separator's was (confirmed via `goeval` to matter for real inputs).
-pub(crate) fn parse_time_hms(s: &str) -> Option<(u32, u32, u32)> {
-    TikvTime::parse_native_clock_hms(s)
-}
-
-/// `DATE_FORMAT`'s time-of-day parser extends [`parse_time_hms`] with the
-/// optional fractional seconds which `%f` renders. The Go source delegates
-/// this to `types.Time.DateFormat` (`pkg/types/time.go`); retaining the
-/// written fraction here is enough for the evaluator's string-only domain.
-pub(crate) fn parse_time_with_fraction(s: &str) -> Option<(u32, u32, u32, String)> {
-    TikvTime::parse_native_clock_with_fraction(s)
 }
 
 /// `STR_TO_DATE(date, format)`, ported from `types.Time.StrToDate` and the

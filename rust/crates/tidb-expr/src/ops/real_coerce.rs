@@ -243,7 +243,7 @@ pub(crate) fn to_f64(v: Datum) -> f64 {
 ///    where Go raises it too (`getValidFloatPrefix` calls
 ///    `ctx.HandleTruncate` before returning). `ctx` is now threaded here so
 ///    the warning is raised ONCE, at the coercion, rather than once per
-///    calling builtin -- see [`raise_truncated_double`].
+///    calling builtin -- see [`bytes_to_f64`].
 pub(crate) fn to_f64_with_mysql_string(
     v: &Datum,
     ctx: &dyn crate::context::Columns,
@@ -303,25 +303,6 @@ pub(crate) fn bytes_to_f64(
     tidb_query_expr::native_numeric_argument_bytes_to_f64(bytes, |message| {
         ctx.handle_truncate(message)
     })
-}
-
-/// Go `ErrTruncatedWrongVal.GenWithStackByArgs("DOUBLE", s)` at warning
-/// level: `1292 Truncated incorrect DOUBLE value: '<s>'`.
-///
-/// `s` is the string AFTER `strings.TrimSpace`, because `StrToFloat` trims
-/// before handing the value to `getValidFloatPrefix`, and both of that
-/// function's raise sites name the trimmed form (captured: a padded
-/// `' 12abc '` warns about `'12abc'`, and a padded `' 12 '` does not warn).
-///
-/// Go raises this ONCE PER EVALUATION, so a query with three rows and two
-/// coercing sites records six warnings, not one (captured:
-/// `SELECT ABS(a), a+0 FROM t` over three rows lists all six). Nothing here
-/// deduplicates, for the same reason.
-pub(crate) fn raise_truncated_double(
-    ctx: &dyn crate::context::Columns,
-    text: &str,
-) -> Result<(), EvalError> {
-    ctx.handle_truncate(&format!("Truncated incorrect DOUBLE value: '{text}'"))
 }
 
 /// Wraps a finite `f64` as [`Datum::Real`], or reports the overflow

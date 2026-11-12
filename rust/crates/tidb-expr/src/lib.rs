@@ -69,7 +69,7 @@
 //! including leap years; lenient about separator characters and
 //! zero-padding, matching MySQL's own leniency, confirmed via `goeval`).
 //! `DATEDIFF` converts both dates to an absolute day number
-//! ([`time_fn::calendar::days_from_civil`], a well-known algorithm) and subtracts,
+//! ([`tidb_query_datatype::codec::mysql::Time::native_days_from_civil`], a well-known algorithm) and subtracts,
 //! ignoring any time-of-day component on either side; `DAYOFYEAR` is a
 //! `days_from_civil` difference from that year's January 1st; `DAYOFWEEK`
 //! (`1`=Sunday..`7`=Saturday) and `WEEKDAY` (`0`=Monday..`6`=Sunday) are
@@ -78,7 +78,7 @@
 //! (including `TO_DAYS('0000-01-01') = 1`) and expose absolute day/second
 //! numbers rather than differences. They reject malformed time suffixes and
 //! zero-date components at the value boundary.
-//! `FROM_DAYS` is `TO_DAYS`'s inverse ([`time_fn::calendar::civil_from_days`], the
+//! `FROM_DAYS` is `TO_DAYS`'s inverse ([`tidb_query_datatype::codec::mysql::Time::native_civil_from_days`], the
 //! complementary half of the same well-known algorithm as
 //! `days_from_civil`), producing a `YYYY-MM-DD` string (still no dedicated
 //! `DATE` value domain — a `goeval` `STR:` label was reused rather than

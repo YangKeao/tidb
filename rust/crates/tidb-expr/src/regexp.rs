@@ -172,14 +172,6 @@ pub(crate) fn regexp_match_in(
 /// A user-supplied `match_type` can still override this: an explicit `c` flag
 /// deletes `i` again, which the shared compiler's left-to-right flag scan
 /// reproduces because the seeded `i` is passed as the leading flag.
-pub(crate) fn regexp_match_with_collation(
-    text: &str,
-    pattern: &str,
-    collation: tidb_datatype::Collation,
-) -> Result<bool, EvalError> {
-    regexp_match_with_collation_in(&NoColumns, text, pattern, collation)
-}
-
 pub(crate) fn regexp_match_with_collation_in(
     ctx: &dyn Columns,
     text: &str,
@@ -200,29 +192,6 @@ pub(crate) fn regexp_match_with_collation_in(
 /// it provides no worker-scope/budget guarantee and never masks a resource error.
 pub fn regexp_match_bin_collation(text: &[u8], pattern: &[u8]) -> Option<bool> {
     tidb_query_expr::regexp_match_bin_collation_native(text, pattern)
-}
-
-/// `REGEXP_LIKE` applies the expression's derived collation before its
-/// user-supplied match type. A later `c`/`i` therefore wins, as Go's
-/// `getRegexpMatchType` requires.
-pub(crate) fn regexp_like_with_collation(
-    text: &str,
-    pattern: &str,
-    match_type: &str,
-    collation: tidb_datatype::Collation,
-) -> Result<bool, EvalError> {
-    regexp_like_with_collation_in(&NoColumns, text, pattern, match_type, collation)
-}
-
-pub(crate) fn regexp_like_with_collation_in(
-    ctx: &dyn Columns,
-    text: &str,
-    pattern: &str,
-    match_type: &str,
-    collation: tidb_datatype::Collation,
-) -> Result<bool, EvalError> {
-    let match_type = regexp_match_type_with_collation(match_type, collation);
-    regexp_like_in(ctx, text, pattern, &match_type)
 }
 
 #[cfg(test)]

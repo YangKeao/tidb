@@ -55,8 +55,8 @@ use construct::{
 };
 use merge::{json_merge, json_merge_patch};
 use modify::{
-    json_array_append, json_array_insert, json_modify, json_modify_with_document,
-    json_modify_with_paths, json_remove, prepare_json_modify_with_document, JsonModifyMode,
+    json_array_append, json_array_insert, json_modify, json_modify_with_paths, json_remove,
+    prepare_json_modify_with_document, JsonModifyMode,
 };
 use path::json_extract;
 use predicate::{json_contains, json_contains_path, json_member_of, json_overlaps};
@@ -250,47 +250,6 @@ pub(crate) fn dispatch_typed_cached_in(
         },
         crate::tikv::EvaluatedBytesResult::into_json_datum,
     ))
-}
-
-/// Typed JSON dispatch for a cached path list and an already parsed document.
-/// This preserves Go's document-first NULL/error boundary while avoiding a
-/// second document parse on the cached path hot path.
-pub(crate) fn dispatch_typed_with_paths_and_document(
-    name: &str,
-    vals: &[Datum],
-    arg_types: &[Option<FieldType>],
-    paths: &[JsonPath],
-    document: serde_json::Value,
-    ctx: &dyn crate::Columns,
-) -> Option<Result<Datum, EvalError>> {
-    debug_assert_eq!(vals.len(), arg_types.len());
-    match (name, vals.len()) {
-        ("JSON_SET", 3..) => Some(json_modify_with_document(
-            document,
-            vals,
-            arg_types,
-            JsonModifyMode::Set,
-            paths,
-            ctx,
-        )),
-        ("JSON_INSERT", 3..) => Some(json_modify_with_document(
-            document,
-            vals,
-            arg_types,
-            JsonModifyMode::Insert,
-            paths,
-            ctx,
-        )),
-        ("JSON_REPLACE", 3..) => Some(json_modify_with_document(
-            document,
-            vals,
-            arg_types,
-            JsonModifyMode::Replace,
-            paths,
-            ctx,
-        )),
-        _ => None,
-    }
 }
 
 /// An all-`None` `arg_types` slice for [`dispatch_in`]'s untyped callers, so

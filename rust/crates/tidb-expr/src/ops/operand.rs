@@ -80,11 +80,6 @@ impl<'a> Operand<'a> {
         self.field_type().map(FieldType::eval_type)
     }
 
-    /// Go `args[i].GetType(ctx).EvalType().IsStringKind()`.
-    pub(crate) fn is_string_kind(self) -> bool {
-        self.eval_type().is_some_and(EvalType::is_string_kind)
-    }
-
     /// Go `_, ok := args[i].(*Constant)`, asked of the tree Go's dispatch
     /// actually sees.
     ///

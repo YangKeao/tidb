@@ -16,7 +16,7 @@
 //!
 //! Everything an operand does once MySQL's promotion hierarchy has decided the
 //! pair is an INTEGER pair: the signedness rule that decides which of Go's
-//! per-signedness signatures applies ([`unsigned_operand`]), the arithmetic and
+//! per-signedness signatures applies ([`unsigned_operand_flag`]), the arithmetic and
 //! bitwise operators themselves ([`integer_binary`] and the overflow checks it
 //! delegates to), the shift width rule, and unary-minus recipe selection
 //! ([`unary_minus_integer`]). The shared worker owns integer negation,
@@ -29,10 +29,6 @@ use super::*;
 /// came back in. Only the integer kinds can be reinterpreted -- a `DOUBLE
 /// UNSIGNED` stays a `Real`, and its signedness travels separately -- so this
 /// touches `Datum::Int` alone.
-pub(super) fn unsigned_operand(value: Datum, operand: Operand<'_>) -> Datum {
-    unsigned_operand_flag(value, operand.is_unsigned())
-}
-
 pub(super) fn unsigned_operand_flag(value: Datum, unsigned: bool) -> Datum {
     match value {
         Datum::Int(bits) if unsigned => Datum::UInt(bits as u64),

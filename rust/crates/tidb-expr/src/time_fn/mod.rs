@@ -658,12 +658,6 @@ fn time_diff_in(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> 
     )
 }
 
-// GoDuration::format still shares this exact formatter without adopting the
-// TIMEDIFF parser or its clamp policy.
-fn format_time_diff(micros: i64, fsp: usize) -> String {
-    tidb_query_expr::native_format_time_diff(micros, fsp)
-}
-
 /// `builtinTimeToSecSig` sends the original text, not precomputed seconds.
 /// Its complete duration parser remains distinct from the HMS clamp policy.
 pub(crate) fn time_to_sec_in(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {

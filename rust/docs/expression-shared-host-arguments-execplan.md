@@ -1,6 +1,6 @@
 # Share native host argument collection and remove redundant wrappers
 
-This living ExecPlan follows repository-root PLANS.md. The implementation and final measurement are complete; human review remains pending. See [the result and review guide](expression-shared-host-arguments-results.zh.md) and [machine-readable evidence](expression-shared-host-arguments-results/).
+This living ExecPlan follows repository-root PLANS.md. The first consolidated round and its measurement are fixed at product commit43ba91c201 and report commite5e15d1d27. Autonomous cleanup continues under YangKeao’s November13 10:00 Asia/Shanghai deadline; human acceptance remains pending. See [the result and review guide](expression-shared-host-arguments-results.zh.md) and [machine-readable evidence](expression-shared-host-arguments-results/).
 
 ## Purpose / Big Picture
 
@@ -18,6 +18,9 @@ Reduce repeated per-function state machines, validation and empty ownership/coer
 - [x] Complete cumulative unit/service builds, 995 scoped checks, edition2021 formatting, root make lint and source-isolation checks.
 - [x] Complete the final fourteen-scene, four-label comparison: 224 cells and 140244 full queries; audit all observations and clean owned services/data.
 - [x] Prepare the Git review report, raw timing and test evidence, and a standalone verifier.
+- [x] Fix the offline verifier’s Python 3.9 compatibility separately at0623f21305; raw measurements remain unchanged.
+- [x] Remove28 compiler-confirmed unused private functions/methods after checking references and configuration; no fixture values or test functions changed. This checkpoint removes323 net production lines.
+- [ ] Save and push a new source checkpoint, then run cumulative scoped checks and the final SQL comparison against the pinned43ba91c201 binary.
 - [ ] Human review and final acceptance. The broader project's path-unification and performance goals remain incomplete.
 
 ## Surprises & Discoveries
@@ -59,7 +62,7 @@ Main rust/crates/tidb-expr/src/evaluator/batch.rs lowers source expressions. bat
 ## Plan of Work
 
 
-Implementation is complete. Review the result guide in ownership order: SDK compiler/frame protocol, Main lowering/host integration, source-specific demand, and value kernels/tests. Review the seven checkpoint commits independently if needed. Address new review findings with a new checkpoint and relevant verification; do not relabel the fixed43ba91c201 evidence as testing later production edits.
+The first measured round is complete. Continue by removing unused crate-private entrypoints in JSON dispatch, scalar/wildcard evaluation, regular-expression adapters, coercion and temporal helpers. Confirm each candidate against compiler diagnostics and whole-crate references; preserve exported APIs, active kernels, test cases and fixture values. Update documentation links to the actual shared helpers when a forwarding wrapper disappears. Use a new evidence directory, evidence/path-unification/unused-private-helpers, leaving the prior overnight directory sealed. The next A/B baseline is the pinned43ba91c201 service SHA256783723c09121c6e64512586a2fbe43b8fa9aa30a1d7983e7ce15973fb1048629; F remains the frozen original. After meaningful cumulative cleanup, build the library tests and service, retain every baseline test name, run relevant checks and repeat the same14-scene measurement. Review the result guide in ownership order: SDK compiler/frame protocol, Main lowering/host integration, source-specific demand, and value kernels/tests. Review the seven checkpoint commits independently if needed. Address new review findings with a new checkpoint and relevant verification; do not relabel the fixed43ba91c201 evidence as testing later production edits.
 
 ## Concrete Steps
 
@@ -99,3 +102,5 @@ The report links full-base and incremental Git comparisons. The result directory
 
 
 Private NativeHostMetadata, SqlDemand, NativeTask and NativeArguments changed. HostInvocation/HostArgReply/HostStep, native-store provenance, public source views, value semantics and SDK interfaces remain compatible. No dependency or public SDK API changed. Existing fixed arities determine inline argument storage; no new SQL arity limit was imposed.
+
+Revision November13 02:00 Asia/Shanghai: continue the authorized overnight simplification after fixing the first measured result in Git; preserve its evidence and use it as the next comparison baseline.
