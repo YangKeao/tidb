@@ -13,7 +13,11 @@ for name,record in manifest['files'].items():
     file=P/name
     assert file.is_file(),name
     assert file.stat().st_size==record['bytes'],name
-    assert hashlib.file_digest(file.open('rb'),'sha256').hexdigest()==record['sha256'],name
+    digest=hashlib.sha256()
+    with file.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024),b''):
+            digest.update(chunk)
+    assert digest.hexdigest()==record['sha256'],name
 summary=json.loads((P/'consumers-final/summary.json').read_text())
 assert summary['state']=='complete' and summary['total']==995 and summary['counts']=={'ok':994,'failed':1}
 results=[json.loads(line) for line in (P/'consumers-final/results.jsonl').read_text().splitlines()]
