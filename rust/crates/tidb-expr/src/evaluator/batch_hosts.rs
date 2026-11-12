@@ -354,22 +354,18 @@ fn present_integer_batch_value(
     result_type: Option<&FieldType>,
     context: &dyn Columns,
 ) -> std::result::Result<Datum, EvalError> {
-    (|| {
-        (|| -> std::result::Result<Datum, EvalError> {
-            let value = crate::expression::apply_enum_set_integer_view(value, result_type);
-            let value = crate::scalar_function::normalize_numeric_row_value(
-                value,
-                result_type,
-                NativeEvalType::Int,
-                context,
-            )?;
-            let bits = crate::scalar_function::native_batch_integer_bits(value)?;
-            Ok(crate::scalar_function::native_batch_integer_value(
-                bits,
-                result_type.is_some_and(FieldType::is_unsigned),
-            ))
-        })()
-    })()
+    let value = crate::expression::apply_enum_set_integer_view(value, result_type);
+    let value = crate::scalar_function::normalize_numeric_row_value(
+        value,
+        result_type,
+        NativeEvalType::Int,
+        context,
+    )?;
+    let bits = crate::scalar_function::native_batch_integer_bits(value)?;
+    Ok(crate::scalar_function::native_batch_integer_value(
+        bits,
+        result_type.is_some_and(FieldType::is_unsigned),
+    ))
 }
 
 impl NativeHostMetadata {

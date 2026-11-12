@@ -87,11 +87,10 @@ impl NativeTypedDescriptor {
             _ => unreachable!("typed leaf cannot consume a child"),
         }
     }
-    fn begin_bounded(
+    fn begin(
         &self,
         ctx: &dyn Columns,
         target: NativeEvalType,
-        maximum: usize,
         input: Option<&Chunk>,
         input_is_bounded: bool,
         row: InputRow,
@@ -142,20 +141,6 @@ impl NativeTypedDescriptor {
                         input.num_cols(),
                     )?;
                     let field = field.as_ref().expect("original column type guard");
-                    let column = input.column(index);
-                    let bytes = if column.is_null(row.input_row) {
-                        0
-                    } else {
-                        column.raw_cells().get(row.input_row).len()
-                    };
-                    if bytes > maximum {
-                        return Err(EvalError::ExpressionRuntimeFailure(
-                            crate::ExpressionRuntimeFailure::from_local_eval(
-                                resource("typed column copy allowance exhausted"),
-                                None,
-                            ),
-                        ));
-                    }
                     let value = input.physical_row(row.input_row).get_datum(index, field);
                     let value = crate::expression::apply_enum_set_integer_view(value, Some(field));
                     let value = crate::scalar_function::normalize_numeric_row_value(
@@ -303,7 +288,6 @@ impl<'a> NativeBatchHosts<'a> {
             unreachable!()
         };
         *consumed = true;
-        let maximum = usize::MAX;
         let cached = meta.cache_slot.and_then(|i| self.typed_values[i].as_ref());
         let value = (|| {
             let result = if let Some(cached) = cached {
@@ -327,10 +311,9 @@ impl<'a> NativeBatchHosts<'a> {
                     .descriptor
                     .as_ref()
                     .expect("validated typed read")
-                    .begin_bounded(
+                    .begin(
                         self.context,
                         meta.target,
-                        maximum,
                         self.input,
                         self.input_is_bounded,
                         row,
