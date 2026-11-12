@@ -1,0 +1,967 @@
+{
+  "totals": {
+    "production": {
+      "added": 1813,
+      "deleted": 4395,
+      "net_reduction": 2582
+    },
+    "test": {
+      "added": 398,
+      "deleted": 335,
+      "net_reduction": -63
+    }
+  },
+  "files": {
+    "rust/crates/tidb-expr/src/builtin_ext/misc.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch.rs": {
+      "production": {
+        "added": 158,
+        "deleted": 511
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_arguments.rs": {
+      "production": {
+        "added": 1388,
+        "deleted": 0
+      },
+      "test": {
+        "added": 95,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_arithmetic_window.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 0
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_ast_demand.rs": {
+      "production": {
+        "added": 3,
+        "deleted": 5
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_ast_source.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 4,
+        "deleted": 5
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_bounded_staleness.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 140
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_byte_unary.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 69
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_cached_list.rs": {
+      "production": {
+        "added": 4,
+        "deleted": 14
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_calendar.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 168
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_clock.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 77
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_compression.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 79
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_concat_value.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_context_value.rs": {
+      "production": {
+        "added": 10,
+        "deleted": 17
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_crypto.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 101
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_date_arithmetic.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 192
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_decimal_entry_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 3,
+        "deleted": 5
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_decimal_fast_source.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 5
+      },
+      "test": {
+        "added": 1,
+        "deleted": 1
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_diagnostic.rs": {
+      "production": {
+        "added": 11,
+        "deleted": 121
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_duration_construction.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 354
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_eager_values.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 8
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_epoch.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 166
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_extract.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 178
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_final_state.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_grouping.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 81
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs": {
+      "production": {
+        "added": 101,
+        "deleted": 861
+      },
+      "test": {
+        "added": 1,
+        "deleted": 1
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_identity.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 84
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_json_schema.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_json_sum_crc32.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 77
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_misc.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 219
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_native_entry_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 6,
+        "deleted": 9
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_native_source.rs": {
+      "production": {
+        "added": 13,
+        "deleted": 13
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 2
+      },
+      "test": {
+        "added": 12,
+        "deleted": 24
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_window.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 3
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_optional_cast_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 0,
+        "deleted": 1
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_binary_values.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_boolean_values.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_cast_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 2,
+        "deleted": 2
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_eager_values.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_lazy_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 3,
+        "deleted": 6
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_lazy_values.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 11
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_prefix_values.rs": {
+      "production": {
+        "added": 3,
+        "deleted": 10
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_public_error_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 12,
+        "deleted": 38
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_public_function_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 0,
+        "deleted": 3
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_public_row_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 0,
+        "deleted": 1
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_public_source_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 6,
+        "deleted": 21
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_regexp_values.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_scalar_source.rs": {
+      "production": {
+        "added": 4,
+        "deleted": 12
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_source_fragment.rs": {
+      "production": {
+        "added": 6,
+        "deleted": 6
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_stateful.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_stateful_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 19,
+        "deleted": 34
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_str_to_date.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 179
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 186,
+        "deleted": 175
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_timestamp_diff.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 182
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_tso.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 68
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_typed_context.rs": {
+      "production": {
+        "added": 5,
+        "deleted": 29
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_unary_window.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 0
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_values.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 9
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_vector.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 114
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_weight_string.rs": {
+      "production": {
+        "added": 5,
+        "deleted": 5
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_wildcard.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_window_values.rs": {
+      "production": {
+        "added": 4,
+        "deleted": 18
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 7
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/bounded_staleness.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/calendar_value.rs": {
+      "production": {
+        "added": 4,
+        "deleted": 4
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/case_control.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 3
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/clock_value.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/coalesce.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 3
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/control_value.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 99
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/control_value_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 32,
+        "deleted": 5
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/convert_charset.rs": {
+      "production": {
+        "added": 3,
+        "deleted": 3
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/date_arithmetic.rs": {
+      "production": {
+        "added": 4,
+        "deleted": 4
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/duration_construction_value.rs": {
+      "production": {
+        "added": 3,
+        "deleted": 3
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/epoch_value.rs": {
+      "production": {
+        "added": 6,
+        "deleted": 6
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/extract.rs": {
+      "production": {
+        "added": 8,
+        "deleted": 3
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/extremum.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/from_unixtime.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/identity_actual.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 18
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/if_control.rs": {
+      "production": {
+        "added": 4,
+        "deleted": 6
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/if_null.rs": {
+      "production": {
+        "added": 4,
+        "deleted": 7
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/in_list.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/interval.rs": {
+      "production": {
+        "added": 7,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/json_sum_crc32.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/legacy_date_arithmetic.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/misc_identity_value_tests.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 0
+      },
+      "test": {
+        "added": 16,
+        "deleted": 4
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/mod.rs": {
+      "production": {
+        "added": 0,
+        "deleted": 4
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/null_if.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/ready_value.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/str_to_date.rs": {
+      "production": {
+        "added": 6,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/timestamp_diff.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/tso_value.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/unix_timestamp.rs": {
+      "production": {
+        "added": 2,
+        "deleted": 2
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/vector_value.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/tikv/wildcard_value.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    },
+    "rust/crates/tidb-expr/src/typed_context_value.rs": {
+      "production": {
+        "added": 1,
+        "deleted": 1
+      },
+      "test": {
+        "added": 0,
+        "deleted": 0
+      }
+    }
+  },
+  "method": "git unified diff; test files and named cfg(test) module classified separately; blank lines included; unchanged small inline cfg(test) hooks remain in production-file class; docs excluded; candidate not yet retained"
+}

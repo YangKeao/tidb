@@ -1,0 +1,36 @@
+{
+  "timing": false,
+  "reason": "All versions rejected initial plain function syntax; inspect existing supported entry without product edits",
+  "results": [
+    {
+      "mode": "native",
+      "sql": "SELECT `JSON_SUM_CRC32`(JSON_EXTRACT(doc,'$.a')) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1054, \"Unknown column 'doc' in 'field list'\")"
+    },
+    {
+      "mode": "native",
+      "sql": "SELECT JSON_SUM_CRC32(JSON_EXTRACT(doc,'$.a') AS UNSIGNED ARRAY) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1105, 'a CAST with the ARRAY modifier is not supported yet')"
+    },
+    {
+      "mode": "current",
+      "sql": "SELECT `JSON_SUM_CRC32`(JSON_EXTRACT(doc,'$.a')) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1054, \"Unknown column 'doc' in 'field list'\")"
+    },
+    {
+      "mode": "current",
+      "sql": "SELECT JSON_SUM_CRC32(JSON_EXTRACT(doc,'$.a') AS UNSIGNED ARRAY) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1105, 'a CAST with the ARRAY modifier is not supported yet')"
+    },
+    {
+      "mode": "frozen",
+      "sql": "SELECT `JSON_SUM_CRC32`(JSON_EXTRACT(doc,'$.a')) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1054, \"Unknown column 'doc' in 'field list'\")"
+    },
+    {
+      "mode": "frozen",
+      "sql": "SELECT JSON_SUM_CRC32(JSON_EXTRACT(doc,'$.a') AS UNSIGNED ARRAY) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1105, 'a CAST with the ARRAY modifier is not supported yet')"
+    }
+  ]
+}

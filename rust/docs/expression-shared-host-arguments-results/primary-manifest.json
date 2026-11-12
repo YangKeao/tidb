@@ -1,0 +1,42 @@
+{
+  "mode_labels": {
+    "native": "retained A actual macro14 2d435",
+    "current": "shared host arguments task29 candidate",
+    "retained_b": "retained B SAME actual macro14 ELF as A",
+    "frozen": "original native actual99a"
+  },
+  "orders": [
+    [
+      "native",
+      "current",
+      "frozen",
+      "retained_b"
+    ],
+    [
+      "current",
+      "retained_b",
+      "native",
+      "frozen"
+    ],
+    [
+      "retained_b",
+      "frozen",
+      "current",
+      "native"
+    ],
+    [
+      "frozen",
+      "native",
+      "retained_b",
+      "current"
+    ]
+  ],
+  "rounds": 4,
+  "case_count": 14,
+  "minimum_queries": 30,
+  "minimum_seconds": 4,
+  "maximum_queries": null,
+  "scope": "whole SQL execute plus full fetch, target process CPU includes planning, RPC and encoding; client decoding affects elapsed time; not expression kernel timing",
+  "balanced_order_assertions": true,
+  "effective_configuration_saved_each_cell": true
+}

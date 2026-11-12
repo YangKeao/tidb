@@ -1,0 +1,28 @@
+{
+  "cases": 14,
+  "original12_identical": true,
+  "added_cases": [
+    {
+      "group": "arguments",
+      "case": "date_arithmetic",
+      "config": "batch1024",
+      "rows": 4096,
+      "sql": "SELECT id, DATE_ADD(ts,INTERVAL j DAY), DATE_SUB(ts,INTERVAL j SECOND) FROM expr_policy_optimization.t_eval WHERE id<4096 ORDER BY id"
+    },
+    {
+      "group": "arguments",
+      "case": "json_value",
+      "config": "batch1024",
+      "rows": 4096,
+      "sql": "SELECT id, JSON_UNQUOTE(JSON_EXTRACT(IF(id%23=0,NULL,JSON_OBJECT('k',id%7)),'$.k')) FROM expr_policy_optimization.t_eval WHERE id<4096 ORDER BY id"
+    }
+  ],
+  "expected_cells": 224,
+  "strict_observations": 56,
+  "before_after_records": 448,
+  "full_observations": 672,
+  "quiet_policy": "record noise; block build/test/perf only; user843fd7fa",
+  "JSON_SUM_CRC32_SQL_NOT_measured": "plain function syntax rejected; proper ARRAY target already unsupported in all three implementations; quoted probes also failed. Source value-kernel covered by unit tests. Use supported computed JSON construction/extraction for whole-SQL JSON regression coverage.",
+  "first_invalid_preflight_preserved": "preflight-invalid-json-syntax.json",
+  "product_source_changes": false
+}

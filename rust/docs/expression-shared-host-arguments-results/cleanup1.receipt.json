@@ -1,0 +1,16 @@
+{
+  "runner_pid": 134949,
+  "runner_birth": "587110",
+  "command": [
+    "python3",
+    "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/shared-host-arguments/overnight/cleanup.py"
+  ],
+  "cwd": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/shared-host-arguments/overnight",
+  "started": 1794505326.1245852,
+  "state": "complete",
+  "child_pid": 134950,
+  "child_birth": "587112",
+  "returncode": 0,
+  "ended": 1794505326.15643,
+  "wall_seconds": 0.0318448543548584
+}

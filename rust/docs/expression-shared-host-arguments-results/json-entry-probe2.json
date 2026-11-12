@@ -1,0 +1,21 @@
+{
+  "timing": false,
+  "reason": "Derived fixture omits stored JSON column; use computed array and existing quoted internal function name",
+  "results": [
+    {
+      "mode": "native",
+      "sql": "SELECT `JSON_SUM_CRC32`(IF(id%23=0,NULL,JSON_ARRAY(id%3,id%5))) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1046, 'No database selected')"
+    },
+    {
+      "mode": "current",
+      "sql": "SELECT `JSON_SUM_CRC32`(IF(id%23=0,NULL,JSON_ARRAY(id%3,id%5))) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1046, 'No database selected')"
+    },
+    {
+      "mode": "frozen",
+      "sql": "SELECT `JSON_SUM_CRC32`(IF(id%23=0,NULL,JSON_ARRAY(id%3,id%5))) FROM expr_policy_optimization.t_eval WHERE id<8 ORDER BY id",
+      "error": "(1046, 'No database selected')"
+    }
+  ]
+}

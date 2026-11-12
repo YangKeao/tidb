@@ -1,0 +1,3 @@
+[
+  "error[E0425]: cannot find function `profile_shape` in this scope\n   --> crates/tidb-expr/src/evaluator/batch_decimal_fast_source.rs:351:5\n    |\n351 |     profile_shape(root, limits)?;\n    |     ^^^^^^^^^^^^^ not found in this scope\n\n"
+]

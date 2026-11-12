@@ -1,0 +1,14 @@
+{
+  "binary_sha256": "783723c09121c6e64512586a2fbe43b8fa9aa30a1d7983e7ce15973fb1048629",
+  "symbol": "00000000042dc2e0 0000000000007526 t <tidb_expr::evaluator::batch::hosts::NativeBatchHosts>::resume_arguments",
+  "code_bytes": 29990,
+  "entry_local_stack_reservation": [
+    " 42dc2ea:\t48 81 ec c8 0b 00 00 \tsub    $0xbc8,%rsp"
+  ],
+  "indexed_strides": [
+    " 42dc31f:\t49 69 c0 78 02 00 00 \timul   $0x278,%r8,%rax",
+    " 42dc83f:\t48 69 c7 d8 00 00 00 \timul   $0xd8,%rdi,%rax",
+    " 42e1972:\t48 6b c0 64          \timul   $0x64,%rax,%rax"
+  ],
+  "scope": "Static code layout only; not profiling or a causal explanation of SQL performance."
+}

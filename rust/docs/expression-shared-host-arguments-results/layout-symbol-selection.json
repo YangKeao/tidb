@@ -1,0 +1,14 @@
+{
+  "initial_broad_match": [
+    "00000000042a8ef0 0000000000000080 t <tidb_expr::evaluator::batch::hosts::NativeBatchHosts>::resume_arguments::{closure#4}",
+    "00000000042a8f70 00000000000000a1 t <tidb_expr::evaluator::batch::hosts::NativeBatchHosts>::resume_arguments::{closure#7}",
+    "00000000042a9020 0000000000000044 t <tidb_expr::evaluator::batch::hosts::NativeBatchHosts>::resume_arguments::{closure#1}",
+    "00000000042a9070 0000000000000119 t <tidb_expr::evaluator::batch::hosts::NativeBatchHosts>::resume_arguments::{closure#17}",
+    "00000000042a9190 0000000000000115 t <tidb_expr::evaluator::batch::hosts::NativeBatchHosts>::resume_arguments::{closure#23}",
+    "00000000042dc2e0 0000000000007526 t <tidb_expr::evaluator::batch::hosts::NativeBatchHosts>::resume_arguments"
+  ],
+  "initial_unique_assertion_failed": true,
+  "corrected_exact_match": [
+    "00000000042dc2e0 0000000000007526 t <tidb_expr::evaluator::batch::hosts::NativeBatchHosts>::resume_arguments"
+  ]
+}

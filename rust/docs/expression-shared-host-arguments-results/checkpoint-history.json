@@ -1,0 +1,51 @@
+[
+  {
+    "commit": "0d065bcd30f3df4bde067af3d1780f7a251a3540",
+    "parents": "e94b3c53dec9a80395e640e03171549217285918",
+    "author_time": "2026-11-13T00:26:55+08:00",
+    "subject": "refactor(expression): checkpoint shared native argument lifecycle",
+    "body": "Consolidate sixteen host families and compact optional probes.\nTargeted checks: 981 passed, one unchanged baseline failure; lint and format passed.\nCompact candidate performance is unmeasured; this is a reviewable checkpoint.\n\nSigned-off-by: YangKeao <yangkeao@chunibyo.icu>\n"
+  },
+  {
+    "commit": "103c613128a3d99b12ea3954eb154a3b89819fc9",
+    "parents": "0d065bcd30f3df4bde067af3d1780f7a251a3540",
+    "author_time": "2026-11-13T00:30:24+08:00",
+    "subject": "refactor(expression): consolidate remaining eager adapters and internal plumbing",
+    "body": "Share date arithmetic and JSON checksum lifecycle and temporal publication.\nShare eleven compile-time child walks; remove redundant same-store reads,\nrepeated window dispatch lookups and obsolete accounting wrappers.\nSource checkpoint; build and runtime validation pending.\n\nSigned-off-by: YangKeao <yangkeao@chunibyo.icu>\n"
+  },
+  {
+    "commit": "4c0c6702bfb76cb7b255d02149de9d75b492da95",
+    "parents": "103c613128a3d99b12ea3954eb154a3b89819fc9",
+    "author_time": "2026-11-13T00:40:16+08:00",
+    "subject": "refactor(expression): remove inert policy plumbing and redundant prewalks",
+    "body": "Delete the output-free profile_shape walk and private ignored copy budgets.\nKeep actual lowering, graph admission and allocation checks. Make reference\nsetters infallible, share get/clone authentication and retain callback checks.\nSource checkpoint; full final validation remains pending.\n\nSigned-off-by: YangKeao <yangkeao@chunibyo.icu>\n"
+  },
+  {
+    "commit": "4724a80b2a561a74f4344fe4fd3cf7663c029544",
+    "parents": "4c0c6702bfb76cb7b255d02149de9d75b492da95",
+    "author_time": "2026-11-13T00:44:23+08:00",
+    "subject": "refactor(expression): remove unreachable typed-column allowance branch",
+    "body": "The private read helper only received usize::MAX; retain physical-row and\ntype checks and actual reads. Flatten redundant integer result closures.\nRecord Git-based checkpoint review direction; final validation pending.\n\nSigned-off-by: YangKeao <yangkeao@chunibyo.icu>\n"
+  },
+  {
+    "commit": "d057867b116f94be5cc2de217d183c2c3b241545",
+    "parents": "4724a80b2a561a74f4344fe4fd3cf7663c029544",
+    "author_time": "2026-11-13T00:55:09+08:00",
+    "subject": "refactor(expression): remove infallible ownership and coercion wrappers",
+    "body": "Use selected values and Datum clones directly, retaining callback order and\nreal result conversion. Exercise opaque fixtures through concrete consumers.\n\nSigned-off-by: YangKeao <yangkeao@chunibyo.icu>\n"
+  },
+  {
+    "commit": "0d9a2cee8ff91485fec9a32f28a45f14de2f3b77",
+    "parents": "d057867b116f94be5cc2de217d183c2c3b241545",
+    "author_time": "2026-11-13T00:55:42+08:00",
+    "subject": "refactor(expression): use the shared scalar conversion import",
+    "body": "Keep direct conversion calls concise across the batch evaluator.\n\nSigned-off-by: YangKeao <yangkeao@chunibyo.icu>\n"
+  },
+  {
+    "commit": "43ba91c201769b0d7d9930e2da3488870e95ca6f",
+    "parents": "0d9a2cee8ff91485fec9a32f28a45f14de2f3b77",
+    "author_time": "2026-11-13T00:56:26+08:00",
+    "subject": "fix(expression): remove the remaining obsolete shape prewalk call",
+    "body": "Cumulative compilation caught the decimal fast-source call after removing\nthe output-free helper. The actual compiler retains its admission checks.\n\nSigned-off-by: YangKeao <yangkeao@chunibyo.icu>\n"
+  }
+]

@@ -1,0 +1,176 @@
+{
+  "status": "PASS",
+  "scope": "Changed Rust files: #[test] function names; expected-value assertions are tested at runtime, not claimed text-identical.",
+  "files": [
+    {
+      "file": "rust/crates/tidb-expr/src/builtin_ext/misc.rs",
+      "old_tests": 13,
+      "new_tests": 13,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_arguments.rs",
+      "old_tests": 0,
+      "new_tests": 1,
+      "added": [
+        "shared_arguments_reject_wrong_kernel_and_do_not_replay_completed_body"
+      ],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_ast_source.rs",
+      "old_tests": 4,
+      "new_tests": 4,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_decimal_entry_tests.rs",
+      "old_tests": 4,
+      "new_tests": 4,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_decimal_fast_source.rs",
+      "old_tests": 2,
+      "new_tests": 2,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+      "old_tests": 5,
+      "new_tests": 5,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_native_entry_tests.rs",
+      "old_tests": 6,
+      "new_tests": 6,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs",
+      "old_tests": 12,
+      "new_tests": 12,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_optional_cast_tests.rs",
+      "old_tests": 6,
+      "new_tests": 6,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_pb_cast_tests.rs",
+      "old_tests": 24,
+      "new_tests": 24,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_pb_lazy_tests.rs",
+      "old_tests": 18,
+      "new_tests": 18,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_public_error_tests.rs",
+      "old_tests": 8,
+      "new_tests": 8,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_public_function_tests.rs",
+      "old_tests": 14,
+      "new_tests": 14,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_public_row_tests.rs",
+      "old_tests": 5,
+      "new_tests": 5,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_public_source_tests.rs",
+      "old_tests": 9,
+      "new_tests": 9,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_stateful_tests.rs",
+      "old_tests": 109,
+      "new_tests": 109,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_tests.rs",
+      "old_tests": 360,
+      "new_tests": 360,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_values.rs",
+      "old_tests": 11,
+      "new_tests": 11,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/tikv/control_value_tests.rs",
+      "old_tests": 8,
+      "new_tests": 8,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/tikv/in_list.rs",
+      "old_tests": 1,
+      "new_tests": 1,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/tikv/interval.rs",
+      "old_tests": 2,
+      "new_tests": 2,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/tikv/legacy_date_arithmetic.rs",
+      "old_tests": 1,
+      "new_tests": 1,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/tikv/misc_identity_value_tests.rs",
+      "old_tests": 5,
+      "new_tests": 5,
+      "added": [],
+      "deleted": []
+    },
+    {
+      "file": "rust/crates/tidb-expr/src/typed_context_value.rs",
+      "old_tests": 2,
+      "new_tests": 2,
+      "added": [],
+      "deleted": []
+    }
+  ]
+}
