@@ -426,15 +426,7 @@ impl NativeValueStore {
         role: NativeValueRole,
         origin: NativeValueOrigin,
     ) -> LocalResult<Datum> {
-        match self
-            .entry(handle, role, origin)?
-            .value
-            .as_ref()
-            .expect("authenticated live value")
-        {
-            StoredValue::Sql(value) => Ok(value.clone()),
-            _ => Err(invalid_handle()),
-        }
+        self.get(handle, role, origin).cloned()
     }
 }
 

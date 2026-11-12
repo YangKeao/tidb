@@ -182,7 +182,6 @@ fn public_borrowed_expression_uses_shared_source_and_frame() {
                 true,
                 limits(),
                 ExecutionLimits::default(),
-                1024 * 1024,
             )
             .and_then(|mut plan| plan.eval(context, row))
             .map_err(|error| match error.into_evaluator_error() {
@@ -298,7 +297,6 @@ fn borrowed_public_plan_keeps_real_physical_row_optional_result_and_live_context
                 true,
                 limits(),
                 ExecutionLimits::default(),
-                1 << 20,
             )
             .unwrap();
             for value in [Datum::Null, Datum::Int(7), Datum::Real(1.5)] {
@@ -332,15 +330,9 @@ fn borrowed_public_plan_keeps_real_physical_row_optional_result_and_live_context
     let mut column = Column::new(1, FieldType::new(FieldTypeCode::Year));
     column.index = 0;
     let expression = Expression::Column(column);
-    let mut plan = BorrowedExpression::compile(
-        &expression,
-        1,
-        true,
-        limits(),
-        ExecutionLimits::default(),
-        1 << 20,
-    )
-    .unwrap();
+    let mut plan =
+        BorrowedExpression::compile(&expression, 1, true, limits(), ExecutionLimits::default())
+            .unwrap();
     assert_eq!(
         plan.eval(&crate::NoColumns, input.get_row(0)).unwrap(),
         expression
@@ -353,15 +345,9 @@ fn borrowed_public_plan_keeps_real_physical_row_optional_result_and_live_context
 fn borrowed_public_plan_resource_refusal_and_row_width_recover_without_retry() {
     use super::super::scalar_source::BorrowedExpression;
     let expression = root(6, source(2, &Datum::Null, false));
-    let mut plan = BorrowedExpression::compile(
-        &expression,
-        0,
-        true,
-        limits(),
-        ExecutionLimits::default(),
-        64 << 10,
-    )
-    .unwrap();
+    let mut plan =
+        BorrowedExpression::compile(&expression, 0, true, limits(), ExecutionLimits::default())
+            .unwrap();
     let huge = leaf::Context::new(0, Datum::Bytes(vec![b'x'; 2 << 20]));
     assert_eq!(
         plan.eval(&huge, Row::empty()).unwrap(),
@@ -457,7 +443,6 @@ fn borrowed_scalar_does_not_validate_an_undemanded_empty_chunk_row() {
             true,
             limits(),
             ExecutionLimits::default(),
-            1 << 20,
         )
         .unwrap();
         assert_eq!(plan.eval(&crate::NoColumns, row).unwrap(), Datum::Int(9));

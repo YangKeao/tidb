@@ -106,7 +106,6 @@ fn public_constant_shared_frame_keeps_original_error_values() {
             true,
             limits(),
             ExecutionLimits::default(),
-            1 << 20,
         )
         .map_err(|error| (Datum::Null, error))
         .and_then(|mut plan| plan.eval_with_error_value(context, row))
@@ -132,7 +131,6 @@ fn public_shared_frame_keeps_the_prior_public_error_pair_pin() {
                 true,
                 limits(),
                 ExecutionLimits::default(),
-                1 << 20,
             )
             .map_err(|error| (Datum::Null, error))
             .and_then(|mut plan| plan.eval_with_error_value(context, row))
@@ -296,15 +294,9 @@ fn public_error_datum_keeps_the_original_opaque_cause_identity() {
             error: cause.clone(),
             calls: Cell::new(0),
         };
-        let mut plan = BorrowedExpression::compile(
-            &expression,
-            0,
-            true,
-            limits(),
-            ExecutionLimits::default(),
-            64 << 10,
-        )
-        .unwrap();
+        let mut plan =
+            BorrowedExpression::compile(&expression, 0, true, limits(), ExecutionLimits::default())
+                .unwrap();
         let (value, error) = plan
             .eval_with_error_value(&context, Row::empty())
             .unwrap_err();
@@ -357,15 +349,9 @@ fn public_error_pair_plan_recovers_from_unwind_and_bounded_failure_copies() {
         read_error: Cell::new(false),
     };
     let expression = expression(1, 0, None, &Datum::new_string("cached"));
-    let mut plan = BorrowedExpression::compile(
-        &expression,
-        0,
-        true,
-        limits(),
-        ExecutionLimits::default(),
-        64 << 10,
-    )
-    .unwrap();
+    let mut plan =
+        BorrowedExpression::compile(&expression, 0, true, limits(), ExecutionLimits::default())
+            .unwrap();
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || plan.eval_with_error_value(&context, Row::empty())
     ))
@@ -405,15 +391,9 @@ fn failure_datum_copy_limits_are_opt_in_and_do_not_copy_unused_cached_values() {
     use super::super::super::scalar_source::BorrowedExpression;
     let big = Datum::Bytes(vec![b'x'; 2 << 20]);
     let deferred = expression(1, 0, None, &Datum::new_string("cached"));
-    let mut plan = BorrowedExpression::compile(
-        &deferred,
-        0,
-        true,
-        limits(),
-        ExecutionLimits::default(),
-        64 << 10,
-    )
-    .unwrap();
+    let mut plan =
+        BorrowedExpression::compile(&deferred, 0, true, limits(), ExecutionLimits::default())
+            .unwrap();
     let old = leaf::Context::new(0, big.clone());
     let expected = deferred.eval(&old, Row::empty()).unwrap_err();
     let ordinary = leaf::Context::new(0, big.clone());
@@ -437,15 +417,9 @@ fn failure_datum_copy_limits_are_opt_in_and_do_not_copy_unused_cached_values() {
     // Cached parameter snapshots are not copied by source compilation or the
     // ordinary error consumer. The demanded failure value keeps its native error.
     let cached = expression(0, 0, None, &big);
-    let mut plan = BorrowedExpression::compile(
-        &cached,
-        0,
-        true,
-        limits(),
-        ExecutionLimits::default(),
-        64 << 10,
-    )
-    .unwrap();
+    let mut plan =
+        BorrowedExpression::compile(&cached, 0, true, limits(), ExecutionLimits::default())
+            .unwrap();
     let ordinary = leaf::Context::new(1, Datum::Null);
     let EvaluatorError::Eval(error) = plan
         .eval(&ordinary, Row::empty())

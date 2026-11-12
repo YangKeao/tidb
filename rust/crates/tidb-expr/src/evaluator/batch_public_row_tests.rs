@@ -186,7 +186,6 @@ fn frame_value(
         true,
         limits(),
         ExecutionLimits::default(),
-        1 << 20,
     )
     .map_err(|e| (Datum::Null, error(e)))?;
     plan.eval_with_error_value(context, row)

@@ -341,15 +341,14 @@ fn decimal_entry_finite_policies_stage_output_and_recover() {
         )
     };
     let context = leaf::Context::new(0, Datum::Int(7));
-    let (limits, execution, maximum) = public_scalar_limits();
+    let (limits, execution) = public_scalar_limits();
     for phase in 0..3 {
         let mut compile = limits;
         let mut work = execution;
-        let mut bytes = maximum;
         match phase {
             0 => compile.max_metadata_bytes = 1,
             1 => work.max_steps = 0,
-            2 => bytes = 1,
+            2 => work.max_retained_bytes = 1,
             _ => unreachable!(),
         }
         let mut output = sentinel();
@@ -360,8 +359,7 @@ fn decimal_entry_finite_policies_stage_output_and_recover() {
             &mut output,
             0,
             compile,
-            work,
-            bytes
+            work
         )
         .unwrap());
         let mut recovered = sentinel();

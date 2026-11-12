@@ -82,7 +82,6 @@ impl<'a> BorrowedExpression<'a> {
         new_collation: bool,
         limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        _maximum: usize,
     ) -> Result<Self> {
         Self::compile_root(
             root.into(),
@@ -99,7 +98,6 @@ impl<'a> BorrowedExpression<'a> {
         new_collation: bool,
         limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        _maximum: usize,
     ) -> Result<Self> {
         Self::compile_root(
             root.into(),
@@ -139,7 +137,6 @@ impl OwnedExpression {
         new_collation: bool,
         limits: BatchSourceLimits,
         execution: ExecutionLimits,
-        _maximum: usize,
     ) -> Result<Self> {
         let plan = ScalarPlan::compile(
             root.as_ref().into(),
@@ -248,9 +245,9 @@ impl ScalarPlan {
                     .with_native_values(Some(&store))
                     .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
                     .with_constant_probes(&source.host_probes)
-                    .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))?
-                    .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))?
-                    .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref()))?;
+                    .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))
+                    .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))
+                    .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref()));
                 if let Some(input) = row.chunk() {
                     hosts = hosts.with_input(input);
                 }

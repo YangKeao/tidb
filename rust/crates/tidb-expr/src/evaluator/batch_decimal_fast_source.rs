@@ -617,7 +617,7 @@ pub(super) fn eval_function(
     output: &mut Chunk,
     output_index: usize,
 ) -> std::result::Result<bool, EvalError> {
-    let (limits, execution, maximum) = public_scalar_limits();
+    let (limits, execution) = public_scalar_limits();
     eval_function_with_policies(
         function,
         context,
@@ -626,7 +626,6 @@ pub(super) fn eval_function(
         output_index,
         limits,
         execution,
-        maximum,
     )
 }
 pub(super) fn eval_function_with_policies(
@@ -637,7 +636,6 @@ pub(super) fn eval_function_with_policies(
     output_index: usize,
     limits: BatchSourceLimits,
     execution: ExecutionLimits,
-    _maximum: usize,
 ) -> std::result::Result<bool, EvalError> {
     if !function
         .get_static_type()
@@ -689,7 +687,6 @@ fn execute_function(
         .map_err(|_| resource("native fast output allocation failed"))?;
 
     let store = RefCell::new(NativeValueStore::new()?);
-    store.borrow().check_live()?;
     store.borrow_mut().begin_window()?;
     let source = &prepared.source;
     if source.nodes[0].view != NativeView::DecimalFast
@@ -1188,7 +1185,7 @@ mod tests {
             input.append_datum(0, &a);
             input.append_datum(1, &b);
         }
-        let (limits, execution, maximum) = public_scalar_limits();
+        let (limits, execution) = public_scalar_limits();
         let mut prepared = compile_plan(
             SourceNodeRef::Function(&function),
             Storage::Chunk(&input),

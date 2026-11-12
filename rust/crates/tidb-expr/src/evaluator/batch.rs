@@ -411,37 +411,6 @@ fn bulk_value_tree_complete(
         )
     })
 }
-fn profile_shape<'a, N: SourceReference<'a>>(
-    root: N,
-    _limits: BatchSourceLimits,
-) -> LocalResult<()> {
-    let mut pending = Vec::new();
-    let mut budget = Budget { used: 0 };
-    budget.array::<(N, usize)>(1)?;
-    reserve(&mut pending, 1)?;
-    pending.push((root, 1usize));
-    let mut scheduled = 1usize;
-    while let Some((node, depth)) = pending.pop() {
-        let children: &[Expression] = match node.kind() {
-            BorrowedNodeKind::ScalarFunction(function) => &function.args,
-            BorrowedNodeKind::Constant(constant) => match constant.deferred_expr.as_deref() {
-                Some(child) => std::slice::from_ref(child),
-                None => &[],
-            },
-            _ => &[],
-        };
-        scheduled = scheduled
-            .checked_add(children.len())
-            .ok_or_else(|| resource("native profile source node policy exceeded"))?;
-        budget.array::<(N, usize)>(children.len())?;
-        reserve(&mut pending, children.len())?;
-        let next = depth
-            .checked_add(1)
-            .ok_or_else(|| resource("native profile source depth overflow"))?;
-        pending.extend(children.iter().rev().map(|child| (child.into(), next)));
-    }
-    Ok(())
-}
 fn promoted_native_root_view(
     root: &Expression,
     limits: BatchSourceLimits,
@@ -502,7 +471,7 @@ fn promoted_native_root_view(
     let Some(field) = root.static_type() else {
         return Ok(None);
     };
-    profile_shape(root, limits)?;
+
     // Extending actual-value producers must not replace an already closed
     // typed tree merely because its formerly typed-only string child can now
     // also produce a value handle. Keep the established phases and call sites.
@@ -785,8 +754,6 @@ fn additional_context_native_view(
     {
         return Ok(None);
     }
-    // Bound the genuine tree before inspecting recursive native eligibility.
-    profile_shape(root, limits)?;
     if native_unary_sign_operation(function.func_name.lowercase()).is_some()
         || matches!(
             function.func_name.lowercase(),
@@ -831,8 +798,6 @@ fn context_root_policy(
     if !contains_context_value(root, limits.tree.max_depth, &mut { limits.tree.max_nodes }) {
         return Ok((shortcut, false, None));
     }
-    // Bound admission inspection before examining a deferred typed template.
-    profile_shape(root, limits)?;
     if unordered && additional_context_native_view(root, limits)?.is_some() {
         return Ok((shortcut, false, None));
     }
@@ -4097,7 +4062,7 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                         "metadata outcome needs its native value ABI",
                     ));
                 }
-                profile_shape(node, limits)?;
+
                 budget.field(&native_bytes_type(), 5)?;
                 if let Some(field) = declaration {
                     budget.field(field, 2)?;
@@ -4190,9 +4155,6 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                 {
                     check_batch_call(function, view)?;
                     let arity = source_data_arity_in_view(function, view);
-                    if native_weight_string_call(function) {
-                        profile_shape(node, limits)?;
-                    }
                     budget.add(function.func_name.original().len())?;
                     budget.add(function.func_name.lowercase().len())?;
                     budget.array::<OrdinaryCallSite>(2)?;
@@ -4495,9 +4457,6 @@ fn preflight_source<'a, N: SourceReference<'a>>(
                 }
 
                 let arity = source_data_arity_in_view(function, view);
-                if native_weight_string_call(function) {
-                    profile_shape(node, limits)?;
-                }
                 let policy_nodes = usize::from(native_batch_policy(function).is_some());
                 if policy_nodes != 0 {
                     budget.array::<NodeRecord>(1)?;
@@ -7034,7 +6993,7 @@ impl DeferredRootProfiles {
         let Expression::Constant(c) = root else {
             return Ok(None);
         };
-        profile_shape(root, limits)?;
+
         let mut inner = root;
         while let Expression::Constant(c) = inner {
             let Some(child) = c.deferred_expr.as_deref() else {
@@ -7191,28 +7150,19 @@ impl PreparedBatch {
         } else if native_context_view.is_some() {
             native_context_view
         } else if matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
-            && {
-                profile_shape(root, source_limits)?;
-                pb_value_arithmetic_batch(root).is_some()
-            }
+            && { pb_value_arithmetic_batch(root).is_some() }
         {
             Some(NativeView::BulkRoot(
                 pb_value_arithmetic_batch(root).expect("actual arithmetic batch candidate"),
             ))
         } else if matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
-            && {
-                profile_shape(root, source_limits)?;
-                pb_value_unary_batch(root).is_some()
-            }
+            && { pb_value_unary_batch(root).is_some() }
         {
             Some(NativeView::BulkRoot(
                 pb_value_unary_batch(root).expect("actual unary batch candidate"),
             ))
         } else if matches!(root,Expression::ScalarFunction(function) if pb_value_owner(function))
-            && {
-                profile_shape(root, source_limits)?;
-                pb_value_integer_batch(root)
-            }
+            && { pb_value_integer_batch(root) }
         {
             Some(NativeView::BulkRoot(NativeEvalType::Int))
         } else if promote {
@@ -8522,35 +8472,37 @@ impl PreparedBatch {
             .hosts
             .clone()
             .map(|catalog| {
-                NativeBatchHosts::new(catalog, &source.host_metadata, native_ctx)
-                    .with_native_values(native_values.as_ref())
-                    .with_input(input)
-                    .with_typed_cache_slots(
-                        source
-                            .context_policy
-                            .as_ref()
-                            .map_or(0, |p| p.typed_cache_slots),
-                    )?
-                    .with_constant_probes(&source.host_probes)
-                    .with_constant_root_shortcut(source.constant_root_shortcut)
-                    .with_diagnostic_parents(
-                        source
-                            .context_policy
-                            .as_ref()
-                            .map_or(&[], |p| p.diagnostic_parents.as_ref()),
-                    )?
-                    .with_numeric_parents(
-                        source
-                            .context_policy
-                            .as_ref()
-                            .map_or(&[], |p| p.numeric_parents.as_ref()),
-                    )?
-                    .with_diagnostic_slots(
-                        source
-                            .context_policy
-                            .as_ref()
-                            .map_or(&[], |p| p.diagnostic_slots.as_ref()),
-                    )
+                Ok::<_, LocalError>(
+                    NativeBatchHosts::new(catalog, &source.host_metadata, native_ctx)
+                        .with_native_values(native_values.as_ref())
+                        .with_input(input)
+                        .with_typed_cache_slots(
+                            source
+                                .context_policy
+                                .as_ref()
+                                .map_or(0, |p| p.typed_cache_slots),
+                        )?
+                        .with_constant_probes(&source.host_probes)
+                        .with_constant_root_shortcut(source.constant_root_shortcut)
+                        .with_diagnostic_parents(
+                            source
+                                .context_policy
+                                .as_ref()
+                                .map_or(&[], |p| p.diagnostic_parents.as_ref()),
+                        )
+                        .with_numeric_parents(
+                            source
+                                .context_policy
+                                .as_ref()
+                                .map_or(&[], |p| p.numeric_parents.as_ref()),
+                        )
+                        .with_diagnostic_slots(
+                            source
+                                .context_policy
+                                .as_ref()
+                                .map_or(&[], |p| p.diagnostic_slots.as_ref()),
+                        ),
+                )
             })
             .transpose()?;
         // Explicit whole programs receive the complete selection. Other
@@ -8962,7 +8914,7 @@ impl PreparedBatchSuite {
 
 // A standalone caller supplies an immutable root and Row without a Suite.
 // Legacy allowance arguments remain inert, as for prepared projections.
-fn public_scalar_limits() -> (BatchSourceLimits, ExecutionLimits, usize) {
+fn public_scalar_limits() -> (BatchSourceLimits, ExecutionLimits) {
     let execution = ExecutionLimits::default();
     let maximum = execution.max_retained_bytes;
     (
@@ -8971,7 +8923,6 @@ fn public_scalar_limits() -> (BatchSourceLimits, ExecutionLimits, usize) {
             max_metadata_bytes: maximum,
         },
         execution,
-        maximum,
     )
 }
 impl BatchFailure {
@@ -8995,8 +8946,8 @@ impl<'a> PreparedScalarExpression<'a> {
         root: &'a Expression,
         width: usize,
     ) -> std::result::Result<Self, EvalError> {
-        let (source, execution, maximum) = public_scalar_limits();
-        scalar_source::BorrowedExpression::compile(root, width, true, source, execution, maximum)
+        let (source, execution) = public_scalar_limits();
+        scalar_source::BorrowedExpression::compile(root, width, true, source, execution)
             .map(|plan| Self { plan })
             .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))
     }
@@ -9034,8 +8985,8 @@ impl PreparedOwnedExpression {
         root: std::sync::Arc<Expression>,
         width: usize,
     ) -> std::result::Result<Self, EvalError> {
-        let (source, execution, maximum) = public_scalar_limits();
-        scalar_source::OwnedExpression::compile(root, width, true, source, execution, maximum)
+        let (source, execution) = public_scalar_limits();
+        scalar_source::OwnedExpression::compile(root, width, true, source, execution)
             .map(|plan| Self { plan })
             .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))
     }
@@ -9080,14 +9031,13 @@ pub(crate) fn eval_public_function(
 ) -> std::result::Result<Datum, EvalError> {
     #[cfg(test)]
     crate::test_evaluation::note_shared();
-    let (source, execution, maximum) = public_scalar_limits();
+    let (source, execution) = public_scalar_limits();
     let mut plan = scalar_source::BorrowedExpression::compile_function(
         root,
         row.len(),
         true,
         source,
         execution,
-        maximum,
     )
     .map_err(|error| error.into_public_error(crate::ExpressionRuntimeFailurePhase::Prepare))?;
     plan.eval(context, row)

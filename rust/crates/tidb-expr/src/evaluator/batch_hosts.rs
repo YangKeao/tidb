@@ -566,10 +566,7 @@ impl NativeTask {
             SqlDemand::Numeric(task) => Ok(Some(task.next_argument())),
             SqlDemand::NumericWindow(task) => Ok(Some(task.next_argument())),
             SqlDemand::Diagnostic(task) => task.next_argument(),
-            SqlDemand::TypedContext { consumed } => {
-                Ok((!*consumed && self.arity == 1).then_some(0))
-            }
-            SqlDemand::ContextValue { consumed } => {
+            SqlDemand::TypedContext { consumed } | SqlDemand::ContextValue { consumed } => {
                 Ok((!*consumed && self.arity == 1).then_some(0))
             }
             SqlDemand::UserVariableRead { .. } => Ok(None),
@@ -606,39 +603,6 @@ impl NativeTask {
     }
     fn observe(&mut self, len: Option<usize>) -> LocalResult<ConcatDemandAction> {
         match &mut self.demand {
-            SqlDemand::Ast(_) => Err(binding("AST demand cannot buffer wire data")),
-            SqlDemand::Consumed => Err(binding("consumed task cannot buffer a reply")),
-            SqlDemand::RegexpValues(_) => Err(binding("regexp values own their actual phases")),
-            SqlDemand::PbIntegerMod(_) => Err(binding("PB MOD owns its actual raw prefix")),
-            SqlDemand::PbLazy(_) => Err(binding("PB lazy owns its actual demand phases")),
-            SqlDemand::PbBoolean(_) => Err(binding("PB Boolean owns its actual raw prefix")),
-            SqlDemand::PbEagerValues { .. } => Err(binding("PB eager values own their raw prefix")),
-            SqlDemand::WeightString(_) => Err(binding("weight owns its actual value phases")),
-            SqlDemand::HeaderOutcome => Err(binding("header outcome cannot buffer a reply")),
-            SqlDemand::PrefixValues { .. } => Err(binding("prefix outcome cannot buffer a reply")),
-            SqlDemand::ConcatValues { .. } => Err(binding("raw CONCAT owns its actual prefix")),
-            SqlDemand::JsonSchema(_) => Err(binding("schema host cannot buffer wire values")),
-            SqlDemand::Stateful(_) => Err(binding("stateful host cannot buffer wire values")),
-            SqlDemand::FinalState(_) => Err(binding("final state host cannot buffer wire values")),
-            SqlDemand::CachedList(_) => Err(binding("cached list cannot buffer wire values")),
-            SqlDemand::Diagnostic(_) => Err(binding("diagnostic demand cannot buffer wire values")),
-            SqlDemand::TypedContext { .. } => {
-                Err(binding("typed context cannot buffer a wire prefix"))
-            }
-            SqlDemand::ContextValue { .. } => {
-                Err(binding("context values cannot buffer a wire prefix"))
-            }
-            SqlDemand::UserVariableRead { .. } | SqlDemand::UserVariableWrite { .. } => {
-                Err(binding("user variable cannot buffer a wire prefix"))
-            }
-            SqlDemand::Like { .. } => Err(binding("LIKE demand cannot retain wire byte prefix")),
-            SqlDemand::EagerValues { .. } => {
-                Err(binding("eager values cannot buffer a wire prefix"))
-            }
-            SqlDemand::Arguments { .. } => {
-                Err(binding("native arguments cannot buffer wire values"))
-            }
-            SqlDemand::Charset { .. } => Err(binding("charset demand cannot retain a byte prefix")),
             SqlDemand::Extremum { .. }
             | SqlDemand::Interval { .. }
             | SqlDemand::In { .. }
@@ -672,6 +636,7 @@ impl NativeTask {
                 };
                 Ok(ConcatDemandAction::Continue)
             }
+            _ => Err(binding("task cannot buffer wire values")),
         }
     }
     #[cfg(test)]
@@ -1907,9 +1872,6 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("native truth conversion has no value store"))?;
-        store
-            .borrow()
-            .get(token, NativeValueRole::CharInput, origin)?;
 
         // IS NULL observes raw nullness; UNKNOWN aliases preserve the scalar
         // caller's truth validation. NOT has its own range-sentinel diagnostic.
@@ -1980,9 +1942,6 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("logical operation has no value store"))?;
-        store
-            .borrow()
-            .get(token, NativeValueRole::CharInput, origin)?;
 
         // The conversion may publish a statement warning or error. The store
         // borrow is released before entering that actual context boundary.
@@ -2063,9 +2022,6 @@ impl<'a> NativeBatchHosts<'a> {
         let store = self
             .native_values
             .ok_or_else(|| binding("conditional has no native store"))?;
-        store
-            .borrow()
-            .get(token, NativeValueRole::CharInput, origin)?;
 
         let truth = crate::truthy_of(store.borrow().get(
             token,

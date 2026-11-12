@@ -459,7 +459,6 @@ fn shared_function(
         true,
         limits(),
         ExecutionLimits::default(),
-        1 << 20,
     )
     .and_then(|mut program| program.eval(context, row))
     .map_err(|error| match error.into_evaluator_error() {
@@ -611,7 +610,6 @@ fn direct_function_same_plan_keeps_numeric_error_diagnostics_and_live_contexts()
                 true,
                 limits(),
                 ExecutionLimits::default(),
-                1 << 20,
             )
             .unwrap();
             for value in [
@@ -662,7 +660,6 @@ fn direct_function_same_budget_recovers_after_resource_refusal_and_bad_row_bindi
         true,
         limits(),
         ExecutionLimits::default(),
-        64 << 10,
     )
     .unwrap();
     let huge = leaf::Context::new(0, Datum::Bytes(vec![b'x'; 2 << 20]));

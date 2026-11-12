@@ -28846,8 +28846,7 @@ fn dynamic_diagnostic_host_completions_preserve_sql_failure_boundaries_and_contr
         };
         let mut provider = NativeBatchHosts::new(catalog.clone(), &metadata, &ctx)
             .with_native_values(Some(&store))
-            .with_diagnostic_slots(&[0])
-            .unwrap();
+            .with_diagnostic_slots(&[0]);
         assert!(NativeBatchHosts::validate_diagnostic_slots(
             &catalog,
             &metadata,
@@ -29268,8 +29267,7 @@ fn dynamic_diagnostic_constant_projection_keeps_raw_enum_skips_unused_names_and_
         let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx)
             .with_native_values(Some(&store))
             .with_constant_root_shortcut(true)
-            .with_diagnostic_slots(&[0])
-            .unwrap();
+            .with_diagnostic_slots(&[0]);
         let row = InputRow {
             occurrence: 2,
             input_row: 7,
@@ -29373,10 +29371,9 @@ fn dynamic_diagnostic_math_parent_demands_text_after_overflow_and_authenticates_
             let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Int(0));
             let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx)
                 .with_native_values(Some(&store))
-                .with_diagnostic_parents(&parents)
-                .unwrap();
+                .with_diagnostic_parents(&parents);
             if nested {
-                provider = provider.with_diagnostic_slots(&[0]).unwrap();
+                provider = provider.with_diagnostic_slots(&[0]);
             }
             let row = InputRow {
                 occurrence: 2,
@@ -30906,8 +30903,7 @@ fn abs_context_window_diagnostic_authenticates_real_text_scope_and_terminal_resu
     let ctx = crate::tikv::dynamic_leaf_tests::Context::new(0, Datum::Null);
     let mut provider = NativeBatchHosts::new(catalog, &metadata, &ctx)
         .with_native_values(Some(&store))
-        .with_diagnostic_parents(&parents)
-        .unwrap();
+        .with_diagnostic_parents(&parents);
     let mut eval = EvalContext::default();
     let rows = [2, 0, 2];
     let origin = 11usize;

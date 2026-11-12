@@ -60,7 +60,7 @@ impl ComposedExpressionProgram {
         sites: Vec<OrdinaryCallSite>,
         catalog: &HostCatalog,
     ) -> std::result::Result<Self, EvalError> {
-        let (limits, _, _) = public_scalar_limits();
+        let (limits, _) = public_scalar_limits();
         let facts =
             BatchFacts::sql_native_batch_with_hosts(graph, schema, sites, limits.tree, catalog)
                 .map_err(|error| {
@@ -77,7 +77,7 @@ impl ComposedExpressionProgram {
         schema: &[tipb::FieldType],
         facts: &BatchFacts,
     ) -> std::result::Result<Self, EvalError> {
-        let (limits, execution, _) = public_scalar_limits();
+        let (limits, execution) = public_scalar_limits();
         let program = compile_batch(
             graph,
             schema,
@@ -147,7 +147,7 @@ impl NativeSourceFragment {
     /// Lower the actual owner with the same scalar source and default limits.
     /// No input row or context is read, and no replacement SQL type is attached.
     pub fn prepare(owner: Arc<Expression>, width: usize) -> std::result::Result<Self, EvalError> {
-        let (limits, _, _) = public_scalar_limits();
+        let (limits, _) = public_scalar_limits();
         let source = lower_source_plan(
             owner.as_ref(),
             SourceInputs::PhysicalRow { width },
@@ -410,9 +410,9 @@ impl NativeSourceFragment {
                     .with_native_values(Some(&state.values))
                     .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
                     .with_constant_probes(&source.host_probes)
-                    .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))?
-                    .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))?
-                    .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref()))?;
+                    .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))
+                    .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))
+                    .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref()));
                 if let Some(input) = row.chunk() {
                     hosts = hosts.with_input(input);
                 }

@@ -80,8 +80,8 @@ pub(super) fn eval(
     context: &dyn Columns,
     input: &Chunk,
 ) -> std::result::Result<Vec<Datum>, EvalError> {
-    let (limits, execution, maximum) = public_scalar_limits();
-    eval_with_policies(candidate, context, input, limits, execution, maximum)
+    let (limits, execution) = public_scalar_limits();
+    eval_with_policies(candidate, context, input, limits, execution)
 }
 pub(super) fn eval_with_policies(
     candidate: crate::scalar_function::EligibleBatch<'_>,
@@ -89,7 +89,6 @@ pub(super) fn eval_with_policies(
     input: &Chunk,
     limits: BatchSourceLimits,
     execution: ExecutionLimits,
-    _maximum: usize,
 ) -> std::result::Result<Vec<Datum>, EvalError> {
     if input.num_rows() == 0 {
         return Ok(Vec::new());
@@ -162,21 +161,22 @@ fn execute(
         .map_err(|_| resource("native candidate output allocation failed"))?;
 
     let store = RefCell::new(NativeValueStore::new()?);
-    store.borrow().check_live()?;
     let policy = source.context_policy.as_deref();
     let mut hosts = source
         .hosts
         .clone()
         .map(|catalog| {
-            NativeBatchHosts::new(catalog, &source.host_metadata, context)
-                .with_native_values(Some(&store))
-                .with_coordinate_input(input)
-                .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
-                .with_constant_probes(&source.host_probes)
-                .with_constant_root_shortcut(source.constant_root_shortcut)
-                .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))?
-                .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))?
-                .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref()))
+            Ok::<_, LocalError>(
+                NativeBatchHosts::new(catalog, &source.host_metadata, context)
+                    .with_native_values(Some(&store))
+                    .with_coordinate_input(input)
+                    .with_typed_cache_slots(policy.map_or(0, |p| p.typed_cache_slots))?
+                    .with_constant_probes(&source.host_probes)
+                    .with_constant_root_shortcut(source.constant_root_shortcut)
+                    .with_diagnostic_parents(policy.map_or(&[], |p| p.diagnostic_parents.as_ref()))
+                    .with_numeric_parents(policy.map_or(&[], |p| p.numeric_parents.as_ref()))
+                    .with_diagnostic_slots(policy.map_or(&[], |p| p.diagnostic_slots.as_ref())),
+            )
         })
         .transpose()?;
     let row_domain = scalar_rows || source.context_row_only;

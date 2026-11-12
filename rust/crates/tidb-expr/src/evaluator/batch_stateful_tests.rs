@@ -5447,13 +5447,7 @@ fn run_arithmetic_missing_raw_datums(compare: bool) {
                                                 .map_or(&[], |policy| {
                                                     policy.numeric_parents.as_ref()
                                                 }),
-                                        )
-                                        .unwrap_or_else(|error| {
-                                            eprintln!(
-                                                "ARITHMETIC MISSING RAW PARENT {label}: {error:?}"
-                                            );
-                                            panic!("numeric parent rejected")
-                                        });
+                                        );
                                         let slot = catalog.slot(0).unwrap();
                                         let signature = catalog.signature(slot).unwrap();
                                         let row = InputRow {
@@ -6086,11 +6080,7 @@ fn run_optional_membership_raw_datums(compare: bool) {
                                                 .map_or(&[], |policy| {
                                                     policy.numeric_parents.as_ref()
                                                 }),
-                                        )
-                                        .unwrap_or_else(|error| {
-                                            eprintln!("MEMBERSHIP RAW PARENT {label}: {error:?}");
-                                            panic!("numeric parent rejected")
-                                        });
+                                        );
                                         let slot = catalog.slot(0).unwrap();
                                         let signature = catalog.signature(slot).unwrap();
                                         let row = InputRow {
@@ -7478,13 +7468,7 @@ fn run_optional_reserved_prefix_raw_datums(compare: bool) {
                                                 .map_or(&[], |policy| {
                                                     policy.numeric_parents.as_ref()
                                                 }),
-                                        )
-                                        .unwrap_or_else(|error| {
-                                            eprintln!(
-                                                "RESERVED PREFIX RAW PARENT {label}: {error:?}"
-                                            );
-                                            panic!("numeric parent rejected")
-                                        });
+                                        );
                                         let slot = catalog.slot(0).unwrap();
                                         let signature = catalog.signature(slot).unwrap();
                                         let row = InputRow {

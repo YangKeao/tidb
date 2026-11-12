@@ -498,25 +498,23 @@ fn native_entry_resource_refusals_do_not_evaluate_or_retry_and_recover() {
         "two real parameters each read original type then value"
     );
     without_native_tree_dispatch(|| {
-        let (source, execution, maximum) = public_scalar_limits();
+        let (source, execution) = public_scalar_limits();
         for mode in 0..3 {
             let context = leaf::Context::new(0, Datum::Int(7));
             let mut source = source;
             let mut execution = execution;
-            let mut maximum = maximum;
             match mode {
                 0 => source.tree.max_nodes = 0,
                 1 => execution.max_steps = 0,
-                2 => maximum = 1,
+                2 => execution.max_retained_bytes = 1,
                 _ => unreachable!(),
             }
             let candidate = crate::scalar_function::batch_candidate(&expression, &context)
                 .unwrap()
                 .unwrap();
-            let actual = native_source::eval_with_policies(
-                candidate, &context, &input, source, execution, maximum,
-            )
-            .unwrap();
+            let actual =
+                native_source::eval_with_policies(candidate, &context, &input, source, execution)
+                    .unwrap();
             assert_eq!(actual, original);
             assert_eq!(context.calls.get(), original_calls);
             context.calls.set(0);
@@ -553,8 +551,7 @@ fn native_entry_resource_refusals_do_not_evaluate_or_retry_and_recover() {
                 max_steps: 0,
                 max_retained_bytes: 0,
                 ..execution
-            },
-            0
+            }
         )
         .unwrap()
         .is_empty());

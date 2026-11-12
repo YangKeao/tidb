@@ -335,9 +335,9 @@ impl<'a> NativeBatchHosts<'a> {
     pub(in super::super) fn with_numeric_parents(
         mut self,
         parents: &'a [CompiledNumericParent],
-    ) -> LocalResult<Self> {
+    ) -> Self {
         self.numeric_parents = parents;
-        Ok(self)
+        self
     }
     fn validate_numeric_plan_graph(p: &CompiledNumericParent) -> LocalResult<()> {
         let mut end = 2usize;
@@ -1205,8 +1205,7 @@ mod tests {
                 let mut hosts =
                     NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
                         .with_native_values(Some(&store))
-                        .with_numeric_parents(&f.parents)
-                        .unwrap();
+                        .with_numeric_parents(&f.parents);
                 let row = InputRow {
                     occurrence: 11,
                     input_row: 7,
@@ -1331,8 +1330,7 @@ mod tests {
         store.borrow_mut().begin_window().unwrap();
         let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
             .with_native_values(Some(&store))
-            .with_numeric_parents(&f.parents)
-            .unwrap();
+            .with_numeric_parents(&f.parents);
         let row = InputRow {
             occurrence: 0,
             input_row: 0,
@@ -1397,8 +1395,7 @@ mod tests {
         };
         let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
-            .with_numeric_parents(&f.parents)
-            .unwrap();
+            .with_numeric_parents(&f.parents);
         let row = InputRow {
             occurrence: 0,
             input_row: 0,
@@ -1480,8 +1477,7 @@ mod tests {
         };
         let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
-            .with_numeric_parents(&f.parents)
-            .unwrap();
+            .with_numeric_parents(&f.parents);
         let row = InputRow {
             occurrence: 3,
             input_row: 7,
@@ -1674,8 +1670,7 @@ mod tests {
         };
         let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
-            .with_numeric_parents(&f.parents)
-            .unwrap();
+            .with_numeric_parents(&f.parents);
         let rows = [2, 0, 2];
         let start = 11;
         let mut eval = EvalContext::default();
@@ -1803,8 +1798,7 @@ mod tests {
                 let mut hosts =
                     NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
                         .with_native_values(Some(&store))
-                        .with_numeric_parents(&f.parents)
-                        .unwrap();
+                        .with_numeric_parents(&f.parents);
                 let rows = [2, 0, 2];
                 let start = 11;
                 let mut eval = EvalContext::default();
@@ -1924,8 +1918,7 @@ mod tests {
         };
         let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
-            .with_numeric_parents(&f.parents)
-            .unwrap();
+            .with_numeric_parents(&f.parents);
         let rows = [2, 0, 2];
         let start = 11;
         let mut eval = EvalContext::default();
@@ -2023,8 +2016,7 @@ mod tests {
                 };
                 let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
                     .with_native_values(Some(&store))
-                    .with_numeric_parents(&f.parents)
-                    .unwrap();
+                    .with_numeric_parents(&f.parents);
                 let rows = [2, 0, 2];
                 let occurrence = 11;
                 let mut eval = EvalContext::default();
@@ -2167,8 +2159,7 @@ mod tests {
             };
             let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
                 .with_native_values(Some(&store))
-                .with_numeric_parents(&f.parents)
-                .unwrap();
+                .with_numeric_parents(&f.parents);
             let row = InputRow {
                 occurrence: 11,
                 input_row: 7,
@@ -2306,8 +2297,7 @@ mod tests {
                     let mut hosts =
                         NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
                             .with_native_values(Some(&store))
-                            .with_numeric_parents(&f.parents)
-                            .unwrap();
+                            .with_numeric_parents(&f.parents);
                     let row = InputRow {
                         occurrence: 11,
                         input_row: 7,
@@ -2506,8 +2496,7 @@ mod tests {
                 let mut hosts =
                     NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &crate::NoColumns)
                         .with_native_values(Some(&store))
-                        .with_numeric_parents(&f.parents)
-                        .unwrap();
+                        .with_numeric_parents(&f.parents);
                 let row = InputRow {
                     occurrence: 11,
                     input_row: 7,
@@ -2638,8 +2627,7 @@ mod tests {
         };
         let mut hosts = NativeBatchHosts::new(f.catalog.clone(), &f.metadata, &ctx)
             .with_native_values(Some(&store))
-            .with_numeric_parents(&f.parents)
-            .unwrap();
+            .with_numeric_parents(&f.parents);
         let row = InputRow {
             occurrence: 0,
             input_row: 0,

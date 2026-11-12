@@ -213,12 +213,9 @@ impl<'a> NativeBatchHosts<'a> {
         Ok(())
     }
 
-    pub(in super::super) fn with_diagnostic_slots(
-        mut self,
-        slots: &'a [usize],
-    ) -> LocalResult<Self> {
+    pub(in super::super) fn with_diagnostic_slots(mut self, slots: &'a [usize]) -> Self {
         self.diagnostic_slots = slots;
-        Ok(self)
+        self
     }
     fn diagnostic_output(&self, slot: HostSlot) -> LocalResult<Option<usize>> {
         if self.diagnostic_slots.binary_search(&slot.index()).is_err() {
@@ -414,9 +411,9 @@ impl<'a> NativeBatchHosts<'a> {
     pub(in super::super) fn with_diagnostic_parents(
         mut self,
         parents: &'a [CompiledDiagnosticParent],
-    ) -> LocalResult<Self> {
+    ) -> Self {
         self.diagnostic_parents = parents;
-        Ok(self)
+        self
     }
     pub(super) fn diagnostic_parent(&self, slot: HostSlot) -> Option<&'a CompiledDiagnosticParent> {
         self.diagnostic_parents

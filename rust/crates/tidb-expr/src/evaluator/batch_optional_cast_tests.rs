@@ -360,7 +360,6 @@ fn ordinary_optional_cast_reuses_real_owner_after_null_and_sql_error() {
             ..limits()
         },
         ExecutionLimits::default(),
-        65536,
     );
     assert!(denied.is_ok());
 }

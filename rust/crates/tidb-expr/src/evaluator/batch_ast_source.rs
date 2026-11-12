@@ -105,7 +105,7 @@ impl<'a> BorrowedAst<'a> {
     }
     fn compile_with_limits(
         root: &'a Expr,
-        (limits, execution, _maximum): (BatchSourceLimits, ExecutionLimits, usize),
+        (limits, execution): (BatchSourceLimits, ExecutionLimits),
     ) -> Result<Self> {
         let mut nodes = Vec::new();
         let mut arguments: Vec<Vec<usize>> = Vec::new();
@@ -359,16 +359,15 @@ mod tests {
                         max_active_tasks: 0,
                         max_retained_bytes: 0,
                     },
-                    0,
                 ),
             )
             .unwrap();
             assert_eq!(plan.eval(&crate::NoColumns).unwrap(), Datum::Int(7));
         }
         let root = tidb_ast::Expr::String("x".repeat(2048));
-        let (mut limits, execution, _) = public_scalar_limits();
+        let (mut limits, execution) = public_scalar_limits();
         limits.max_metadata_bytes = 0;
-        let mut plan = BorrowedAst::compile_with_limits(&root, (limits, execution, 0)).unwrap();
+        let mut plan = BorrowedAst::compile_with_limits(&root, (limits, execution)).unwrap();
         assert_eq!(
             plan.eval(&crate::NoColumns).unwrap().sql_string().unwrap(),
             "x".repeat(2048)
@@ -420,14 +419,14 @@ mod tests {
             ),
         ];
         for (label, root, nodes) in cases {
-            let (mut source, execution, maximum) = public_scalar_limits();
+            let (mut source, execution) = public_scalar_limits();
             if let Some(nodes) = nodes {
                 source.tree.max_nodes = nodes;
             } else {
                 source.max_metadata_bytes = 4096;
             }
             assert!(
-                BorrowedAst::compile_with_limits(&root, (source, execution, maximum)).is_ok(),
+                BorrowedAst::compile_with_limits(&root, (source, execution)).is_ok(),
                 "{label}"
             );
         }
