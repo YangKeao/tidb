@@ -1,0 +1,27 @@
+{
+  "command": [
+    "/home/agent/tidb/expression-reuse/rustup-home/toolchains/nightly-2026-08-22-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2021",
+    "--config",
+    "skip_children=true",
+    "--check",
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_concat_value.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_eager_values.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_weight_string.rs"
+  ],
+  "returncode": 0,
+  "stdout": "",
+  "stderr": "",
+  "files": [
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_concat_value.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_eager_values.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_weight_string.rs"
+  ]
+}

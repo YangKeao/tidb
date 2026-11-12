@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "same14case_specs_SQL_rows_config_as_preceding_measurement": true,
+  "same4balanced_orders": true,
+  "cells": 224,
+  "same_A_B_binary_sha256": "7e2b08d36cbf55adcc6701a08315135dad8fd0f813f5eb694ab31eb9df76d4b2",
+  "services_started": false
+}

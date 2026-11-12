@@ -1,0 +1,10 @@
+{
+  "commit": "28b19112e367a2f7232d1ef03675972f0c2c1395",
+  "remote_head_verified": "28b19112e367a2f7232d1ef03675972f0c2c1395",
+  "source_commit": "ffb508eeae5804c5b81f39da1f14b60350fe2d73",
+  "evidence_files": 117,
+  "docs_commit_files": 120,
+  "staged_blob_hash_verification": "PASS all117 manifest entries",
+  "repository_verifier": "PASS after commit",
+  "checked": 1794511478.5831678
+}

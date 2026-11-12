@@ -1,0 +1,944 @@
+{
+  "status": "PASS only estRows differ; no timing yet; eligible for at most one same-owned-storage restart",
+  "checked": 1794513132.4638286,
+  "failed_comparisons": 39,
+  "changed_estRows_cells": 114,
+  "retained_B_also_differs": true,
+  "all_other_plan_fields_results_metadata_warnings_configuration_exact": true,
+  "changes": [
+    {
+      "key": "family/scan/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/scan/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/scan/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/integer/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/integer/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/integer/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/decimal/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/decimal/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/decimal/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/text/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/text/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "family/text/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "shape/deep16/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "shape/deep16/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "shape/deep16/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/crypto/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/crypto/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/crypto/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/compression/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/compression/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/compression/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/uuid/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/uuid/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/uuid/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/calendar/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/calendar/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/calendar/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/timestampdiff/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/timestampdiff/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/timestampdiff/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/extract_parse/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/extract_parse/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/extract_parse/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/date_arithmetic/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/date_arithmetic/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/date_arithmetic/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/json_value/batch1024/4096",
+      "mode": "current",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/json_value/batch1024/4096",
+      "mode": "retained_b",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    },
+    {
+      "key": "arguments/json_value/batch1024/4096",
+      "mode": "frozen",
+      "changes": [
+        {
+          "row": 0,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 1,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        },
+        {
+          "row": 2,
+          "column": 1,
+          "reference": "2730.67",
+          "other": "3333.33"
+        }
+      ]
+    }
+  ],
+  "actual_failed_receipt": {
+    "runner_pid": 286863,
+    "runner_birth": "1360435",
+    "command": [
+      "python3",
+      "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup/run_comparison.py"
+    ],
+    "cwd": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup",
+    "started": 1794513059.372159,
+    "state": "complete",
+    "child_pid": 286864,
+    "child_birth": "1360437",
+    "returncode": 1,
+    "ended": 1794513085.8914306,
+    "wall_seconds": 26.51927161216736
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "runner_pid": 286161,
+  "runner_birth": "1349148",
+  "command": [
+    "python3",
+    "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup/prepare_storage.py"
+  ],
+  "cwd": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup",
+  "started": 1794512946.525204,
+  "state": "complete",
+  "child_pid": 286163,
+  "child_birth": "1349152",
+  "returncode": 0,
+  "ended": 1794512967.4935973,
+  "wall_seconds": 20.968393325805664
+}

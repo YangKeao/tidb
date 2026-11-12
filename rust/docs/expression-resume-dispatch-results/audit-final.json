@@ -1,0 +1,14 @@
+{
+  "identical_retained_ELF_A_B_control": true,
+  "status": "PASS",
+  "cells": 224,
+  "persisted_cell_observations": 448,
+  "cases": 14,
+  "queries": 139985,
+  "rounds": 4,
+  "source_snapshots_equal": true,
+  "all_cells_at_least4seconds": true,
+  "failed_queries_used_for_latency": 0,
+  "whole_SQL_full_fetch_not_kernel_timing": true,
+  "scope": "all448 before/after exact fields/warnings/result/configuration observations independently matched strict56 preflight; exact EXPLAIN verified only at preflight; not full-invocation callchain profiling"
+}

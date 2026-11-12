@@ -1,0 +1,44 @@
+{
+  "state": "complete",
+  "source_commit": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+  "main_consumers": {
+    "ok": 1012,
+    "failed": 1
+  },
+  "main_test_inventory": 2441,
+  "full2441_NOT_executed": true,
+  "unit_source_equals_server_source": true,
+  "unit_binary_sha256": "a586f244b7430c7a8bef1a5d29307a13357278abc5e40ce4fe2467d9fab84b7b",
+  "SDK_newly_tested": false,
+  "SDK_inherited_exact1574inputs": "sdk-inheritance-proof.json",
+  "format": "edition2021 check0",
+  "lint": "make lint actual0",
+  "diffcheck": 0,
+  "allocation_failure_injection_NOT_run": true,
+  "known_failure": {
+    "index": 424,
+    "name": "evaluator::batch::tests::optional_eager_tests::optional_common_profiles_record_original_and_actual_admission",
+    "returncode": 101,
+    "status": "failed",
+    "wall_seconds": 16.287610054016113,
+    "suite": {
+      "type": "suite",
+      "event": "failed",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 2440,
+      "exec_time": 16.274132981
+    },
+    "log": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup/consumers-final/0424.jsonl",
+    "stderr": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/resume-dispatch-cleanup/consumers-final/0424.stderr",
+    "diagnostic_workers": 8,
+    "test_only_memory_limit_bytes": 805306368,
+    "test_only_timeout_seconds": 1800,
+    "binary_sha256": "a586f244b7430c7a8bef1a5d29307a13357278abc5e40ce4fe2467d9fab84b7b",
+    "failure_excerpt": "OPTIONAL COMMON ORIGINAL 1713/657792/D19F5082E4AF34C5\n\n\nrunning 1 test\ntest evaluator::batch::tests::optional_eager_tests::optional_common_profiles_record_original_and_actual_admission ... FAILED\n\nfailures:\n\nfailures:\n    evaluator::batch::tests::optional_eager_tests::optional_common_profiles_record_original_and_actual_admission\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2440 filtered out; finished in 16.27s\n\n\n\nthread 'evaluator::batch::tests::optional_eager_tests::optional_common_profiles_record_original_and_actual_admission' (281742) panicked at crates/tidb-expr/src/evaluator/batch_tests.rs:26672:5:\nassertion failed: output.status.success()\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+  },
+  "baseline": "ffb508eeae completed the same1013 selection with1012pass and1sameknown failure",
+  "performance_acceptance": "pending14-scene comparison against pinnedffb508 and frozen original"
+}

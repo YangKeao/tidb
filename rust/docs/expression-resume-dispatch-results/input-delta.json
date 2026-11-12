@@ -1,0 +1,17 @@
+{
+  "baseline_docs_head": "28b19112e367a2f7232d1ef03675972f0c2c1395",
+  "preceding_measured_source": "ffb508eeae5804c5b81f39da1f14b60350fe2d73",
+  "candidate_source": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+  "changed_files": [
+    "rust/crates/tidb-expr/src/evaluator/batch.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_concat_value.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_eager_values.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs",
+    "rust/crates/tidb-expr/src/evaluator/batch_weight_string.rs"
+  ],
+  "added_files": [],
+  "removed_files": [],
+  "test_or_fixture_changes": false,
+  "classification": "Six reviewed production blocks only; patch and unchanged test inventory recorded separately"
+}

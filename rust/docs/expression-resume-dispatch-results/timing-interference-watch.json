@@ -1,0 +1,4 @@
+{
+  "events": [],
+  "scope": "one-second sampling of known build/test/perf process names; idle/core controls still required, not a guarantee against every possible external activity"
+}

@@ -1,0 +1,29 @@
+{
+  "state": "Implemented; runtime outcomes belong to functional-gates-summary.json and audit-final.json",
+  "source": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+  "review_source_message": "1dfc5d8e-b344-4081-8db0-6dea893df741",
+  "changes": {
+    "numeric_parent": "reuse validate_row_reply return; both diagnostic_resume and resume_sql callers retain reply validation",
+    "immediate_start": "one task read and match; identical13 handlers plus Arguments; ImmediateGuard unchanged",
+    "direct_calls": "7 immediately invoked wrappers: parameter type, order.run, CONCAT conversion, eager eval, user variable write/read, weight evaluation"
+  },
+  "preserved": [
+    "all callback ordering and post-callback authentication",
+    "all cancellation and unwind guards",
+    "all fallible sequencing/early-return closures",
+    "all test functions and fixtures",
+    "SDK and public interfaces"
+  ],
+  "not_selected": "21 single-entry adapters retain checks rather than adding carrying structures or extensive parameter churn",
+  "baseline": "prior cumulative1013checks,1012pass and1sameknown; reuse fixed baseline, run same selection on new source",
+  "checks_planned": [
+    "same2441test inventory",
+    "release unit and service builds",
+    "1013scopedexistingtests",
+    "rustfmt edition2021 and make lint",
+    "protected BUILD and SDK/frozen snapshots",
+    "same14scene strict56preflight and224balancedcells"
+  ],
+  "preceding_source": "ffb508eeae5804c5b81f39da1f14b60350fe2d73",
+  "static_review_message": "3486f398-f324-4c79-9518-e9b7e455c20e"
+}

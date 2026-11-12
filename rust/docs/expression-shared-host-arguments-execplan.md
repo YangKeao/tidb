@@ -28,7 +28,7 @@ Reduce repeated per-function state machines, validation and empty ownership/coer
 - [x] Complete the next14-scene224-cell comparison against pinned43ba91c201 and the frozen original; preserve the initial estRows-only preflight failure, one restart and strict successful retry; clean owned services/data.
 - [x] Prepare the second result report, complete raw evidence and independently runnable Python3.9 verifier.
 - [x] Apply the separately reviewed six-file dispatch/direct-call cleanup:44 fewer production lines, no test or fixture changes.
-- [ ] Build, validate and measure the six-file checkpoint separately against pinnedffb508eeae.
+- [x] Build, validate and measure the six-file checkpoint separately against pinnedffb508eeae; publish the complete result and independently verifiable evidence.
 - [ ] Human review and final acceptance. The broader project's path-unification and performance goals remain incomplete.
 
 ## Surprises & Discoveries
@@ -141,3 +141,15 @@ The first preflight stopped before timing:39 comparisons differed only in114 est
 Next, use evidence/path-unification/resume-dispatch-cleanup and preserve this completed round. WorkMacOperator's read-only review identifies two small safe changes: reuse the task returned by validate_row_reply in resume_numeric_parent, and replace the niladic start's repeated task reads with one match. Both numeric parent callers retain reply validation; the ImmediateGuard still cancels on every return or unwind. Remove seven remaining immediately-invoked single-call closures in batch.rs, CONCAT, eager/user-variable and WEIGHT_STRING adapters; keep every closure that sequences fallible work before revalidation. No public interface, callback order, post-callback authentication, fixture or test function changes. Do not introduce carrying structures or broad parameter churn just to remove one validation from the21 single-entry adapters.
 
 Save and push this small source checkpoint, run the same1013 selection on its own pinned unit binary and build its own service. Preserve the2441-name inventory, root lint, edition2021 formatting and protected SDK/frozen/BUILD snapshots. If those gates complete, use this round's pinnedffb508eeae service SHA2567e2b08d36cbf55adcc6701a08315135dad8fd0f813f5eb694ab31eb9df76d4b2 as identical A/B controls for the unchanged14-scene matrix. Earlier results cannot be relabeled as validation of later edits. Human acceptance remains pending.
+
+
+## Six-file dispatch cleanup outcome
+
+
+Source6765b4efa267025ab916d05f9040fab2ffe09b1c changes six production files,48 additions/92 deletions (44 fewer lines), with no test or fixture edits. Relative to43ba91c201, the post-first-round cleanup totals545 fewer production lines and86 fewer test-helper lines. WorkMacOperator independently reviewed the niladic dispatch, validation reuse and seven direct calls; the runtime evidence below belongs to this exact source.
+
+The release unit build completed0/280.175s, the1013 selection completed1012pass/1sameknown failure in1038.210s, and the service completed0/603.842s. The2441-name inventory, six-file formatting, root lint and source/isolation checks pass. No new SDK/full2441/Go/datatype or allocation-failure-injection claim is made.
+
+The final comparison completes224 cells/139985 full queries; strict56 preflight and448 persisted before/after records pass audit. All owned services and both temporary database directories are removed. [The final dispatch result](expression-resume-dispatch-results.zh.md) records every scene, favorable/adverse direction, absolute metric and paired range; [the evidence](expression-resume-dispatch-results/) includes a standard-library verifier. The prior28b19112e3 result remains separately fixed. Retain the simplification as requested, without inferring universal no-regression or completed project-wide unification. Human review remains pending.
+
+The remaining21 single-entry adapter checks were not traded for new state-carrying structures or extensive parameter changes. Multi-entry adapters and callback-related checks still protect real boundaries; do not delete them using only a single caller's assumptions. This closes the reviewed cleanup scope, leaving broader API/ownership redesign for a separately specified change.

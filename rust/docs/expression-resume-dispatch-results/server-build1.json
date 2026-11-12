@@ -1,0 +1,23 @@
+{
+  "cwd": "/home/agent/tidb/expression-unification/tidb",
+  "command": [
+    "../tools/cargo-tidb",
+    "build",
+    "--manifest-path",
+    "rust/Cargo.toml",
+    "--release",
+    "--locked",
+    "--offline",
+    "-j1",
+    "-p",
+    "tidb-server",
+    "--bin",
+    "tidb-server",
+    "--no-default-features"
+  ],
+  "environment": {
+    "RUSTFLAGS": "",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "timeout_seconds": 2400
+}

@@ -1,0 +1,121 @@
+{
+  "base": "ffb508eeae",
+  "head": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+  "totals": {
+    "production": {
+      "added": 48,
+      "deleted": 92,
+      "net_reduction": 44
+    },
+    "test": {
+      "added": 0,
+      "deleted": 0,
+      "net_reduction": 0
+    }
+  },
+  "since_preceding_measured_source": {
+    "base": "e5e15d1d2750e4af361630f603ea78781c271c9a",
+    "totals": {
+      "production": {
+        "added": 407,
+        "deleted": 952,
+        "net_reduction": 545
+      },
+      "test": {
+        "added": 7,
+        "deleted": 93,
+        "net_reduction": 86
+      }
+    }
+  },
+  "per_commit_file": [
+    {
+      "commit": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch.rs",
+      "category": "production",
+      "added": 2,
+      "deleted": 2
+    },
+    {
+      "commit": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_concat_value.rs",
+      "category": "production",
+      "added": 1,
+      "deleted": 1
+    },
+    {
+      "commit": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_eager_values.rs",
+      "category": "production",
+      "added": 3,
+      "deleted": 4
+    },
+    {
+      "commit": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs",
+      "category": "production",
+      "added": 34,
+      "deleted": 74
+    },
+    {
+      "commit": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs",
+      "category": "production",
+      "added": 1,
+      "deleted": 2
+    },
+    {
+      "commit": "6765b4efa267025ab916d05f9040fab2ffe09b1c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_weight_string.rs",
+      "category": "production",
+      "added": 7,
+      "deleted": 9
+    }
+  ],
+  "test_function_inventory": {
+    "rust/crates/tidb-expr/src/evaluator/batch.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_concat_value.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_eager_values.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_hosts.rs": {
+      "count": 5,
+      "names": [
+        "prefix_heap_denial_and_stale_cancel_keep_task_generations_separate",
+        "integer_char_cast_resource_denial_precedes_native_warning",
+        "native_value_cast_warning_budget_and_forged_provenance_are_terminal",
+        "native_cast_hosts_reject_wrong_provenance_and_input_policy_before_context_work",
+        "native_nullable_selected_input_keeps_resource_and_provenance_failures_terminal"
+      ]
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs": {
+      "count": 12,
+      "names": [
+        "numeric_parent_original_overflow_reloads_text_in_order_and_authenticates_it",
+        "numeric_parent_failed_integer_probe_requests_the_distinct_original_general_source",
+        "numeric_parent_consumes_before_callbacks_and_reauthenticates_before_future_demands_or_output",
+        "numeric_parent_subject_pause_precedes_warning_and_keeps_right_operand_left_value_and_consumption",
+        "numeric_window_subject_finishes_whole_left_before_whole_right_and_authenticates_scoped_resume",
+        "numeric_window_overflow_requests_original_row_only_after_both_whole_sources",
+        "numeric_window_consumes_callbacks_and_stops_before_next_row_after_generation_changes",
+        "paired_quotient_zero_callbacks_are_consuming_and_stop_before_next_row_or_publication",
+        "integer_division_context_promotion_pauses_before_warning_and_converts_left_before_right_null",
+        "integer_division_context_decimal_overflow_reads_both_reports_even_when_left_unavailable",
+        "pb_binary_parent_original_overflow_reloads_text_in_order_and_authenticates_it",
+        "pb_binary_parent_consumes_before_callbacks_and_reauthenticates_before_future_demands_or_output"
+      ]
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_weight_string.rs": {
+      "count": 0,
+      "names": []
+    }
+  },
+  "classification": "Only the six reviewed production blocks/direct calls changed; all test function names and sample data retained; blank lines included, docs excluded. Previous501/86 cumulative source result and earlier2582/+63 report remain separate."
+}

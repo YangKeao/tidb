@@ -1,0 +1,89 @@
+{
+  "started": 1794513220.1666179,
+  "checked": 1794513236.3633995,
+  "latest_directive_read_message": "16415fea-267b-4462-8d94-a5f9358e8260",
+  "constraint_source": "843fd7fa and 16415fea: record environment noise and finish final comparison; no compiler, tests or profiler during timing",
+  "server_core_busy_fraction": {
+    "cpu2": 0.012954966070326979,
+    "cpu3": 0.005572755417956654,
+    "cpu4": 0.021671826625387025,
+    "cpu5": 0.0037151702786377694
+  },
+  "globally_active_processes_over_half_CPU_second": [
+    {
+      "pid": "287637",
+      "birth": "1370863",
+      "comm": "pd-server",
+      "cpu_seconds": 0.68
+    }
+  ],
+  "samples": [
+    {
+      "time": 1794513221.1882637,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513222.1991713,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513223.210079,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513224.2210624,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513225.2319462,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513226.2427921,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513227.2539697,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513228.264849,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513229.2758815,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513230.2868345,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513231.2978578,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513232.3088756,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513233.3201394,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513234.3313415,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513235.3426898,
+      "known_build_test_perf_processes": []
+    },
+    {
+      "time": 1794513236.353803,
+      "known_build_test_perf_processes": []
+    }
+  ],
+  "scope": "16-second observations plus fresh directive read; ongoing timing still needs interference guards and scan controls, not a guarantee against future bursts.",
+  "quiet_observed": false,
+  "measurement_permitted": true
+}
