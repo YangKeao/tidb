@@ -130,101 +130,96 @@ impl NativeBatchHosts<'_> {
         };
         // Neither this owned input nor the pending task borrows the store while
         // conversion or the actual session service can call back into it.
-        let result = (|| {
-            let result = (|| -> std::result::Result<Progress, EvalError> {
-                meta.descriptor.validate_arity()?;
-                let progress = match *state {
-                    StatefulTask::First => match meta.descriptor.operation {
-                        O::Values | O::ReleaseAll => {
-                            Progress::Ready(meta.descriptor.immediate(self.context)?)
+        let result = (|| -> std::result::Result<Progress, EvalError> {
+            meta.descriptor.validate_arity()?;
+            let progress = match *state {
+                StatefulTask::First => match meta.descriptor.operation {
+                    O::Values | O::ReleaseAll => {
+                        Progress::Ready(meta.descriptor.immediate(self.context)?)
+                    }
+                    O::Benchmark => match meta.descriptor.benchmark_count(
+                        value.as_ref().expect("actual count reply").datum(),
+                        self.context,
+                    )? {
+                        None => Progress::Ready(Datum::Null),
+                        Some(0) => Progress::Ready(Datum::Int(0)),
+                        Some(remaining) => Progress::More(StatefulTask::Repeat {
+                            count: token
+                                .expect("count capability")
+                                .try_into()
+                                .expect("authenticated capability width"),
+                            remaining,
+                        }),
+                    },
+                    O::Sleep => {
+                        if borrowed_sleep {
+                            let seconds = {
+                                let values = store.borrow();
+                                let arg = values
+                                    .get(
+                                        token.expect("real sleep capability"),
+                                        NativeValueRole::CharInput,
+                                        origin(index).map_err(stateful_local_error)?,
+                                    )
+                                    .map_err(stateful_local_error)?;
+                                crate::scalar_function::stateful::prepare_sleep_nontext(arg)
+                                    .expect("read-only classified nontext")
+                            }?;
+                            // All input borrows ended before the service.
+                            Progress::Ready(
+                                meta.descriptor.sleep_after_seconds(seconds, self.context)?,
+                            )
+                        } else {
+                            Progress::Ready(meta.descriptor.sleep(
+                                value.as_ref().expect("actual text reply").datum(),
+                                self.context,
+                            )?)
                         }
-                        O::Benchmark => match meta.descriptor.benchmark_count(
-                            value.as_ref().expect("actual count reply").datum(),
+                    }
+                    operation => {
+                        let name = meta.descriptor.lock_name(
+                            value.as_ref().expect("actual name reply").datum(),
                             self.context,
-                        )? {
-                            None => Progress::Ready(Datum::Null),
-                            Some(0) => Progress::Ready(Datum::Int(0)),
-                            Some(remaining) => Progress::More(StatefulTask::Repeat {
-                                count: token
-                                    .expect("count capability")
+                        )?;
+                        if operation == O::GetLock {
+                            Progress::More(StatefulTask::Timeout {
+                                name,
+                                source: token
+                                    .expect("name capability")
                                     .try_into()
                                     .expect("authenticated capability width"),
-                                remaining,
-                            }),
-                        },
-                        O::Sleep => {
-                            if borrowed_sleep {
-                                let seconds = {
-                                    let values = store.borrow();
-                                    let arg = values
-                                        .get(
-                                            token.expect("real sleep capability"),
-                                            NativeValueRole::CharInput,
-                                            origin(index).map_err(stateful_local_error)?,
-                                        )
-                                        .map_err(stateful_local_error)?;
-                                    crate::scalar_function::stateful::prepare_sleep_nontext(arg)
-                                        .expect("read-only classified nontext")
-                                }?;
-                                // All input borrows ended before the service.
-                                Progress::Ready(
-                                    meta.descriptor.sleep_after_seconds(seconds, self.context)?,
-                                )
-                            } else {
-                                Progress::Ready(meta.descriptor.sleep(
-                                    value.as_ref().expect("actual text reply").datum(),
-                                    self.context,
-                                )?)
-                            }
-                        }
-                        operation => {
-                            let name = meta.descriptor.lock_name(
-                                value.as_ref().expect("actual name reply").datum(),
-                                self.context,
-                            )?;
-                            if operation == O::GetLock {
-                                Progress::More(StatefulTask::Timeout {
-                                    name,
-                                    source: token
-                                        .expect("name capability")
-                                        .try_into()
-                                        .expect("authenticated capability width"),
-                                })
-                            } else {
-                                Progress::Ready(meta.descriptor.lock_service(&name, self.context)?)
-                            }
-                        }
-                    },
-                    StatefulTask::Repeat { count, remaining } => {
-                        // The broker has just executed this genuine child Fresh.
-                        // Its result is ignored after capability validation.
-                        if remaining == 1 {
-                            Progress::Ready(Datum::Int(0))
-                        } else {
-                            Progress::More(StatefulTask::Repeat {
-                                count,
-                                remaining: remaining - 1,
                             })
+                        } else {
+                            Progress::Ready(meta.descriptor.lock_service(&name, self.context)?)
                         }
                     }
-                    StatefulTask::Timeout { name, .. } => {
-                        Progress::Ready(meta.descriptor.acquire(
-                            &name,
-                            value.as_ref().expect("actual timeout reply").datum(),
-                            self.context,
-                        )?)
+                },
+                StatefulTask::Repeat { count, remaining } => {
+                    // The broker has just executed this genuine child Fresh.
+                    // Its result is ignored after capability validation.
+                    if remaining == 1 {
+                        Progress::Ready(Datum::Int(0))
+                    } else {
+                        Progress::More(StatefulTask::Repeat {
+                            count,
+                            remaining: remaining - 1,
+                        })
                     }
-                };
-                match progress {
-                    Progress::Ready(value) => Ok(Progress::Ready(coerce_function_result(
-                        meta.descriptor.operation_name(),
-                        meta.result_type.as_ref(),
-                        value,
-                    )?)),
-                    more => Ok(more),
                 }
-            })();
-            result
+                StatefulTask::Timeout { name, .. } => Progress::Ready(meta.descriptor.acquire(
+                    &name,
+                    value.as_ref().expect("actual timeout reply").datum(),
+                    self.context,
+                )?),
+            };
+            match progress {
+                Progress::Ready(value) => Ok(Progress::Ready(coerce_function_result(
+                    meta.descriptor.operation_name(),
+                    meta.result_type.as_ref(),
+                    value,
+                )?)),
+                more => Ok(more),
+            }
         })();
         if let Some(token) = token {
             store

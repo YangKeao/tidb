@@ -148,7 +148,7 @@ impl NativeBatchHosts<'_> {
             ));
         }
 
-        let mut progress = (|| state.advance(root, arity, incoming, self.context))();
+        let mut progress = state.advance(root, arity, incoming, self.context);
         if let Ok(AstProgress::Prepare { aes }) = progress {
             // Match the original cache selection before preparation/children;
             // no caller reference is retained in the owned AST continuation.
@@ -156,7 +156,7 @@ impl NativeBatchHosts<'_> {
                 .context
                 .ready_value_cache()
                 .map(|cache| cache.preparation_unwind_guard());
-            progress = (|| state.prepare(root, aes, self.context))();
+            progress = state.prepare(root, aes, self.context);
         }
         for (index, previous) in &state.tokens {
             store.borrow().get(
@@ -180,11 +180,9 @@ impl NativeBatchHosts<'_> {
                     .ready_preparation
                     .as_ref()
                     .map(|guard| guard.cache());
-                let result = (|| {
-                    crate::tikv::evaluate_closed_args(cache, operation, args)
-                        .and_then(|result| result.into_bytes())
-                        .map(|value| value.map_or(Datum::Null, Datum::new_string))
-                })();
+                let result = crate::tikv::evaluate_closed_args(cache, operation, args)
+                    .and_then(|result| result.into_bytes())
+                    .map(|value| value.map_or(Datum::Null, Datum::new_string));
                 match result {
                     Ok(v) => AstProgress::Ready(v),
                     Err(e) => return self.native_failure(e),
@@ -195,7 +193,7 @@ impl NativeBatchHosts<'_> {
                     .ready_preparation
                     .as_ref()
                     .map(|guard| guard.cache());
-                let result = (|| crate::tikv::evaluate_closed_regexp_args(cache, args))();
+                let result = crate::tikv::evaluate_closed_regexp_args(cache, args);
                 match result {
                     Ok(v) => AstProgress::Ready(v),
                     Err(e) => return self.native_failure(e),

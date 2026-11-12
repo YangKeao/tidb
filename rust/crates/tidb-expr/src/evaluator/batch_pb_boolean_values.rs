@@ -114,14 +114,12 @@ impl NativeBatchHosts<'_> {
             }
             Ok(())
         };
-        let result = (|| {
-            (if meta.kernel.observes_null_only() {
-                Ok(meta.kernel.nullness(is_null))
-            } else {
-                meta.kernel
-                    .truth(value.as_ref().expect("actual truth input"), self.context)
-            })
-        })();
+        let result = if meta.kernel.observes_null_only() {
+            Ok(meta.kernel.nullness(is_null))
+        } else {
+            meta.kernel
+                .truth(value.as_ref().expect("actual truth input"), self.context)
+        };
         drop(value);
         check()?;
         let truth = match result {
@@ -146,21 +144,16 @@ impl NativeBatchHosts<'_> {
                 mode: ArgMode::Fresh,
             }));
         }
-        let result = (|| {
-            (if meta.kernel.logical_function().is_some() {
-                let arguments = if next == 0 {
-                    crate::LogicalArgs::UndemandedRight { left: truth }
-                } else {
-                    crate::LogicalArgs::Both(
-                        state.left.expect("actual consumed logical left"),
-                        truth,
-                    )
-                };
-                meta.kernel.logical_value(arguments, self.context)
+        let result = if meta.kernel.logical_function().is_some() {
+            let arguments = if next == 0 {
+                crate::LogicalArgs::UndemandedRight { left: truth }
             } else {
-                meta.kernel.unary_value(truth, self.context)
-            })
-        })();
+                crate::LogicalArgs::Both(state.left.expect("actual consumed logical left"), truth)
+            };
+            meta.kernel.logical_value(arguments, self.context)
+        } else {
+            meta.kernel.unary_value(truth, self.context)
+        };
         check()?;
         let value = match result {
             Ok(value) => value,

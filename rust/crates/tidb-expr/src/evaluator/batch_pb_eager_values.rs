@@ -220,20 +220,18 @@ impl NativeBatchHosts<'_> {
             Ok(())
         };
 
-        let result = (|| {
-            (if is_null {
-                meta.kernel.null_result(
-                    &ready[0],
-                    arity,
-                    next,
-                    self.context,
-                    meta.result_type.as_ref(),
-                )
-            } else {
-                meta.kernel
-                    .eval_values(&mut ready, self.context, meta.result_type.as_ref())
-            })
-        })();
+        let result = if is_null {
+            meta.kernel.null_result(
+                &ready[0],
+                arity,
+                next,
+                self.context,
+                meta.result_type.as_ref(),
+            )
+        } else {
+            meta.kernel
+                .eval_values(&mut ready, self.context, meta.result_type.as_ref())
+        };
         check_tokens()?;
         let value = match result {
             Ok(value) => value,

@@ -451,7 +451,7 @@ mod tests {
                 ..
             }
         ));
-        let old = (|| crate::eval_in(&root, &crate::NoColumns))().unwrap();
+        let old = crate::eval_in(&root, &crate::NoColumns).unwrap();
 
         assert_eq!(plan.eval(&crate::NoColumns).unwrap(), old);
         let root = Expr::RawString("latin1".into());

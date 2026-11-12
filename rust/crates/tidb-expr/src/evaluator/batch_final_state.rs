@@ -128,54 +128,50 @@ impl NativeBatchHosts<'_> {
                 })
                 .transpose()?
         };
-        let result = (|| {
-            let result = (|| -> std::result::Result<Progress, EvalError> {
-                let result = match meta.name {
-                    "rand" => {
-                        if more_rand {
-                            return Ok(Progress::More);
-                        }
-                        match meta.arguments.len() {
-                            0 => crate::math_fn::eval_rand_values(
-                                &[],
-                                self.context,
-                                Some(meta.function_key),
-                                meta.constant_seed,
-                            )?,
-                            1 => crate::math_fn::eval_rand_values(
-                                std::slice::from_ref(
-                                    lease.as_ref().expect("actual seed reply").datum(),
-                                ),
-                                self.context,
-                                Some(meta.function_key),
-                                meta.constant_seed,
-                            )?,
-                            _ => return Err(EvalError::Unsupported("bad function arity")),
-                        }
+        let result = (|| -> std::result::Result<Progress, EvalError> {
+            let result = match meta.name {
+                "rand" => {
+                    if more_rand {
+                        return Ok(Progress::More);
                     }
-                    "tidb_is_ddl_owner" => crate::scalar_function::stateful::ddl_owner(
-                        meta.arguments.len(),
-                        self.context,
-                    )?,
-                    "aes_encrypt" | "aes_decrypt" => {
-                        let aes = state.aes.as_mut().expect("captured AES preparation");
-                        aes.validate_arity()?;
-                        assert_eq!(aes.next_argument(), index, "authenticated AES ordinal");
-                        let datum = lease.as_ref().expect("actual AES argument reply").datum();
-                        return Ok(match aes.accept(datum, self.context)? {
-                            Some((operation, args)) => Progress::Cipher(operation, args),
-                            None => Progress::More,
-                        });
+                    match meta.arguments.len() {
+                        0 => crate::math_fn::eval_rand_values(
+                            &[],
+                            self.context,
+                            Some(meta.function_key),
+                            meta.constant_seed,
+                        )?,
+                        1 => crate::math_fn::eval_rand_values(
+                            std::slice::from_ref(
+                                lease.as_ref().expect("actual seed reply").datum(),
+                            ),
+                            self.context,
+                            Some(meta.function_key),
+                            meta.constant_seed,
+                        )?,
+                        _ => return Err(EvalError::Unsupported("bad function arity")),
                     }
-                    _ => unreachable!("closed final state source"),
-                };
-                Ok(Progress::Ready(coerce_function_result(
-                    meta.name,
-                    meta.result_type.as_ref(),
-                    result,
-                )?))
-            })();
-            result
+                }
+                "tidb_is_ddl_owner" => {
+                    crate::scalar_function::stateful::ddl_owner(meta.arguments.len(), self.context)?
+                }
+                "aes_encrypt" | "aes_decrypt" => {
+                    let aes = state.aes.as_mut().expect("captured AES preparation");
+                    aes.validate_arity()?;
+                    assert_eq!(aes.next_argument(), index, "authenticated AES ordinal");
+                    let datum = lease.as_ref().expect("actual AES argument reply").datum();
+                    return Ok(match aes.accept(datum, self.context)? {
+                        Some((operation, args)) => Progress::Cipher(operation, args),
+                        None => Progress::More,
+                    });
+                }
+                _ => unreachable!("closed final state source"),
+            };
+            Ok(Progress::Ready(coerce_function_result(
+                meta.name,
+                meta.result_type.as_ref(),
+                result,
+            )?))
         })();
         // A callback may have reset the store. No Ref is live during services;
         // authenticate the leased slot as well as every earlier demanded input.
@@ -194,14 +190,11 @@ impl NativeBatchHosts<'_> {
                     .as_ref()
                     .map(|guard| guard.cache());
                 (|| {
-                    let result = (|| {
-                        let value = crate::tikv::evaluate_closed_args(cache, operation, args)?
-                            .into_bytes()?
-                            .map_or(Datum::Null, Datum::new_string);
-                        coerce_function_result(meta.name, meta.result_type.as_ref(), value)
-                            .map(Progress::Ready)
-                    })();
-                    result
+                    let value = crate::tikv::evaluate_closed_args(cache, operation, args)?
+                        .into_bytes()?
+                        .map_or(Datum::Null, Datum::new_string);
+                    coerce_function_result(meta.name, meta.result_type.as_ref(), value)
+                        .map(Progress::Ready)
                 })()
             }
             result => result,

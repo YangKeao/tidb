@@ -127,7 +127,7 @@ impl NativeBatchHosts<'_> {
             }
             Ok(())
         };
-        let result = (|| meta.kernel.integer_mod_operand(next, value))();
+        let result = meta.kernel.integer_mod_operand(next, value);
         check()?;
         let value = match result {
             Ok(value) => value,
@@ -155,15 +155,13 @@ impl NativeBatchHosts<'_> {
             .left
             .take()
             .ok_or_else(|| binding("PB MOD left value absent"))?;
-        let result = (|| {
-            meta.kernel.integer_mod_values(
-                left,
-                value,
-                self.context.div_precision_increment(),
-                meta.collation,
-                self.context,
-            )
-        })();
+        let result = meta.kernel.integer_mod_values(
+            left,
+            value,
+            self.context.div_precision_increment(),
+            meta.collation,
+            self.context,
+        );
         // Both actual consumed capabilities survive every late context callback.
         let check = || -> LocalResult<()> {
             let values = store.borrow();

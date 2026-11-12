@@ -617,7 +617,7 @@ impl<'a> NativeBatchHosts<'a> {
                 .state
                 .pending_constant()
                 .ok_or_else(|| binding("numeric diagnostic pending input absent"))?;
-            let result = (|| match &plan.body {
+            let result = match &plan.body {
                 NumericPlanBody::Subject(plan) => plan.resume_text(&mut diag.state, index, text),
                 NumericPlanBody::Argument(plan) => {
                     let actual = match &diag.reason {
@@ -628,7 +628,7 @@ impl<'a> NativeBatchHosts<'a> {
                     };
                     plan.resume_text(&mut diag.state, index, text, actual)
                 }
-            })();
+            };
             match result {
                 Ok(step) => match self.numeric_diagnostic_step(task, diag, step, slot, auth)? {
                     DiagnosticTransition::Need(state) => return Ok(Transition::Need(state)),
@@ -677,7 +677,7 @@ impl<'a> NativeBatchHosts<'a> {
                         state: plan.state(),
                         reason: DiagnosticReason::Subject(pending),
                     };
-                    let step = (|| plan.step(&mut diag.state))();
+                    let step = plan.step(&mut diag.state);
                     match step {
                         Ok(step) => {
                             match self.numeric_diagnostic_step(task, diag, step, slot, auth)? {
@@ -849,7 +849,7 @@ impl<'a> NativeBatchHosts<'a> {
                     state: plan.state(),
                     reason: DiagnosticReason::Overflow { kind, left: None },
                 };
-                let step = (|| plan.step(&mut diag.state, None))();
+                let step = plan.step(&mut diag.state, None);
                 match step {
                     Ok(step) => {
                         match self.numeric_diagnostic_step(task, diag, step, slot, auth)? {
@@ -943,7 +943,7 @@ impl<'a> NativeBatchHosts<'a> {
                                 unreachable!()
                             };
                             diag.state = plan.state();
-                            let result = (|| plan.step(&mut diag.state, Some(&values[1])))();
+                            let result = plan.step(&mut diag.state, Some(&values[1]));
                             // Original Option::zip evaluates the right formatter
                             // even when the left formatter was unavailable.
                             diag.reason = DiagnosticReason::DecimalDivision {
@@ -1013,7 +1013,7 @@ impl<'a> NativeBatchHosts<'a> {
                             kind,
                             left: Some(text),
                         };
-                        step = match (|| plan.step(&mut diag.state, None))() {
+                        step = match plan.step(&mut diag.state, None) {
                             Ok(step) => step,
                             Err(error) => return Ok(DiagnosticTransition::Failure(error)),
                         };

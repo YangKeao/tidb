@@ -103,60 +103,57 @@ impl NativeBatchHosts<'_> {
                 )
             })
             .transpose()?;
-        let result = (|| {
-            let result = (|| -> std::result::Result<Progress, EvalError> {
-                if meta.arguments.len() != 2 {
-                    return Err(EvalError::WrongParameterCount("json_schema_valid"));
-                }
-                let value = value
-                    .as_ref()
-                    .expect("actual schema/document reply")
-                    .datum();
-                let progress = match *state {
-                    SchemaTask::Schema => {
-                        if value.is_null() {
+        let result = (|| -> std::result::Result<Progress, EvalError> {
+            if meta.arguments.len() != 2 {
+                return Err(EvalError::WrongParameterCount("json_schema_valid"));
+            }
+            let value = value
+                .as_ref()
+                .expect("actual schema/document reply")
+                .datum();
+            let progress = match *state {
+                SchemaTask::Schema => {
+                    if value.is_null() {
+                        Progress::Ready(Datum::Null)
+                    } else {
+                        let context = meta.cacheable.then(|| self.context.context_id());
+                        // The only context callback precedes construction.
+                        // Authenticate again before the original cache may
+                        // publish a prepared schema or demand the document.
+                        store
+                            .borrow()
+                            .authenticate(
+                                token.expect("real schema capability"),
+                                NativeValueRole::CharInput,
+                                origin(0).map_err(schema_error)?,
+                            )
+                            .map_err(schema_error)?;
+                        let prepared = meta.cache.prepare_value(value, context)?;
+                        if prepared.is_absent() {
                             Progress::Ready(Datum::Null)
                         } else {
-                            let context = meta.cacheable.then(|| self.context.context_id());
-                            // The only context callback precedes construction.
-                            // Authenticate again before the original cache may
-                            // publish a prepared schema or demand the document.
-                            store
-                                .borrow()
-                                .authenticate(
-                                    token.expect("real schema capability"),
-                                    NativeValueRole::CharInput,
-                                    origin(0).map_err(schema_error)?,
-                                )
-                                .map_err(schema_error)?;
-                            let prepared = meta.cache.prepare_value(value, context)?;
-                            if prepared.is_absent() {
-                                Progress::Ready(Datum::Null)
-                            } else {
-                                Progress::More(SchemaTask::Document {
-                                    schema: token
-                                        .expect("real schema capability")
-                                        .try_into()
-                                        .expect("authenticated capability width"),
-                                    prepared,
-                                })
-                            }
+                            Progress::More(SchemaTask::Document {
+                                schema: token
+                                    .expect("real schema capability")
+                                    .try_into()
+                                    .expect("authenticated capability width"),
+                                prepared,
+                            })
                         }
                     }
-                    SchemaTask::Document { prepared, .. } => {
-                        Progress::Ready(prepared.validate_value(value)?)
-                    }
-                };
-                match progress {
-                    Progress::Ready(value) => Ok(Progress::Ready(coerce_function_result(
-                        "json_schema_valid",
-                        meta.result_type.as_ref(),
-                        value,
-                    )?)),
-                    more => Ok(more),
                 }
-            })();
-            result
+                SchemaTask::Document { prepared, .. } => {
+                    Progress::Ready(prepared.validate_value(value)?)
+                }
+            };
+            match progress {
+                Progress::Ready(value) => Ok(Progress::Ready(coerce_function_result(
+                    "json_schema_valid",
+                    meta.result_type.as_ref(),
+                    value,
+                )?)),
+                more => Ok(more),
+            }
         })();
         if let Some(token) = token {
             store

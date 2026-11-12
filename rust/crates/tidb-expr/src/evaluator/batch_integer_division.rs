@@ -171,7 +171,7 @@ impl NativeBatchHosts<'_> {
             unreachable!()
         };
         let mut state = plan.state();
-        let step = (|| plan.step(&mut state, Some(&values[0])))();
+        let step = plan.step(&mut state, Some(&values[0]));
         let step = match step {
             Ok(step) => step,
             Err(error) => return Ok(Transition::Failure(error)),

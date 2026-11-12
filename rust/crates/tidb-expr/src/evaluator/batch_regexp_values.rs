@@ -134,34 +134,32 @@ impl NativeBatchHosts<'_> {
             store
                 .borrow()
                 .clone_for_kernel(token, NativeValueRole::CharInput, origin(index))?;
-        let result = (|| {
-            (|| -> std::result::Result<Option<(String, String, String)>, EvalError> {
-                if meta.operator {
-                    if value.is_null() {
-                        return Ok(None);
-                    }
-                    let RegexpTask::RawPattern(first) = &*state else {
-                        unreachable!()
-                    };
-                    let text = store
-                        .borrow()
-                        .clone_for_kernel(first, NativeValueRole::CharInput, origin(0))
-                        .map_err(|error| {
-                            EvalError::ExpressionRuntimeFailure(
-                                crate::tikv::ExpressionRuntimeFailure::from_local_eval(error, None),
-                            )
-                        })?;
-                    let (text, pattern) =
-                        crate::scalar_function::regexp_value::operator_strings(&text, &value)?;
-                    return Ok(Some((text, pattern, String::new())));
+        let result = (|| -> std::result::Result<Option<(String, String, String)>, EvalError> {
+            if meta.operator {
+                if value.is_null() {
+                    return Ok(None);
                 }
-                let result = crate::scalar_function::regexp_value::named_string(
-                    value,
-                    meta.source_types[index].as_ref(),
-                    self.context,
-                );
-                result.map(|value| value.map(|value| (String::new(), String::new(), value)))
-            })()
+                let RegexpTask::RawPattern(first) = &*state else {
+                    unreachable!()
+                };
+                let text = store
+                    .borrow()
+                    .clone_for_kernel(first, NativeValueRole::CharInput, origin(0))
+                    .map_err(|error| {
+                        EvalError::ExpressionRuntimeFailure(
+                            crate::tikv::ExpressionRuntimeFailure::from_local_eval(error, None),
+                        )
+                    })?;
+                let (text, pattern) =
+                    crate::scalar_function::regexp_value::operator_strings(&text, &value)?;
+                return Ok(Some((text, pattern, String::new())));
+            }
+            let result = crate::scalar_function::regexp_value::named_string(
+                value,
+                meta.source_types[index].as_ref(),
+                self.context,
+            );
+            result.map(|value| value.map(|value| (String::new(), String::new(), value)))
         })();
         check_tokens()?;
         let result = match result {
@@ -225,7 +223,7 @@ impl NativeBatchHosts<'_> {
             .ready_preparation
             .as_ref()
             .map(|guard| guard.cache());
-        let result = (|| crate::tikv::evaluate_closed_regexp_args(cache, args))();
+        let result = crate::tikv::evaluate_closed_regexp_args(cache, args);
         check_tokens()?;
         let value = match result {
             Ok(value) => value,

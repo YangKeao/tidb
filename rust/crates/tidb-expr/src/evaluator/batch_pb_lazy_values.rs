@@ -116,10 +116,9 @@ impl NativeBatchHosts<'_> {
         };
         let value = match phase {
             PbLazyPhase::Condition(index) => {
-                let result = (|| {
-                    meta.kernel
-                        .truth(value.as_ref().expect("actual condition"), self.context)
-                })();
+                let result = meta
+                    .kernel
+                    .truth(value.as_ref().expect("actual condition"), self.context);
                 drop(value);
                 check()?;
                 let truth = match result {
