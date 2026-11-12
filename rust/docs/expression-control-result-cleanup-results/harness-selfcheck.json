@@ -1,0 +1,33 @@
+{
+  "state": "PASS",
+  "same14_case_specs_as_preceding_measured43ba": true,
+  "queries_config_rows_unchanged": true,
+  "cells": 224,
+  "orders": [
+    [
+      "native",
+      "current",
+      "frozen",
+      "retained_b"
+    ],
+    [
+      "current",
+      "retained_b",
+      "native",
+      "frozen"
+    ],
+    [
+      "retained_b",
+      "frozen",
+      "current",
+      "native"
+    ],
+    [
+      "frozen",
+      "native",
+      "retained_b",
+      "current"
+    ]
+  ],
+  "SQL_services_started": false
+}

@@ -1,0 +1,27 @@
+{
+  "runner_pid": 192853,
+  "runner_birth": "954500",
+  "command": [
+    "../tools/cargo-tidb",
+    "build",
+    "--manifest-path",
+    "rust/Cargo.toml",
+    "--release",
+    "--locked",
+    "--offline",
+    "-j1",
+    "-p",
+    "tidb-server",
+    "--bin",
+    "tidb-server",
+    "--no-default-features"
+  ],
+  "cwd": "/home/agent/tidb/expression-unification/tidb",
+  "started": 1794509000.0240052,
+  "state": "complete",
+  "child_pid": 192855,
+  "child_birth": "954502",
+  "returncode": 0,
+  "ended": 1794509605.0371523,
+  "wall_seconds": 605.0131471157074
+}

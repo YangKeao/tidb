@@ -1,0 +1,54 @@
+{
+  "source_commit": "ffb508eeae",
+  "item_allowances": {
+    "rewrite_expr_structural": [
+      "rust/crates/tidb-expr/src/rewriter.rs:1030:pub(crate) fn rewrite_expr_structural(",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:19:use super::{rewrite_expr_resolved, rewrite_expr_structural, ColumnResolver};",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:228:        let built = rewrite_expr_structural(&ast(source), &resolver, limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:262:        let built = rewrite_expr_structural(&ast(source), &Poison::new(), limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:310:            rewrite_expr_structural(&ast(source), &resolver, limits()).is_err(),",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:329:    assert!(rewrite_expr_structural(&invalid_char, &Poison::new(), limits()).is_err());",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:374:    rewrite_expr_structural(&ast(\"CAST('bad' AS SIGNED)\"), &poison, limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:385:        assert!(rewrite_expr_structural(&ast(source), &poison, limits()).is_err());",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:434:    rewrite_expr_structural(&node, &borrowed, limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:442:        rewrite_expr_structural(&node, &function_scope, limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:529:    let prepared = rewrite_expr_structural(&ast(\"a\"), &resolver, limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:578:    let structural = rewrite_expr_structural(&node, &resolver, limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:599:        assert!(rewrite_expr_structural(&ast(\"a\"), &resolver, limits()).is_err());",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:603:    let null = rewrite_expr_structural(&ast(\"NULL\"), &Poison::new(), limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:608:    assert!(rewrite_expr_structural(&ast(\"IF(a,NULL,b)\"), &Poison::new(), limits()).is_err());",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:610:        rewrite_expr_structural(&ast(\"18446744073709551615\"), &Poison::new(), limits()).is_err()",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:650:    rewrite_expr_structural(&node, &Poison::new(), exact).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:666:        assert!(rewrite_expr_structural(&node, &resolver, limits).is_err());",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:691:        assert!(rewrite_expr_structural(&node, &Poison::new(), limits()).is_err());",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:697:    assert!(rewrite_expr_structural(&nested, &Poison::new(), limits()).is_err());",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:715:    let expression = rewrite_expr_structural(",
+      "rust/crates/tidb-expr/src/tikv/ordinary_tests.rs:20:use crate::rewriter::{rewrite_expr_resolved, rewrite_expr_structural, ColumnResolver};",
+      "rust/crates/tidb-expr/src/tikv/ordinary_tests.rs:955:    assert!(rewrite_expr_structural(",
+      "rust/crates/tidb-expr/src/tikv/ordinary_tests.rs:968:    let structural = rewrite_expr_structural("
+    ],
+    "new_function_structural": [
+      "rust/crates/tidb-expr/src/new_function.rs:277:pub(crate) fn new_function_structural(",
+      "rust/crates/tidb-expr/src/new_function.rs:298:/// Shared body. Structural callers use `new_function_structural` for the",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:27:    new_function_impl, new_function_impl_with_purpose, new_function_structural,",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:250:            new_function_structural(&Poison::new(), name, bigint(), args, limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:337:        assert!(new_function_structural(",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:375:    new_function_structural(&poison, \"ifnull\", bigint(), vec![int(1), int(2)], limits()).unwrap();",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:554:    let direct = new_function_structural(",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:614:    let structural = new_function_structural(",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:668:        assert!(new_function_structural(",
+      "rust/crates/tidb-expr/src/rewriter/preparation_tests.rs:677:    new_function_structural("
+    ]
+  },
+  "not_selected": {
+    "structural_preparation_entrypoints": "Both explicitly private preparation APIs still have real test callers; preserve tests and their semantics.",
+    "metadata_fields_and_result_payloads": "Unused-read diagnostics alone do not justify discarding produced outcomes or captured source proof facts.",
+    "fallible_native_demand": "Concat and diagnostic routes return genuine errors; retain Result propagation.",
+    "ignored_test_compiler_limits": "Test compatibility parameters remain; no production gain warrants mass fixture edits in this round.",
+    "public_cast_wrappers": "Delegate to fallible build_cast_function and have public compatibility obligations.",
+    "empty_parity_gap_tests": "Explicitly ignored upstream parity-gap markers, not production no-op logic; preserve their coverage disclosures."
+  },
+  "decision": "No further product edits while final cumulative validation and SQL comparison run.",
+  "production_module_wide_dead_code_allowances_remaining": 0,
+  "test_oracle_module_allowance_retained": "evaluator/batch_values.rs: cfg(test) original append-only store remains independent for authentication comparisons; allow(dead_code, deprecated) is deliberate"
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "file": "rust/crates/tidb-expr/src/tikv/cast_float.rs",
+    "name": "input",
+    "removed": "#[cfg(test)]\nfn input(value: &Datum) -> Input<'_> {\n    match value {\n        Datum::Null => Input::Null,\n        Datum::MinNotNull => Input::MinNotNull,\n        Datum::MaxValue => Input::MaxValue,\n        Datum::Int(value) => Input::Int(*value),\n        Datum::UInt(value) => Input::UInt(*value),\n        Datum::Decimal(value) => Input::Decimal(value.as_shared_parse()),\n        Datum::Real(value) => Input::Real(*value),\n        Datum::Float32(value) => Input::Float32(*value),\n        Datum::String(value) => Input::String(value.bytes()),\n        Datum::Bytes(value) => Input::Bytes(value),\n        Datum::Json(_) => Input::Json,\n        _ => Input::Other,\n    }\n}\n\n",
+    "test_only": true
+  },
+  {
+    "file": "rust/crates/tidb-expr/src/tikv/cast_integer.rs",
+    "name": "input",
+    "removed": "#[cfg(test)]\nfn input(value: &Datum) -> tidb_query_expr::NativeCastIntegerInput<'_> {\n    tidb_query_expr::native_cast_integer_input_from_numeric(value.as_shared_numeric_input())\n}\n\n",
+    "test_only": true
+  },
+  {
+    "file": "rust/crates/tidb-expr/src/tikv/date_arithmetic.rs",
+    "name": "date_add_scalar_values_in",
+    "removed": "pub(crate) fn date_add_scalar_values_in(\n    ctx: &dyn Columns,\n    unit: &str,\n    values: &mut [Datum; 2],\n    fields: [Option<&FieldType>; 2],\n    result: Option<&FieldType>,\n    sign: i64,\n    result_fsp: Option<u32>,\n) -> Result<Datum, EvalError> {\n    date_add_scalar_values_bounded(\n        ctx,\n        unit,\n        values,\n        fields,\n        result,\n        sign,\n        result_fsp,\n        super::identity_actual::default_budget(),\n    )\n}\n",
+    "test_only": false
+  },
+  {
+    "file": "rust/crates/tidb-expr/src/tikv/lineage.rs",
+    "name": "array_bytes",
+    "removed": "#[cfg(test)]\nfn array_bytes<T>(count: usize) -> LocalResult<usize> {\n    count\n        .checked_mul(size_of::<T>())\n        .ok_or_else(|| resource(\"control buffer byte size overflow\"))\n}\n",
+    "test_only": true
+  },
+  {
+    "file": "rust/crates/tidb-expr/src/tikv/ready_value.rs",
+    "name": "into_date_core_datum",
+    "removed": "    /// Reconstruct the DATE representation from the worker's actual core bits.\n    /// The signed carrier preserves all 64 bits, including the high year bit.\n    pub(crate) fn into_date_core_datum(self) -> Result<Datum, EvalError> {\n        match self.into_int_datum()? {\n            Datum::Null => Ok(Datum::Null),\n            Datum::Int(bits) => Time::new(\n                tidb_datatype::CoreTime::from_raw(bits as u64),\n                tidb_datatype::TimeType::Date,\n                0,\n            )\n            .map(Datum::Time)\n            .map_err(|_| result_kind_error().into_eval_error()),\n            _ => Err(result_kind_error().into_eval_error()),\n        }\n    }\n\n",
+    "test_only": false
+  },
+  {
+    "file": "rust/crates/tidb-expr/src/tikv/ready_value.rs",
+    "name": "into_uncompress",
+    "removed": "    /// Move only the kernel's decoded outcome; do not inspect input or bytes.\n    pub(crate) fn into_uncompress(self) -> Result<UncompressOutcome, EvalError> {\n        match self {\n            Self::Uncompress(outcome) => Ok(outcome),\n            _ => Err(result_kind_error().into_eval_error()),\n        }\n    }\n\n",
+    "test_only": false
+  },
+  {
+    "file": "rust/crates/tidb-expr/src/tikv/ready_value.rs",
+    "name": "into_native_vector_datum",
+    "removed": "    /// Move the computed aligned vector without parsing or revalidation.\n    pub(crate) fn into_native_vector_datum(self) -> Result<Datum, EvalError> {\n        match self {\n            Self::NativeVector(value) => Ok(value.map_or(Datum::Null, Datum::VectorFloat32)),\n            _ => Err(result_kind_error().into_eval_error()),\n        }\n    }\n\n",
+    "test_only": false
+  }
+]

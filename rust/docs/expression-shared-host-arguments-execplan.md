@@ -23,7 +23,11 @@ Reduce repeated per-function state machines, validation and empty ownership/coer
 - [x] Remove seven unused test-only forwarding helpers; retain every test function and fixture value, including unused fixture generators.
 - [x] Compile the28-private/seven-test-wrapper cleanup atae4b0b5965 (actual0/280.571s); no runtime checks attributed to this interim build.
 - [x] Remove infallible Result contracts from numeric-window assignment, identity-name probing and WEIGHT_STRING padding; retain formatting panic order and token checks after conversion. Remove the newly unused private JSON re-export.
-- [ ] Save and push a new source checkpoint, then run cumulative scoped checks and the final SQL comparison against the pinned43ba91c201 binary.
+- [x] Save and push the unused-helper/control-result checkpoints throughffb508eeae; retain316 actual test function names across54 changed Rust files.
+- [x] Complete the cumulative1013 selection (1012pass/1sameknown), both release builds,54-file format check, root lint and unchanged source/isolation proof.
+- [x] Complete the next14-scene224-cell comparison against pinned43ba91c201 and the frozen original; preserve the initial estRows-only preflight failure, one restart and strict successful retry; clean owned services/data.
+- [x] Prepare the second result report, complete raw evidence and independently runnable Python3.9 verifier.
+- [ ] Apply the separately reviewed small dispatch/direct-call cleanup, then build, validate and measure that source separately.
 - [ ] Human review and final acceptance. The broader project's path-unification and performance goals remain incomplete.
 
 ## Surprises & Discoveries
@@ -124,3 +128,15 @@ Revision November13 02:33 Asia/Shanghai: record intermediate functional completi
 
 
 Revision November13 02:38 Asia/Shanghai: the f39e38fbd3 intermediate library build passed (278.866s). Restored warnings identified four unused private production helpers, three cfg(test) helpers and two unconstructed private regexp selectors; active legacy regexp dispatch is retained. The compiler also proves a repeated Decimal coercion arm and two closed-type fallback arms unreachable. Remove those arms, a dead outer Ok and one unused private limits argument. Both added arithmetic rewriter checks passed on the pinned85 baseline. Run1013 scoped checks on the final cumulative build; all existing test functions and fixture values remain.
+
+
+## Cumulative control-result cleanup outcome and next scope
+
+
+At 2026-11-13 03:23 Asia/Shanghai, the cumulative sourceffb508eeae is validated and measured. Relative to the preceding measured43ba91c201 source it removes501 production and86 test-helper lines; every test function and sample remains. The final1013 checks complete1012pass/1sameknown failure; unit build280.273s and service build605.013s both exit0. No new SDK run is claimed; exact1574-input inheritance remains unchanged.
+
+The first preflight stopped before timing:39 comparisons differed only in114 estRows fields, including the identical A/B binary. Preserve the failing receipt and field-by-field proof. After one same-owned-data restart, the unchanged strict56 preflight passes. The successful measurement exits0 in998.168s with224 cells and140160 full queries;448 before/after records and672 observations pass audit. Both owned temporary database directories and all owned services are removed. See [the control-result report](expression-control-result-cleanup-results.zh.md) and [its data](expression-control-result-cleanup-results/) for all favorable/adverse results. These records do not establish a universal performance improvement.
+
+Next, use evidence/path-unification/resume-dispatch-cleanup and preserve this completed round. WorkMacOperator's read-only review identifies two small safe changes: reuse the task returned by validate_row_reply in resume_numeric_parent, and replace the niladic start's repeated task reads with one match. Both numeric parent callers retain reply validation; the ImmediateGuard still cancels on every return or unwind. Remove seven remaining immediately-invoked single-call closures in batch.rs, CONCAT, eager/user-variable and WEIGHT_STRING adapters; keep every closure that sequences fallible work before revalidation. No public interface, callback order, post-callback authentication, fixture or test function changes. Do not introduce carrying structures or broad parameter churn just to remove one validation from the21 single-entry adapters.
+
+Save and push this small source checkpoint, run the same1013 selection on its own pinned unit binary and build its own service. Preserve the2441-name inventory, root lint, edition2021 formatting and protected SDK/frozen/BUILD snapshots. If those gates complete, use this round's pinnedffb508eeae service SHA2567e2b08d36cbf55adcc6701a08315135dad8fd0f813f5eb694ab31eb9df76d4b2 as identical A/B controls for the unchanged14-scene matrix. Earlier results cannot be relabeled as validation of later edits. Human acceptance remains pending.

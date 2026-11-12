@@ -1,0 +1,6 @@
+{
+  "phase": "FAILED",
+  "pid": 234399,
+  "updated": 1794510298.1821265,
+  "error": "CalledProcessError(1, ['/usr/lib/python-exec/python3.14/python3', '/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/control-result-cleanup/compare.py', 'preflight'])"
+}

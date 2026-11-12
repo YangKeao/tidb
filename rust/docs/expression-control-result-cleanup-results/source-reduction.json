@@ -1,0 +1,525 @@
+{
+  "base": "85da8c2a85deca927ec4379d4ae52ad5ffb7246f",
+  "head": "ffb508eeae5804c5b81f39da1f14b60350fe2d73",
+  "totals": {
+    "production": {
+      "added": 330,
+      "deleted": 492,
+      "net_reduction": 162
+    },
+    "test": {
+      "added": 2,
+      "deleted": 33,
+      "net_reduction": 31
+    }
+  },
+  "since_preceding_measured_source": {
+    "base": "e5e15d1d2750e4af361630f603ea78781c271c9a",
+    "totals": {
+      "production": {
+        "added": 359,
+        "deleted": 860,
+        "net_reduction": 501
+      },
+      "test": {
+        "added": 7,
+        "deleted": 93,
+        "net_reduction": 86
+      }
+    }
+  },
+  "per_commit_file": [
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/cast.rs",
+      "category": "production",
+      "added": 0,
+      "deleted": 9
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/constant.rs",
+      "category": "production",
+      "added": 0,
+      "deleted": 1
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/context_value.rs",
+      "category": "production",
+      "added": 1,
+      "deleted": 3
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch.rs",
+      "category": "production",
+      "added": 31,
+      "deleted": 41
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_ast_demand.rs",
+      "category": "production",
+      "added": 12,
+      "deleted": 25
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_context_value.rs",
+      "category": "production",
+      "added": 1,
+      "deleted": 1
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_decimal_fast_source.rs",
+      "category": "production",
+      "added": 6,
+      "deleted": 6
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/math_fn/mod.rs",
+      "category": "production",
+      "added": 0,
+      "deleted": 1
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/ops/real_coerce.rs",
+      "category": "production",
+      "added": 8,
+      "deleted": 13
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/scalar_function/dynamic_diagnostic.rs",
+      "category": "production",
+      "added": 7,
+      "deleted": 11
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/scalar_function/eager_values.rs",
+      "category": "production",
+      "added": 3,
+      "deleted": 6
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/scalar_function/math_diagnostic.rs",
+      "category": "test",
+      "added": 1,
+      "deleted": 1
+    },
+    {
+      "commit": "391ad016586a5c5cff2ba90f2b7f36bd3edec09c",
+      "file": "rust/crates/tidb-expr/src/scalar_function/math_diagnostic.rs",
+      "category": "production",
+      "added": 2,
+      "deleted": 2
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_ast_host.rs",
+      "category": "production",
+      "added": 6,
+      "deleted": 8
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_ast_source.rs",
+      "category": "test",
+      "added": 1,
+      "deleted": 1
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_final_state.rs",
+      "category": "production",
+      "added": 47,
+      "deleted": 54
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_integer_division.rs",
+      "category": "production",
+      "added": 1,
+      "deleted": 1
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_json_schema.rs",
+      "category": "production",
+      "added": 46,
+      "deleted": 49
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs",
+      "category": "production",
+      "added": 6,
+      "deleted": 6
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_pb_binary_values.rs",
+      "category": "production",
+      "added": 8,
+      "deleted": 10
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_pb_boolean_values.rs",
+      "category": "production",
+      "added": 15,
+      "deleted": 22
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_pb_eager_values.rs",
+      "category": "production",
+      "added": 12,
+      "deleted": 14
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_pb_lazy_values.rs",
+      "category": "production",
+      "added": 3,
+      "deleted": 4
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_regexp_values.rs",
+      "category": "production",
+      "added": 26,
+      "deleted": 28
+    },
+    {
+      "commit": "4075ccac1d0eb5ea6373afece09cd303e0e18e4f",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch_stateful.rs",
+      "category": "production",
+      "added": 81,
+      "deleted": 86
+    },
+    {
+      "commit": "f39e38fbd3eb143ba759940c1115ba1bb50cdce6",
+      "file": "rust/crates/tidb-expr/src/rewriter/preparation.rs",
+      "category": "production",
+      "added": 0,
+      "deleted": 1
+    },
+    {
+      "commit": "f39e38fbd3eb143ba759940c1115ba1bb50cdce6",
+      "file": "rust/crates/tidb-expr/src/tikv/mod.rs",
+      "category": "production",
+      "added": 0,
+      "deleted": 1
+    },
+    {
+      "commit": "ac54ce89926c7167fe9f2ccc6f4d562b4c4b7c4f",
+      "file": "rust/crates/tidb-expr/src/tikv/cast_float.rs",
+      "category": "test",
+      "added": 0,
+      "deleted": 20
+    },
+    {
+      "commit": "ac54ce89926c7167fe9f2ccc6f4d562b4c4b7c4f",
+      "file": "rust/crates/tidb-expr/src/tikv/cast_integer.rs",
+      "category": "test",
+      "added": 0,
+      "deleted": 5
+    },
+    {
+      "commit": "ac54ce89926c7167fe9f2ccc6f4d562b4c4b7c4f",
+      "file": "rust/crates/tidb-expr/src/tikv/date_arithmetic.rs",
+      "category": "production",
+      "added": 0,
+      "deleted": 21
+    },
+    {
+      "commit": "ac54ce89926c7167fe9f2ccc6f4d562b4c4b7c4f",
+      "file": "rust/crates/tidb-expr/src/tikv/lineage.rs",
+      "category": "test",
+      "added": 0,
+      "deleted": 6
+    },
+    {
+      "commit": "ac54ce89926c7167fe9f2ccc6f4d562b4c4b7c4f",
+      "file": "rust/crates/tidb-expr/src/tikv/mod.rs",
+      "category": "production",
+      "added": 2,
+      "deleted": 2
+    },
+    {
+      "commit": "ac54ce89926c7167fe9f2ccc6f4d562b4c4b7c4f",
+      "file": "rust/crates/tidb-expr/src/tikv/ready_value.rs",
+      "category": "production",
+      "added": 1,
+      "deleted": 40
+    },
+    {
+      "commit": "ffb508eeae5804c5b81f39da1f14b60350fe2d73",
+      "file": "rust/crates/tidb-expr/src/evaluator/batch.rs",
+      "category": "production",
+      "added": 2,
+      "deleted": 7
+    },
+    {
+      "commit": "ffb508eeae5804c5b81f39da1f14b60350fe2d73",
+      "file": "rust/crates/tidb-expr/src/ops/real_coerce.rs",
+      "category": "production",
+      "added": 3,
+      "deleted": 3
+    },
+    {
+      "commit": "ffb508eeae5804c5b81f39da1f14b60350fe2d73",
+      "file": "rust/crates/tidb-expr/src/rewriter.rs",
+      "category": "production",
+      "added": 0,
+      "deleted": 16
+    }
+  ],
+  "test_function_inventory": {
+    "rust/crates/tidb-expr/src/cast.rs": {
+      "count": 21,
+      "names": [
+        "truncated_datetime_cast_keeps_the_value_and_warns",
+        "signed_string_overflow_keeps_go_complement_and_warning_semantics",
+        "json_object_to_int_cast_warns_truncation_like_string",
+        "double_cast_warning_value_truncates_at_128_bytes_like_go",
+        "double_cast_warning_subject_stops_at_nul_like_go",
+        "cast_decimal_as_unsigned_keeps_the_upper_half_of_unsigned_bigint",
+        "cast_real_as_unsigned_keeps_the_upper_half_of_unsigned_bigint",
+        "float32_unsigned_cast_reports_negative_overflow",
+        "real_unsigned_cast_reports_positive_overflow",
+        "a_string_cast_to_datetime_rounds_in_the_session_zone",
+        "a_string_cast_to_timestamp_adjusts_dst_gap_and_warns",
+        "a_decimal_source_reads_the_packed_number_not_the_wall_clock_text",
+        "a_real_source_reads_the_packed_number",
+        "an_integer_source_reads_the_packed_number",
+        "a_numeric_zero_is_the_zero_time_not_null",
+        "a_string_source_is_unchanged",
+        "temporal_target_fsp_rounds_at_boundaries",
+        "temporal_cast_preserves_value_and_zero_date_fields",
+        "duration_to_date_keeps_go_visible_date",
+        "cast_time_dispatches_every_supported_source_domain",
+        "shared_cast_admission_preserves_range_and_vector_target_errors"
+      ]
+    },
+    "rust/crates/tidb-expr/src/constant.rs": {
+      "count": 16,
+      "names": [
+        "prepared_constant_reads_current_typed_value_not_saved_literal",
+        "prepared_constants_never_supply_a_context_free_folded_value",
+        "prepared_deferred_constant_converts_current_value_without_mutation",
+        "prepared_deferred_decimal_only_extends_declared_fraction",
+        "prepared_folding_preserves_parameter_dependencies_in_lazy_functions",
+        "prepared_public_folding_keeps_nested_lazy_branches_live",
+        "prepared_overflow_reports_current_operands",
+        "prepared_decimal_batch_specialization_does_not_use_saved_parameter",
+        "const_level_reflects_deferred_and_param",
+        "literal_hash_code_is_flag_plus_value_encoding",
+        "param_hash_code_is_flag_plus_order",
+        "parameter_evaluates_the_current_context_value",
+        "distinct_literals_hash_differently",
+        "clone_is_deep",
+        "specific_constant_matches_source",
+        "constant_hash_equals_matches_source"
+      ]
+    },
+    "rust/crates/tidb-expr/src/context_value.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_ast_demand.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_ast_host.rs": {
+      "count": 2,
+      "names": [
+        "genuine_ast_cancellation_stale_generation_and_wrong_origin_cannot_replay_demand",
+        "genuine_ast_setter_can_invalidate_storage_without_a_borrow_or_effect_replay"
+      ]
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_ast_source.rs": {
+      "count": 4,
+      "names": [
+        "genuine_ast_compile_limits_precede_effects_and_keep_dead_sql_errors_late",
+        "genuine_ast_execution_resource_refusal_is_terminal_and_owner_can_be_reused",
+        "genuine_ast_metadata_only_rows_names_and_raw_charset_obey_source_budgets",
+        "genuine_ast_char_charset_is_a_real_sdk_child_with_its_original_consumer"
+      ]
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_context_value.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_decimal_fast_source.rs": {
+      "count": 2,
+      "names": [
+        "fast_source_integer_cast_imports_match_native_priority_including_empty_and_wide_values",
+        "native_decimal_function_program_unwinds_and_reuses_after_demanded_cell_panic"
+      ]
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_final_state.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_integer_division.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_json_schema.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_numeric_parent.rs": {
+      "count": 12,
+      "names": [
+        "numeric_parent_original_overflow_reloads_text_in_order_and_authenticates_it",
+        "numeric_parent_failed_integer_probe_requests_the_distinct_original_general_source",
+        "numeric_parent_consumes_before_callbacks_and_reauthenticates_before_future_demands_or_output",
+        "numeric_parent_subject_pause_precedes_warning_and_keeps_right_operand_left_value_and_consumption",
+        "numeric_window_subject_finishes_whole_left_before_whole_right_and_authenticates_scoped_resume",
+        "numeric_window_overflow_requests_original_row_only_after_both_whole_sources",
+        "numeric_window_consumes_callbacks_and_stops_before_next_row_after_generation_changes",
+        "paired_quotient_zero_callbacks_are_consuming_and_stop_before_next_row_or_publication",
+        "integer_division_context_promotion_pauses_before_warning_and_converts_left_before_right_null",
+        "integer_division_context_decimal_overflow_reads_both_reports_even_when_left_unavailable",
+        "pb_binary_parent_original_overflow_reloads_text_in_order_and_authenticates_it",
+        "pb_binary_parent_consumes_before_callbacks_and_reauthenticates_before_future_demands_or_output"
+      ]
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_binary_values.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_boolean_values.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_eager_values.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_pb_lazy_values.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_regexp_values.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/evaluator/batch_stateful.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/math_fn/mod.rs": {
+      "count": 5,
+      "names": [
+        "rand_dispatch_retains_constant_ast_and_function_identity",
+        "rand_values_shares_the_ast_paths_identity_semantics",
+        "real_math_signatures_coerce_mysql_string_prefixes",
+        "cot_preserves_go_overflow_after_string_coercion",
+        "shared_rand_seed_route_keeps_native_projection_and_concrete_conversion"
+      ]
+    },
+    "rust/crates/tidb-expr/src/ops/real_coerce.rs": {
+      "count": 1,
+      "names": [
+        "common_policy_decimal_numeric_display_is_bounded_at_demand"
+      ]
+    },
+    "rust/crates/tidb-expr/src/rewriter.rs": {
+      "count": 28,
+      "names": [
+        "explicit_cast_owns_folding_independently_of_parent_mode",
+        "prepared_rewriter_retains_distinct_markers_with_equal_initial_values",
+        "prepared_rewriter_preserves_markers_under_lazy_nested_scopes",
+        "prepared_rewriter_keeps_parameter_dependent_implicit_real_casts",
+        "prepared_rewriter_keeps_changing_string_in_members",
+        "prepared_nested_planning_values_determine_parent_result_types",
+        "builtin_result_flens_match_go_getfunction",
+        "concat_derives_binary_before_wrapping_gbk_string",
+        "rewrite_and_eval_in_lists",
+        "in_list_coerces_string_candidates_to_the_column_eval_type",
+        "rewrite_and_eval_is_predicates",
+        "rewrite_and_eval_arithmetic",
+        "decimal_arithmetic_casts_an_integer_column_to_decimal",
+        "power_wraps_integer_expressions_as_real",
+        "rewrite_literals",
+        "rewrite_infers_compare_and_op_ret_types",
+        "nested_planner_column_keeps_its_scalar_subquery_constant",
+        "unsupported_form_errors",
+        "integer_literal_signedness_matches_tidb",
+        "decimal_literal_type_matches_tidb",
+        "binary_literal_types_match_tidb",
+        "int_returning_builtins_carry_gos_flen_and_sign",
+        "string_returning_builtins_carry_gos_flen_and_charset",
+        "to_base64_flen_follows_the_argument",
+        "a_string_literal_is_as_wide_as_its_bytes",
+        "time_format_flen_follows_the_format_argument",
+        "any_value_reports_its_argument_type",
+        "go_captured_edge_case_values"
+      ]
+    },
+    "rust/crates/tidb-expr/src/rewriter/preparation.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/scalar_function/dynamic_diagnostic.rs": {
+      "count": 2,
+      "names": [
+        "dynamic_diagnostic_sparse_decimal_format_is_metered_before_formatter",
+        "numeric_argument_recipe_bounds_saved_payload_and_skips_it_without_a_declaration"
+      ]
+    },
+    "rust/crates/tidb-expr/src/scalar_function/eager_values.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/scalar_function/math_diagnostic.rs": {
+      "count": 1,
+      "names": [
+        "diagnostic_only_facts_match_original_renderer_without_evaluating_children"
+      ]
+    },
+    "rust/crates/tidb-expr/src/tikv/cast_float.rs": {
+      "count": 1,
+      "names": [
+        "legacy_real_cast_bridge_keeps_i128_datum_and_folded_error_projection"
+      ]
+    },
+    "rust/crates/tidb-expr/src/tikv/cast_integer.rs": {
+      "count": 1,
+      "names": [
+        "legacy_integer_cast_bridge_projects_values_overflow_and_unsupported"
+      ]
+    },
+    "rust/crates/tidb-expr/src/tikv/date_arithmetic.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/tikv/lineage.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/tikv/mod.rs": {
+      "count": 0,
+      "names": []
+    },
+    "rust/crates/tidb-expr/src/tikv/ready_value.rs": {
+      "count": 0,
+      "names": []
+    }
+  },
+  "classification": "Changed inline cfg(test) helper bodies/imports and test assertion/closure changes counted as test; other scoped Rust production; blank lines included; docs excluded. Earlier measured2582/+63 report remains separate."
+}

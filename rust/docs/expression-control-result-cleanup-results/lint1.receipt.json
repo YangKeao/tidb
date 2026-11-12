@@ -1,0 +1,16 @@
+{
+  "runner_pid": 189150,
+  "runner_birth": "925272",
+  "command": [
+    "make",
+    "lint"
+  ],
+  "cwd": "/home/agent/tidb/expression-unification/tidb",
+  "started": 1794508707.7491047,
+  "state": "complete",
+  "child_pid": 189169,
+  "child_birth": "925275",
+  "returncode": 0,
+  "ended": 1794508710.2701087,
+  "wall_seconds": 2.5210039615631104
+}

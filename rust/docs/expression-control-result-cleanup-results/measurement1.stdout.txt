@@ -1,0 +1,4 @@
+native Rust SQL endpoint ready; release endpoint ready
+current Rust SQL endpoint ready; release endpoint ready
+retained_b Rust SQL endpoint ready; release endpoint ready
+frozen Rust SQL endpoint ready; release endpoint ready

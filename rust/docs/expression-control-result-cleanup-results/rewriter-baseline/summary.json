@@ -1,0 +1,16 @@
+[
+  {
+    "name": "rewriter::tests::decimal_arithmetic_casts_an_integer_column_to_decimal",
+    "returncode": 0,
+    "wall_seconds": 0.0032150745391845703,
+    "source": "85da8c2a85",
+    "binary_sha256": "1a1df183041abda6b721dfdf56c9e68893c9cf0c471491df527307dff77f779a"
+  },
+  {
+    "name": "rewriter::tests::rewrite_and_eval_arithmetic",
+    "returncode": 0,
+    "wall_seconds": 0.0037119388580322266,
+    "source": "85da8c2a85",
+    "binary_sha256": "1a1df183041abda6b721dfdf56c9e68893c9cf0c471491df527307dff77f779a"
+  }
+]

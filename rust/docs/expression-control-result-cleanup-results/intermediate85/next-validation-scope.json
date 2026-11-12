@@ -1,0 +1,23 @@
+{
+  "current_source": "85da8c2a85",
+  "reason": "readonly audit identified AST COALESCE and private diagnostic renderers as next cleanup candidates; these16 cases provide additional before-change outcomes",
+  "extra_names": [
+    "ast_source_tests::genuine_ast_cache_selection_panic_poison_and_later_owner_recovery",
+    "ast_source_tests::genuine_ast_entropy_sources_keep_actual_value_properties_and_null_errors",
+    "ast_source_tests::genuine_ast_huge_benchmark_stops_at_actual_third_lookup_failure",
+    "ast_source_tests::genuine_ast_original_aes_modes_ignored_arguments_and_late_callbacks",
+    "ast_source_tests::genuine_ast_original_registry_headers_and_value_families",
+    "ast_source_tests::genuine_ast_prepared_aes_matches_frozen_results",
+    "ast_source_tests::genuine_ast_prepared_primary_matches_frozen_results",
+    "ast_source_tests::genuine_ast_prepared_registry_matches_frozen_results",
+    "ast_source_tests::genuine_ast_prepared_root_keeps_live_context_and_recovers_after_errors",
+    "ast_source_tests::genuine_ast_public_values_effects_owners_and_live_series",
+    "scalar_function::dynamic_diagnostic::argument_tests::numeric_argument_recipe_bounds_saved_payload_and_skips_it_without_a_declaration",
+    "scalar_function::dynamic_diagnostic::tests::dynamic_diagnostic_sparse_decimal_format_is_metered_before_formatter",
+    "scalar_function::math_diagnostic::tests::diagnostic_only_facts_match_original_renderer_without_evaluating_children",
+    "tests::control::case_when_source_vectors_preserve_lazy_truthiness",
+    "tests::control::if_source_vectors_use_wrapped_condition_and_lazy_branch",
+    "tests::control::ifnull_source_vectors_preserve_first_non_null_value"
+  ],
+  "source_not_changed": true
+}

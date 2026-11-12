@@ -1,0 +1,142 @@
+[
+  {
+    "file": "builtin_ext/json/mod.rs",
+    "function": "dispatch_typed_with_paths_and_document",
+    "removed": "/// Typed JSON dispatch for a cached path list and an already parsed document.\n/// This preserves Go's document-first NULL/error boundary while avoiding a\n/// second document parse on the cached path hot path.\npub(crate) fn dispatch_typed_with_paths_and_document(\n    name: &str,\n    vals: &[Datum],\n    arg_types: &[Option<FieldType>],\n    paths: &[JsonPath],\n    document: serde_json::Value,\n    ctx: &dyn crate::Columns,\n) -> Option<Result<Datum, EvalError>> {\n    debug_assert_eq!(vals.len(), arg_types.len());\n    match (name, vals.len()) {\n        (\"JSON_SET\", 3..) => Some(json_modify_with_document(\n            document,\n            vals,\n            arg_types,\n            JsonModifyMode::Set,\n            paths,\n            ctx,\n        )),\n        (\"JSON_INSERT\", 3..) => Some(json_modify_with_document(\n            document,\n            vals,\n            arg_types,\n            JsonModifyMode::Insert,\n            paths,\n            ctx,\n        )),\n        (\"JSON_REPLACE\", 3..) => Some(json_modify_with_document(\n            document,\n            vals,\n            arg_types,\n            JsonModifyMode::Replace,\n            paths,\n            ctx,\n        )),\n        _ => None,\n    }\n}\n\n"
+  },
+  {
+    "file": "builtin_ext/json/modify.rs",
+    "function": "json_modify_with_document",
+    "removed": "pub(super) fn json_modify_with_document(\n    document: Json,\n    vals: &[Datum],\n    arg_types: &[Option<FieldType>],\n    mode: JsonModifyMode,\n    paths: &[JsonPath],\n    ctx: &dyn Columns,\n) -> Result<Datum, EvalError> {\n    crate::tikv::evaluate_prepared_args_in(\n        ctx,\n        || prepare_json_modify_with_document(document, vals, arg_types, mode, paths),\n        EvaluatedBytesResult::into_json_datum,\n    )\n}\n\n"
+  },
+  {
+    "file": "builtin_ext/json/value.rs",
+    "function": "binary_json_datum",
+    "removed": "pub(super) fn binary_json_datum(json: Json) -> Result<Datum, EvalError> {\n    crate::tikv::native_binary_json_datum(json)\n        .map(binary_datum)\n        .map_err(coercion_error)\n}\n\n"
+  },
+  {
+    "file": "builtin_ext/regexp.rs",
+    "function": "replacement_parts",
+    "removed": "/// Keep the replacement-cache API while the shared leaf owns tokenization.\npub(crate) fn replacement_parts(replacement: &str) -> Vec<ReplacementPart> {\n    regexp_replacement_parts(replacement.as_bytes())\n}\n\n"
+  },
+  {
+    "file": "constant.rs",
+    "function": "eval_on_row_with_error_value",
+    "removed": "    /// Go Constant.Eval returns a saved or unconverted Datum alongside an error.\n    /// Rewrites that mutate Value must retain it without evaluating twice.\n    /// Keep the caller's row, avoiding a new empty chunk at every deferred node.\n    pub(crate) fn eval_on_row_with_error_value(\n        &self,\n        ctx: &dyn crate::Columns,\n        row: tidb_chunk::row::Row<'_>,\n    ) -> Result<Datum, (Datum, EvalError)> {\n        self.eval_lazy_in(ctx, |expression| expression.eval(ctx, row))\n    }\n\n"
+  },
+  {
+    "file": "ops/integer_coerce.rs",
+    "function": "unsigned_operand",
+    "removed": "pub(super) fn unsigned_operand(value: Datum, operand: Operand<'_>) -> Datum {\n    unsigned_operand_flag(value, operand.is_unsigned())\n}\n\n"
+  },
+  {
+    "file": "ops/operand.rs",
+    "function": "is_string_kind",
+    "removed": "    /// Go `args[i].GetType(ctx).EvalType().IsStringKind()`.\n    pub(crate) fn is_string_kind(self) -> bool {\n        self.eval_type().is_some_and(EvalType::is_string_kind)\n    }\n\n"
+  },
+  {
+    "file": "ops/real_coerce.rs",
+    "function": "raise_truncated_double",
+    "removed": "/// Go `ErrTruncatedWrongVal.GenWithStackByArgs(\"DOUBLE\", s)` at warning\n/// level: `1292 Truncated incorrect DOUBLE value: '<s>'`.\n///\n/// `s` is the string AFTER `strings.TrimSpace`, because `StrToFloat` trims\n/// before handing the value to `getValidFloatPrefix`, and both of that\n/// function's raise sites name the trimmed form (captured: a padded\n/// `' 12abc '` warns about `'12abc'`, and a padded `' 12 '` does not warn).\n///\n/// Go raises this ONCE PER EVALUATION, so a query with three rows and two\n/// coercing sites records six warnings, not one (captured:\n/// `SELECT ABS(a), a+0 FROM t` over three rows lists all six). Nothing here\n/// deduplicates, for the same reason.\npub(crate) fn raise_truncated_double(\n    ctx: &dyn crate::context::Columns,\n    text: &str,\n) -> Result<(), EvalError> {\n    ctx.handle_truncate(&format!(\"Truncated incorrect DOUBLE value: '{text}'\"))\n}\n\n"
+  },
+  {
+    "file": "regexp.rs",
+    "function": "regexp_match_with_collation",
+    "removed": "pub(crate) fn regexp_match_with_collation(\n    text: &str,\n    pattern: &str,\n    collation: tidb_datatype::Collation,\n) -> Result<bool, EvalError> {\n    regexp_match_with_collation_in(&NoColumns, text, pattern, collation)\n}\n\n"
+  },
+  {
+    "file": "regexp.rs",
+    "function": "regexp_like_with_collation",
+    "removed": "/// `REGEXP_LIKE` applies the expression's derived collation before its\n/// user-supplied match type. A later `c`/`i` therefore wins, as Go's\n/// `getRegexpMatchType` requires.\npub(crate) fn regexp_like_with_collation(\n    text: &str,\n    pattern: &str,\n    match_type: &str,\n    collation: tidb_datatype::Collation,\n) -> Result<bool, EvalError> {\n    regexp_like_with_collation_in(&NoColumns, text, pattern, match_type, collation)\n}\n\n"
+  },
+  {
+    "file": "regexp.rs",
+    "function": "regexp_like_with_collation_in",
+    "removed": "pub(crate) fn regexp_like_with_collation_in(\n    ctx: &dyn Columns,\n    text: &str,\n    pattern: &str,\n    match_type: &str,\n    collation: tidb_datatype::Collation,\n) -> Result<bool, EvalError> {\n    let match_type = regexp_match_type_with_collation(match_type, collation);\n    regexp_like_in(ctx, text, pattern, &match_type)\n}\n\n"
+  },
+  {
+    "file": "scalar_function.rs",
+    "function": "eval_like_value",
+    "removed": "    pub(crate) fn eval_like_value(\n        &self,\n        ctx: &dyn Columns,\n        row: Row<'_>,\n    ) -> Result<Datum, EvalError> {\n        use crate::tikv::wildcard_value::{Prepared, Step};\n        let maximum = crate::tikv::wildcard_value::default_budget();\n        let mut state = Prepared::Text;\n        loop {\n            let index = state.argument();\n            let value = self.args[index].eval(ctx, row)?;\n            match state.advance(&value, self.args[index].static_type(), ctx, maximum)? {\n                Step::Need(next) => state = next,\n                Step::Null => return Ok(Datum::Null),\n                Step::Match(values) => {\n                    // Original context read precedes collation/invocation\n                    // construction, and only follows the actual escape cast.\n                    let cached = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT\n                        && self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;\n                    let context = if cached { Some(ctx.context_id()) } else { None };\n                    let invocation = self.batch_like_invocation();\n                    let invocation = if let Some(id) = context {\n                        invocation.with_context_id(id)\n                    } else {\n                        invocation\n                    };\n                    return values.evaluate(&invocation, maximum);\n                }\n            }\n        }\n    }\n\n"
+  },
+  {
+    "file": "string_signature.rs",
+    "function": "of_with_signature",
+    "removed": "    /// Views `value` under an explicitly chosen signature, for the functions\n    /// whose signature comes from the RESULT charset rather than from the\n    /// sliced argument alone \u2014 `insertFunctionClass.getFunction` tests\n    /// `types.IsBinaryStr(bf.tp)` after `addBinFlag`, so a binary\n    /// replacement string makes `INSERT` slice `str` by bytes too.\n    pub(crate) fn of_with_signature(\n        value: &Datum,\n        binary: bool,\n    ) -> Result<Option<Self>, EvalError> {\n        let Some(bytes) = coerce_str_bytes(value)? else {\n            return Ok(None);\n        };\n        Ok(Some(Self::from_bytes(bytes, binary)))\n    }\n\n"
+  },
+  {
+    "file": "string_signature.rs",
+    "function": "bytes",
+    "removed": "    /// The whole payload, for the signatures that only reorder or search it.\n    pub(crate) fn bytes(&self) -> &[u8] {\n        &self.bytes\n    }\n\n"
+  },
+  {
+    "file": "time_fn/mod.rs",
+    "function": "format_time_diff",
+    "removed": "// GoDuration::format still shares this exact formatter without adopting the\n// TIMEDIFF parser or its clamp policy.\nfn format_time_diff(micros: i64, fsp: usize) -> String {\n    tidb_query_expr::native_format_time_diff(micros, fsp)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "parse_date_ymd",
+    "removed": "/// Parses a date or datetime string's calendar date into `(year, month,\n/// day)`, calendar-validated (month 1-12, day valid for that specific\n/// month/year, including leap years) \u2014 `None` if it doesn't look like one.\n/// Mirrors MySQL's lenient separator handling (any run of non-digit\n/// characters between the numeric components, confirmed via `goeval` to\n/// accept `-`, `/`, and `.`) and leading/trailing whitespace tolerance. A\n/// trailing time-of-day component (space-separated) is accepted but\n/// ignored here \u2014 this function is deliberately scoped to the DATE part\n/// only; see [`TikvTime::parse_native_hms`] for `HOUR`/`MINUTE`/`SECOND`\n/// extraction, which needs a GENUINELY different algorithm (real TiDB's\n/// behavior on a string with no time component is non-obvious \u2014 e.g.\n/// `MINUTE('2021-01-01')` is NOT `0` \u2014 so it does not simply call this\n/// function and default a missing time to midnight).\n///\n/// A bare, separator-less digit run of EXACTLY 6 or 8 digits (e.g.\n/// `20240315` \u2014 including from an integer literal argument like\n/// `YEAR(20240315)`, `Datum::Int` already coerces to this same decimal\n/// string form) is a SEPARATE, positional `YYMMDD`/`YYYYMMDD` reading \u2014\n/// confirmed via `goeval`, not assumed, and NOT limited to `HOUR`/\n/// `MINUTE`/`SECOND`'s own colon-less path, which this function does not\n/// share (that path decodes an ELAPSED-time magnitude via modulo\n/// arithmetic; this one slices fixed-width calendar fields). See\n/// [`expand_year`] for the 2-digit-year century pivot this shares with\n/// the separator-based path below.\npub(crate) fn parse_date_ymd(s: &str) -> Option<(i64, u32, u32)> {\n    TikvTime::parse_native_date_ymd(s)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "split_numeric_components",
+    "removed": "/// Splits a string into the `(value, digit count)` of its maximal runs of\n/// ASCII digits, treating every other character as a separator \u2014 `None`\n/// if any component is empty (a leading, trailing, or doubled separator)\n/// or if there are not exactly 3 components. The digit count (not just\n/// the parsed value) is preserved for [`expand_year`]'s own century-pivot\n/// rule, which depends on how many digits the year was actually WRITTEN\n/// with, not on its numeric value alone.\nfn split_numeric_components(input: &str) -> Option<Vec<(u32, usize)>> {\n    TikvTime::native_split_date_components(input)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "split_numeric_components_for_time_diff",
+    "removed": "/// Splits numeric date components for the `TIMEDIFF` parser.\npub(crate) fn split_numeric_components_for_time_diff(input: &str) -> Option<Vec<(u32, usize)>> {\n    split_numeric_components(input)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "expand_year",
+    "removed": "/// Expands a calendar-date component's own YEAR value per real MySQL/\n/// TiDB's century-pivot rule, confirmed via `goeval` to depend on the\n/// value's ORIGINAL WRITTEN digit count, not its numeric magnitude: a\n/// 1- or 2-digit year (`'1-03-15'` and `'01-03-15'` are indistinguishable\n/// once parsed to a plain integer, and both pivot identically) is\n/// EXPANDED \u2014 `0..=69` becomes `2000..=2069`, `70..=99` becomes\n/// `1970..=1999` \u2014 while a 3-or-more-digit year is taken LITERALLY, even\n/// when its own value happens to be under 100 (`'099-03-15'` is year\n/// `99`, NOT pivoted to `1999`/`2099` \u2014 confirmed via `goeval`, a real\n/// asymmetry from the 2-digit case that could not be guessed from the\n/// value alone).\nfn expand_year(value: u32, digits: usize) -> i64 {\n    TikvTime::native_expand_date_year(value, digits)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "expand_year_for_time_diff",
+    "removed": "/// Expands a two-digit year using TiDB's date parsing window.\npub(crate) fn expand_year_for_time_diff(value: u32, digits: usize) -> i64 {\n    expand_year(value, digits)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "time_diff_daynr",
+    "removed": "/// Computes TiDB's `calcDaynr` value for `TIMEDIFF` datetime arithmetic.\n/// Unlike normal calendar parsing, the source permits zero month/day\n/// components when `IgnoreZeroInDate` is enabled; mirroring `calcDaynr`\n/// preserves those values instead of forcing them through Gregorian\n/// month normalization.\npub(crate) fn time_diff_daynr(year: i64, month: u32, day: u32) -> i64 {\n    TikvTime::native_time_diff_daynr(year, month, day)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "is_leap_year",
+    "removed": "fn is_leap_year(year: i64) -> bool {\n    TikvTime::native_is_leap_year(year)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "days_in_month",
+    "removed": "/// The number of days in `month` of `year` (Gregorian, leap-year aware);\n/// `0` for an out-of-range month so a range check against it always fails.\nfn days_in_month(year: i64, month: u32) -> u32 {\n    TikvTime::native_days_in_month(year, month)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "days_in_month_for_time_diff",
+    "removed": "/// Returns the Gregorian month length for the `TIMEDIFF` parser.\npub(crate) fn days_in_month_for_time_diff(year: i64, month: u32) -> u32 {\n    days_in_month(year, month)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "days_from_civil",
+    "removed": "/// Gregorian days since 1970-01-01, delegated to the shared wide civil helper.\n/// The fixed epoch is also used by weekday offsets, inverse conversion and\n/// timestamp consumers; this is not MySQL's internal day-number domain.\npub(crate) fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {\n    TikvTime::native_days_from_civil(y, m, d)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "civil_from_days",
+    "removed": "/// The inverse of [`days_from_civil`]: the Gregorian calendar date for a day\n/// count `z` since the same 1970-01-01 epoch \u2014 Howard Hinnant's\n/// `civil_from_days` algorithm, from the same public source. Used by\n/// [`from_days_in`] (which converts through [`days_from_civil`]'s own epoch \u2014\n/// see `TO_DAYS`'s `719_528` offset, so the exact epoch choice is internal\n/// and doesn't need to match MySQL's) and, unlike `from_days_in`, directly on\n/// its OWN public epoch by `crate::time_fn`'s `NOW()`/`CURRENT_TIMESTAMP()`\n/// (a true Unix timestamp's day count IS already `z` in this function's own\n/// terms, since both anchor to 1970-01-01).\npub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {\n    TikvTime::native_civil_from_days(z)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "parse_time_hms",
+    "removed": "/// Parses a `HH:MM:SS` time-of-day string into `(hour, minute, second)`,\n/// each range-validated (`0..=23`/`0..=59`/`0..=59`) \u2014 `None` if malformed\n/// or out of range. Strict about the `:` separator, unlike\n/// [`parse_date_ymd`]'s lenient date-separator handling: every date/\n/// datetime value this crate itself ever produces is `HH:MM:SS` exactly,\n/// and every corpus/test input uses the same well-formed shape, so\n/// leniency here has not been demonstrated as necessary the way the DATE\n/// separator's was (confirmed via `goeval` to matter for real inputs).\npub(crate) fn parse_time_hms(s: &str) -> Option<(u32, u32, u32)> {\n    TikvTime::parse_native_clock_hms(s)\n}\n\n"
+  },
+  {
+    "file": "time_fn/calendar.rs",
+    "function": "parse_time_with_fraction",
+    "removed": "/// `DATE_FORMAT`'s time-of-day parser extends [`parse_time_hms`] with the\n/// optional fractional seconds which `%f` renders. The Go source delegates\n/// this to `types.Time.DateFormat` (`pkg/types/time.go`); retaining the\n/// written fraction here is enough for the evaluator's string-only domain.\npub(crate) fn parse_time_with_fraction(s: &str) -> Option<(u32, u32, u32, String)> {\n    TikvTime::parse_native_clock_with_fraction(s)\n}\n\n"
+  }
+]

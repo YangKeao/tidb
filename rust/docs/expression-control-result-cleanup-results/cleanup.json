@@ -1,0 +1,11 @@
+{
+  "checked": 1794511408.0261946,
+  "all_owned_services_stopped": true,
+  "ports_free": true,
+  "deleted": [
+    "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/control-result-cleanup/runtime/pd-data",
+    "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/control-result-cleanup/runtime/tikv-data"
+  ],
+  "ownership": "recorded command data-dir and PID/birth checked before removal",
+  "preserved": "raw timing/tests/profiles/ELF/golden observations"
+}

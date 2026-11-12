@@ -1,0 +1,36 @@
+{
+  "artifact": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr#0.0.0",
+    "manifest_path": "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "tidb_expr",
+      "src_path": "/home/agent/tidb/expression-unification/tidb/rust/crates/tidb-expr/src/lib.rs",
+      "edition": "2021",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 0,
+      "debug_assertions": false,
+      "overflow_checks": false,
+      "test": true
+    },
+    "features": [],
+    "filenames": [
+      "/home/agent/tidb/expression-unification/target-tidb/release/build/tidb-expr/d62fb601bb0695bb/out/tidb_expr-d62fb601bb0695bb"
+    ],
+    "executable": "/home/agent/tidb/expression-unification/target-tidb/release/build/tidb-expr/d62fb601bb0695bb/out/tidb_expr-d62fb601bb0695bb",
+    "fresh": false
+  },
+  "binary": "/home/agent/.slock/agents/02fef0a9-76ce-4afe-9bce-73eebe82ff7d/evidence/path-unification/control-result-cleanup/front-unit-candidate",
+  "sha256": "2d769decf3324d36d35f1afe0f14428035d9874487c7d40f5346aa59ae59d8aa"
+}

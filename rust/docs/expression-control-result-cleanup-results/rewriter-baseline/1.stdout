@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "rewriter::tests::rewrite_and_eval_arithmetic" }
+{ "type": "test", "name": "rewriter::tests::rewrite_and_eval_arithmetic", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 2440, "exec_time": 0.001081306 }

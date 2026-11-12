@@ -1,0 +1,14 @@
+{
+  "database": "expr_policy_optimization",
+  "table": "t_eval",
+  "source_table": "t",
+  "rows": 8192,
+  "counts": [
+    "8192",
+    "-1166",
+    "7372",
+    "82"
+  ],
+  "reason": "Both native and current bounded Rust nodes refuse catalog containing JSON; JSON evaluation probes use genuine computed JSON from id instead.",
+  "cases_sha256": "bd494442f6da3c30fdd0a07b1c3820c5df64e326946163000d7f37cc0bac2445"
+}

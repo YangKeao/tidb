@@ -1,0 +1,37 @@
+[
+  {
+    "file": "evaluator/batch.rs",
+    "function": "lower",
+    "removed": "#[cfg(test)]\nfn lower(\n    suite: &EvaluatorSuite,\n    calculated_slot: usize,\n    row_schema: &[FieldType],\n    new_collation: bool,\n    unit: u64,\n    limits: BatchSourceLimits,\n) -> Result<Arc<BatchSource>> {\n    lower_view(\n        suite,\n        calculated_slot,\n        row_schema,\n        new_collation,\n        unit,\n        limits,\n        None,\n    )\n}\n"
+  },
+  {
+    "file": "evaluator/batch_decimal_fast_source.rs",
+    "function": "execute_decimal_priority",
+    "removed": "    #[cfg(test)]\n    pub(super) fn execute_decimal_priority(\n        &mut self,\n        native_ctx: &dyn Columns,\n        ctx: &mut EvalContext,\n        input: &Chunk,\n        output: &mut Chunk,\n    ) -> Result<bool> {\n        let selection = self.selection.clone();\n        self.execute_selected_decimal_priority(native_ctx, ctx, input, output, &selection)\n    }\n"
+  },
+  {
+    "file": "func.rs",
+    "function": "d",
+    "removed": "    fn d(s: &str) -> Datum {\n        Datum::new_string(s.to_string())\n    }\n\n"
+  },
+  {
+    "file": "string_fn.rs",
+    "function": "reverse",
+    "removed": "#[cfg(test)]\npub(crate) fn reverse(vals: &[Datum]) -> Result<Datum, EvalError> {\n    reverse_in(vals, &crate::NoColumns)\n}\n\n"
+  },
+  {
+    "file": "string_fn.rs",
+    "function": "make_set",
+    "removed": "#[cfg(test)]\npub(crate) fn make_set(vals: &[Datum]) -> Result<Datum, EvalError> {\n    make_set_in(vals, &crate::NoColumns)\n}\n\n"
+  },
+  {
+    "file": "time_fn/mod.rs",
+    "function": "makedate",
+    "removed": "#[cfg(test)]\nfn makedate(vals: &[Datum]) -> Result<Datum, EvalError> {\n    makedate_in(vals, &crate::NoColumns)\n}\n\n"
+  },
+  {
+    "file": "tests/crypto_encryption_source.rs",
+    "function": "eval_encrypt_bytes",
+    "removed": "fn eval_encrypt_bytes(origin: &Datum, params: &[&str], mode_value: &str) -> Datum {\n    let ctx = aes_context(mode_value);\n    let mut vals = vec![origin.clone()];\n    vals.extend(params.iter().map(|p| s(p)));\n    call(\"AES_ENCRYPT\", &vals, &ctx)\n}\n\n"
+  }
+]
