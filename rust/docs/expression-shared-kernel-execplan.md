@@ -92,3 +92,19 @@ Whole-file candidate scanning fixes production omitted after inline test attribu
 Dynamic IF now has explicit else/end edges and a shared branch-frame join, preserving logical occurrences across nested partial selections. Structural finish validates/freezes native control programs;511+ nested levels are tested. Full-domain native intermediate vectors keep float bits and Decimal metadata. Real SDK JSON parse/length and delayed native regexp kernels are covered by demanded-error and bad-unselected-row cases.11 native cases and34 SDK loop cases pass; the added PB eager-IF case also passes against original548812e in a separate test-only worktree. Scoped expression/executor clippy completes with warnings; required make clippy fails before checking because rustup is missing from PATH.
 
 This proves the current pure/control subset only. Scalar versus vector invocation, arithmetic range/error/warning prefixes, shared state/multi-root ordering and BENCHMARK remain M1 work. The program does not yet provide complete native diagnostic adaptation. No decision has been made to relax original native/PB semantic differences.
+
+## Checkpoint 4 progress and corrected constraint
+
+Explicit Scalar/Vector invocation and signed integer plus/multiply now retain
+NULL right-child demand. Native IF uses a shared scalar region because its
+original row fallback skips that right child even inside Vector; a regression
+first reproduced the candidate's incorrect overflow. Caller Vector mode is
+restored after the region. JSON coercion preserves3140/empty versus invalid
+text diagnostics through a structured code/message boundary.15 native and34
+SDK tests pass; scoped library clippy passes with warnings.
+
+Designer06e8cdf0 withdrew strict first-fatal ordering after rereading the user's
+permission to reorder warning/error diagnostics. The earlier failing ordering
+test remains evidence, not an acceptance requirement. The region mechanism is
+required by independently tested child demand, not error ordering. Real state,
+wide arithmetic and warning-prefix completeness remain unresolved M1 gates.

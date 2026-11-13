@@ -15,10 +15,51 @@ use tidb_query_datatype::{
 };
 use tidb_query_expr::{
     ExpressionDecimal, ExpressionScalar, ExpressionVector, InputColumns, InputResult,
-    RpnExpression, RpnExpressionNode, RpnStackNode, RpnStackNodeVectorValue,
+    InvocationMode, RpnExpression, RpnExpressionNode, RpnStackNode, RpnStackNodeVectorValue,
 };
 
 use crate::expression::Expression;
+
+/// SQL diagnostics remain structured across the shared evaluator boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedEvaluationError {
+    /// SQL error number, absent for adapter validation failures.
+    pub code: Option<i32>,
+    /// Diagnostic text without transport prefixes.
+    pub message: String,
+}
+
+impl std::fmt::Display for SharedEvaluationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for SharedEvaluationError {}
+impl From<String> for SharedEvaluationError {
+    fn from(message: String) -> Self {
+        Self {
+            code: None,
+            message,
+        }
+    }
+}
+impl From<&str> for SharedEvaluationError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl From<tidb_query_expr::evaluation_error::Error> for SharedEvaluationError {
+    fn from(error: tidb_query_expr::evaluation_error::Error) -> Self {
+        use tidb_query_expr::evaluation_error::ErrorInner;
+        match *error.0 {
+            ErrorInner::Evaluate(error) => Self {
+                code: Some(error.code()),
+                message: error.to_string(),
+            },
+            ErrorInner::Storage(error) => error.to_string().into(),
+        }
+    }
+}
 
 /// A native expression compiled once into the same program used by protobuf.
 #[derive(Debug)]
@@ -41,12 +82,14 @@ impl SharedExpression {
         enum Visit<'a> {
             Enter(&'a Expression),
             Md5,
+            IntegerLeft(&'a crate::scalar_function::ScalarFunction),
+            IntegerRight(&'a crate::scalar_function::ScalarFunction, usize),
             ParseJson,
             JsonLength,
             RegexpLike(usize),
-            IfCondition(&'a crate::scalar_function::ScalarFunction),
-            IfThen(&'a crate::scalar_function::ScalarFunction, usize),
-            IfElse(usize, usize),
+            IfCondition(&'a crate::scalar_function::ScalarFunction, usize),
+            IfThen(&'a crate::scalar_function::ScalarFunction, usize, usize),
+            IfElse(usize, usize, usize),
         }
         let mut work = vec![Visit::Enter(expression)];
         let mut nodes = Vec::new();
@@ -146,6 +189,56 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::ColumnRef { offset });
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if matches!(f.func_name.lowercase(), "plus" | "mul") =>
+                {
+                    let admitted = |t: &tidb_datatype::FieldType| {
+                        t.code() == tidb_datatype::FieldTypeCode::LongLong
+                            && !t.is_unsigned()
+                            && !t.is_array()
+                    };
+                    if f.args.len() != 2
+                        || f.ret_type.as_ref().is_none_or(|t| !admitted(t))
+                        || f.args
+                            .iter()
+                            .any(|a| a.static_type().is_none_or(|t| !admitted(t)))
+                    {
+                        return Err(
+                            "arithmetic currently admits signed integer plus/mul only".into()
+                        );
+                    }
+                    work.push(Visit::IntegerLeft(f));
+                    work.push(Visit::Enter(&f.args[0]));
+                }
+                Visit::IntegerLeft(f) => {
+                    let at = nodes.len();
+                    nodes.push(RpnExpressionNode::NullGuard {
+                        target: 0,
+                        field_type: FieldTypeTp::LongLong.into(),
+                    });
+                    work.push(Visit::IntegerRight(f, at));
+                    work.push(Visit::Enter(&f.args[1]));
+                }
+                Visit::IntegerRight(f, guard) => {
+                    use tidb_query_expr::impl_arithmetic::{
+                        arithmetic_fn_meta, IntIntMultiply, IntIntPlus,
+                    };
+                    nodes.push(RpnExpressionNode::FnCall {
+                        func_meta: if f.func_name.lowercase() == "plus" {
+                            arithmetic_fn_meta::<IntIntPlus>()
+                        } else {
+                            arithmetic_fn_meta::<IntIntMultiply>()
+                        },
+                        args_len: 2,
+                        field_type: FieldTypeTp::LongLong.into(),
+                        metadata: Box::new(()),
+                    });
+                    let end = nodes.len();
+                    let RpnExpressionNode::NullGuard { target, .. } = &mut nodes[guard] else {
+                        unreachable!()
+                    };
+                    *target = end;
+                }
                 Visit::Enter(Expression::ScalarFunction(f)) if f.func_name.lowercase() == "if" => {
                     if f.args.len() != 3 {
                         return Err("IF requires three arguments".into());
@@ -183,20 +276,25 @@ impl SharedExpression {
                                 .into(),
                         );
                     }
-                    work.push(Visit::IfCondition(f));
+                    let region = nodes.len();
+                    nodes.push(RpnExpressionNode::OrderedRows {
+                        end: 0,
+                        field_type: control_type(f)?,
+                    });
+                    work.push(Visit::IfCondition(f, region));
                     work.push(Visit::Enter(&f.args[0]));
                 }
-                Visit::IfCondition(f) => {
+                Visit::IfCondition(f, region) => {
                     let at = nodes.len();
                     nodes.push(RpnExpressionNode::JumpIfFalse {
                         target: 0,
                         end: 0,
                         field_type: control_type(f)?,
                     });
-                    work.push(Visit::IfThen(f, at));
+                    work.push(Visit::IfThen(f, at, region));
                     work.push(Visit::Enter(&f.args[1]));
                 }
-                Visit::IfThen(f, branch) => {
+                Visit::IfThen(f, branch, region) => {
                     let at = nodes.len();
                     nodes.push(RpnExpressionNode::Jump {
                         target: 0,
@@ -206,10 +304,10 @@ impl SharedExpression {
                         unreachable!()
                     };
                     *target = at + 1;
-                    work.push(Visit::IfElse(at, branch));
+                    work.push(Visit::IfElse(at, branch, region));
                     work.push(Visit::Enter(&f.args[2]));
                 }
-                Visit::IfElse(jump, branch) => {
+                Visit::IfElse(jump, branch, region) => {
                     let end = nodes.len();
                     let RpnExpressionNode::Jump { target, .. } = &mut nodes[jump] else {
                         unreachable!()
@@ -220,6 +318,11 @@ impl SharedExpression {
                         unreachable!()
                     };
                     *merge = end;
+                    let RpnExpressionNode::OrderedRows { end: stop, .. } = &mut nodes[region]
+                    else {
+                        unreachable!()
+                    };
+                    *stop = end;
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if matches!(f.func_name.lowercase(), "json_length" | "regexp_like") =>
@@ -286,7 +389,7 @@ impl SharedExpression {
                         .as_mut_accessor()
                         .set_flag(FieldTypeFlag::PARSE_TO_JSON);
                     nodes.push(RpnExpressionNode::FnCall {
-                        func_meta: tidb_query_expr::impl_cast::cast_string_as_json_fn_meta(),
+                        func_meta: tidb_query_expr::impl_cast::parse_native_json_fn_meta(),
                         args_len: 1,
                         field_type,
                         metadata: Box::new(()),
@@ -345,7 +448,21 @@ impl SharedExpression {
         input: &Chunk,
         rows: &[usize],
         ctx: &mut EvalContext,
-    ) -> Result<Vec<Datum>, String> {
+    ) -> Result<Vec<Datum>, SharedEvaluationError> {
+        self.evaluate_mode(input, rows, ctx, InvocationMode::Vector)
+    }
+
+    /// Explicit scalar invocation accepts exactly one selected row.
+    pub fn evaluate_mode(
+        &self,
+        input: &Chunk,
+        rows: &[usize],
+        ctx: &mut EvalContext,
+        mode: InvocationMode,
+    ) -> Result<Vec<Datum>, SharedEvaluationError> {
+        if mode == InvocationMode::Scalar && rows.len() != 1 {
+            return Err("scalar invocation requires one row".into());
+        }
         if rows.iter().any(|r| *r >= input.physical_rows()) {
             return Err("selected row is outside the input chunk".into());
         }
@@ -361,9 +478,9 @@ impl SharedExpression {
         };
         let result = self
             .program
-            .eval_input(ctx, &self.schema, &columns, rows, rows.len())
-            .map_err(|e| e.to_string())?;
-        native_output(result, rows.len())
+            .eval_input_mode(ctx, &self.schema, &columns, rows, rows.len(), mode)
+            .map_err(SharedEvaluationError::from)?;
+        native_output(result, rows.len()).map_err(SharedEvaluationError::from)
     }
 }
 
@@ -518,6 +635,222 @@ mod tests {
             native_type(),
             vec![arg],
         ))
+    }
+
+    #[test]
+    fn shared_kernel_native_if_allows_diagnostic_reordering() {
+        use tidb_datatype::FieldTypeCode;
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let text = |value: &str| {
+            Expression::Constant(Constant::new(
+                Datum::new_string(value.as_bytes().to_vec()),
+                native_type(),
+            ))
+        };
+        let mut c = Column::new(1, integer.clone());
+        c.index = 0;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            integer.clone(),
+            vec![
+                Expression::Column(c),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("json_length"),
+                    integer.clone(),
+                    vec![text("{")],
+                )),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("regexp_like"),
+                    integer.clone(),
+                    vec![text("a"), text("[")],
+                )),
+            ],
+        ));
+        let mut input = Chunk::new(&[integer], 2, 2);
+        input.append_int64(0, 0);
+        input.append_int64(0, 1);
+        assert!(matches!(
+            expression.eval(&crate::context::NoColumns, input.physical_row(0)),
+            Err(crate::EvalError::Unsupported(
+                "invalid regular expression pattern"
+            ))
+        ));
+        assert!(matches!(
+            expression.eval(&crate::context::NoColumns, input.physical_row(1)),
+            Err(crate::EvalError::Json(crate::JsonError::InvalidText))
+        ));
+        let actual = SharedExpression::compile(&expression)
+            .unwrap()
+            .evaluate(&input, &[0, 1], &mut EvalContext::default())
+            .unwrap_err();
+        // The user permits diagnostic ordering differences between reachable errors.
+        let message = actual.to_string().to_lowercase();
+        assert!(
+            message.contains("regex") || message.contains("json"),
+            "unexpected error: {actual}"
+        );
+    }
+
+    #[test]
+    fn shared_kernel_json_error_identity() {
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let mut input = Chunk::new(&[integer.clone()], 1, 1);
+        input.append_int64(0, 0);
+        for (text, expected) in [
+            ("", crate::JsonError::EmptyText),
+            (" \t\n", crate::JsonError::EmptyText),
+            ("{", crate::JsonError::InvalidText),
+            ("{}x", crate::JsonError::InvalidText),
+        ] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("json_length"),
+                integer.clone(),
+                vec![Expression::Constant(Constant::new(
+                    Datum::new_string(text.as_bytes().to_vec()),
+                    native_type(),
+                ))],
+            ));
+            assert_eq!(
+                expression.eval(&crate::context::NoColumns, input.physical_row(0)),
+                Err(crate::EvalError::Json(expected.clone()))
+            );
+            let error = SharedExpression::compile(&expression)
+                .unwrap()
+                .evaluate(&input, &[0], &mut EvalContext::default())
+                .unwrap_err();
+            assert_eq!(error.code, Some(i32::from(expected.code())));
+            assert_eq!(error.to_string(), expected.message());
+        }
+    }
+
+    #[test]
+    fn shared_kernel_scalar_and_width_one_vector_preserve_null_demand() {
+        use tidb_datatype::FieldTypeCode;
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let mut left = Column::new(1, integer.clone());
+        left.index = 0;
+        let mut right = Column::new(2, integer.clone());
+        right.index = 1;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            integer.clone(),
+            vec![
+                Expression::Column(left),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("mul"),
+                    integer.clone(),
+                    vec![
+                        Expression::Column(right),
+                        Expression::Constant(Constant::new(Datum::Int(2), integer.clone())),
+                    ],
+                )),
+            ],
+        ));
+        let mut input = Chunk::new(&[integer.clone(), integer], 1, 1);
+        input.append_null(0);
+        input.append_int64(1, i64::MAX);
+        assert_eq!(
+            expression
+                .eval(&crate::context::NoColumns, input.physical_row(0))
+                .unwrap(),
+            Datum::Null
+        );
+        assert!(crate::scalar_function::try_eval_numeric_batch(
+            &expression,
+            &crate::context::NoColumns,
+            &input
+        )
+        .is_err());
+        let program = SharedExpression::compile(&expression).unwrap();
+        assert_eq!(
+            program
+                .evaluate_mode(
+                    &input,
+                    &[0],
+                    &mut EvalContext::default(),
+                    InvocationMode::Scalar
+                )
+                .unwrap(),
+            vec![Datum::Null]
+        );
+        assert!(program
+            .evaluate_mode(
+                &input,
+                &[0],
+                &mut EvalContext::default(),
+                InvocationMode::Vector
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn shared_kernel_if_children_keep_scalar_null_demand() {
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let constant = |v| Expression::Constant(Constant::new(v, integer.clone()));
+        let call = |name, args| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                integer.clone(),
+                args,
+            ))
+        };
+        let expression = call(
+            "if",
+            vec![
+                constant(Datum::Int(1)),
+                call(
+                    "plus",
+                    vec![
+                        constant(Datum::Null),
+                        call(
+                            "mul",
+                            vec![constant(Datum::Int(i64::MAX)), constant(Datum::Int(2))],
+                        ),
+                    ],
+                ),
+                constant(Datum::Int(0)),
+            ],
+        );
+        let mut input = Chunk::new(&[], 2, 2);
+        input.set_num_virtual_rows(2);
+        assert_eq!(
+            crate::scalar_function::try_eval_numeric_batch(
+                &expression,
+                &crate::context::NoColumns,
+                &input
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            expression
+                .eval(&crate::context::NoColumns, input.physical_row(0))
+                .unwrap(),
+            Datum::Null
+        );
+        let outer = call(
+            "plus",
+            vec![
+                expression.clone(),
+                call(
+                    "mul",
+                    vec![constant(Datum::Int(i64::MAX)), constant(Datum::Int(2))],
+                ),
+            ],
+        );
+        assert!(SharedExpression::compile(&outer)
+            .unwrap()
+            .evaluate(&input, &[0], &mut EvalContext::default())
+            .is_err());
+        let program = SharedExpression::compile(&expression).unwrap();
+        for rows in [&[0][..], &[1, 0, 1][..]] {
+            assert_eq!(
+                program
+                    .evaluate(&input, rows, &mut EvalContext::default())
+                    .unwrap(),
+                vec![Datum::Null; rows.len()]
+            );
+        }
     }
 
     #[test]
