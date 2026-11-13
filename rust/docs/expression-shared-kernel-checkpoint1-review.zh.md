@@ -2,7 +2,7 @@
 
 作者 ExpressionReuseDesigner，2026-11-13，task #34。结论：可以沿此路线继续M1；本次局部实现尚不能通过M1验收。确认已复用原RPN循环，发现一个当前接纳范围内的FLOAT结果转换问题，以及程序类型元信息、默认依赖验证、清单生成和预算需要修正之处。没有发现必须重建宿主任务协议的依据。
 
-以上是checkpoint 1的固定结论；后续修复状态见文末“Checkpoint 2跟进”，保留初次发现便于核对修复依据。
+以上是checkpoint 1的固定结论；后续修复状态见文末各轮Checkpoint跟进，保留初次发现便于核对修复依据。
 
 本次只读审查固定 TiDB `7e3a6366746b5f61df3726e6a8f5cd5c6c52a582` 与 TiKV `52d7be276763f6b527ea52e11005c9e21231bdc7`，比较原始 `364aef2bab5cc633ecb76a775ae8f36f86a6687d` / `548812e1ef57aef077a2062a9cc356640a6347f5`。不将之后的工作树改动算入本结论。
 
@@ -118,3 +118,74 @@ TiDB根`rust/Cargo.toml`新增workspace级patch；锁文件中原有依赖实际
 本轮没有发现新的正常定型输入错值。一个手工构造API的接纳缺口仍在：MD5只检查参数求值族而忽略自身声明结果类型，故错误声明为数字结果也会被接受并返回字符串。没有发现正常SQL规划器会生成这种形状；建议随共享签名接纳加入一次结果类型检查，不扩大为任意畸形AST的全面审查。
 
 可以继续M1。下一次重点是同循环内动态分支/汇合、逻辑出现位置及借用生命周期，以及后续普通函数中避免重复复制列；本轮结论不表示完整M1、默认切换或性能验收。
+
+
+## Checkpoint 3跟进
+
+2026-11-13复核固定TiDB `4ce93983a71da469d9070499d919374fd56e913c` / TiKV `0a5cda977bd9a6707b4a56971c23f0e77e7a7322`。[实现报告](https://github.com/YangKeao/tidb/blob/4ce93983a71da469d9070499d919374fd56e913c/rust/docs/shared-kernel/checkpoint-3.md)已列出剩余M1工作。结论：动态分支的结构和完整值汇合已贯通，但**当前按分支分组的执行改变首个致命错误；应先补共享有序调度，再接入状态函数**。JSON诊断身份也尚未保持。以下反例均来自固定源码推导，本审查没有新运行产品测试；已交实现者用原始入口复现并修正。
+
+### 已确认的进展
+
+混合条件由原RPN循环保存父选择、两侧逻辑位置及明确汇合点。重复的物理行仍按每次逻辑出现计算；嵌套部分选择和相同结束地址的内外层汇合未发现具体错位。临时行选择通过`read_selected`取得拥有的列值，原借用路径继续保留，没有延长临时借用的unsafe技巧。native输出前的Real复制原始位，Decimal复制完整系数、存储/展示scale及声明形状。
+
+native编译统一调用`RpnExpression::finish`，检查前向区域、受所属IF约束的跳转、栈EvalType合流及出口类型，完成后拒绝通过DerefMut/AsMut改变节点。当前正常编译路径未发现新的跳转损坏；该校验并未证明任意公开FnCall的参数签名或metadata合法，也未递归校验旧ShortCircuitFnCall子体，不应宣传成任意RPN的完整语义认证。
+
+MD5的自身数字返回声明现在明确拒绝。JSON_LENGTH接入真正的字符串转JSON及长度内核；REGEXP_LIKE使用推迟准备的metadata，未选坏常量模式不再在编译时触发。这证明了当前受限输入的需求控制，尚不是完整错误兼容、缓存或性能证明。
+
+### 1. 首个致命错误被分支分组改变
+
+当前已经接纳以下签名和输入：
+
+    IF(c, JSON_LENGTH('{'), REGEXP_LIKE('a', '['))
+    c = [0, 1]，逻辑行选择 = [0, 1]
+
+原生入口先处理第0行，应报正则错误；共享循环却先执行全部then行，先报第1行JSON错误。依据为[原始evaluator](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/evaluator.rs#L436)逐行失败即返回，以及[原始IF](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/scalar_function.rs#L1820)只求本行所选分支。IF不属于已有numeric batch支持集合，打开向量开关也不会使它变成先then后else。候选[expr_eval.rs](https://github.com/YangKeao/tikv/blob/0a5cda977bd9a6707b4a56971c23f0e77e7a7322/components/tidb_query_expr/src/types/expr_eval.rs#L468)总从then_positions开始，直到整支成功才执行else；函数错误立即返回。
+
+仅优先执行包含最早逻辑位置的分支仍不足以修正：
+
+    IF(JSON_LENGTH(j), REGEXP_LIKE('a', '['), 7)
+    j = ['[1]', '{']，逻辑行选择 = [0, 1]
+
+候选先计算整批条件，后续行的坏JSON仍会抢在第0行所选正则分支之前失败。首个错误的类别变了，不只是告警排列不同。将来加入状态后，排序错误结果也无法撤回已发生的状态变化、告警或失败之后不应执行的工作。
+
+修正采用设计第3节已有的显式执行合同：原本逐行回退的根，由**共享循环自己按逻辑行推进条件和所选分支**，同一次执行保留其栈、输入、上下文和状态；适配器只传调用语义与数据。既有numeric batch仍保留原有阶段顺序，不能笼统把所有可能失败的函数改成逐行，也不能由TiDB适配器逐行重新调用整个求值器。mask批量路径保留在有对应原始合同或已证明可重排的区域。按原始根/调用合同选择调度，不为每个来源复制一套解释器或创建profile。
+
+验收须同时覆盖上述两个跨行首错反例、乱序/重复选择，以及失败前已发生告警和状态的内容/次数。仍只比较`is_err()`无法发现此问题。多根的ColumnMajor/RowMajor区别及Scalar与一行Vector区别继续保留，不用这次IF修正抹平。
+
+### 2. JSON错误身份在共享边界丢失
+
+`JSON_LENGTH('')`属于当前默认UTF-8字符串接纳范围。[原始JSON参数解析](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/builtin_ext/json/value.rs#L382)生成`JsonError::EmptyText`；[context.rs](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/context.rs#L351)给出码3140及空文档消息。非空坏文本`'{'`是不同的InvalidText，仍为3140。
+
+共享lowering调用SDK `cast_string_as_json`，其[JSON解析](https://github.com/YangKeao/tikv/blob/0a5cda977bd9a6707b4a56971c23f0e77e7a7322/components/tidb_query_datatype/src/codec/mysql/json/serde.rs#L186)返回InvalidDataType，SDK码为1105；[native共享边界](https://github.com/YangKeao/tidb/blob/4ce93983a71da469d9070499d919374fd56e913c/rust/crates/tidb-expr/src/shared_kernel.rs#L343)又将错误转成String，进一步丢失结构身份。现有坏分支测试只比较`is_err()`，因此通过不代表诊断相等。这是当前可选候选入口的兼容缺口，未宣称默认产品路径已经回归。
+
+共享内核应保留类型化失败，在输出边界按明确的native/PB错误合同映射，不解析Display字符串猜测错误类别。补空JSON、非空坏JSON的直接调用及活/死IF分支，对比错误类别、码和必要消息。PB原有诊断不能因为修native而全局改变。REGEXP的错误表示也需同样贯通；本审查没有猜测未追踪到最终执行器映射的正则SQL码。
+
+### 统计与验证证据
+
+独立按固定双仓库Git对象核对：
+
+| 相对原始base的范围 | 新增 | 删除 | 总增删 |
+| --- | ---: | ---: | ---: |
+| Rust生产与测试 | 1958 | 49 | 2007 |
+| 构建与锁文件 | 1866 | 91 | 1957 |
+| 文档、清单和工具 | 7866 | 0 | 7866 |
+| 两个候选全部文件 | 11690 | 140 | 11830 |
+| 相对checkpoint 2的全部文件 | 949 | 75 | 1024 |
+
+生产/测试重新分类与实际测试模块边界吻合；其变化不影响累计源码总数。累计差值884不等于本次原始增删1024，因为后者计入了对已改代码的再次修改。构建及文档合计9823，仍在修订9–12K范围内；算法迁移、剩余兼容和独立退休删除仍未定界，11830不是全项目完成量，也不含单独设计文档分支。
+
+读取实现者原始日志确认以下终态：
+
+| 日志 | 实际支持的结论 |
+| --- | --- |
+| checkpoint3-native-final.log | 11通过、0失败；冻结测试的panic被catch并通过 |
+| checkpoint3-sdk-final.log | 34通过、0失败，包含既有PB短路/告警及新增IF反例 |
+| pb-if-original-baseline.log | 原始SDK加同一新用例，1通过、0失败；两种flag都保留未选IF分支溢出 |
+| checkpoint3-executors-final.log | executor库编译检查完成；不是执行器测试 |
+| checkpoint3-scoped-clippy-final.log | 选定表达式/执行器库Clippy完成，有警告 |
+| sdk-make-clippy.log | 准备阶段因找不到rustup失败；完整Makefile检查未通过 |
+| lint-dynamic.log | 可见预期检查直至末条dashboard命令，没有错误；未捕获显式进程退出码 |
+
+原始SDK独立测试工作区当前HEAD确为548812e，唯一tracked修改为新增36行PB测试。日志终态与该测试相符；但这些日志没有完整命令、构建前后源码树身份和显式退出码，不能独立证明所有构建输入就是之后提交的固定源码。日志时间早于提交并不说明测试了错误源码，也不足以单独证明没有中间修改。后续记录命令、双仓库commit/tree或dirty摘要及退出状态即可，不为此重跑已经有证据的整套检查。
+
+本轮只读源码、Git统计及原始日志，没有新构建、产品测试、SQL或性能测量。下一步由ExpressionReuseEngineer先补共享有序调度与结构化诊断，再继续宽值实际运算、调用模式、RAND/变量/BENCHMARK及多根状态；完整M1、全范围体积和性能仍未验收。设计方向无须退回宿主协议。

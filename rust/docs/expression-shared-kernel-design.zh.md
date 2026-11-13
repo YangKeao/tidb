@@ -1,7 +1,7 @@
 # 用一个表达式内核替换任务协议：Expression Reuse 设计与实施计划
 
 
-本文件按仓库根目录 `PLANS.md` 维护。完整方案尚未实现；2026-11-13 已开始独立候选，首个局部实现的审查见 [checkpoint 1 review](expression-shared-kernel-checkpoint1-review.zh.md)。`Progress`、`Surprises & Discoveries`、`Decision Log`、`Outcomes & Retrospective` 随后续验证更新。作者 ExpressionReuseDesigner，2026-11-13，讨论为 Raft `#tidb-expression-reuse:1dc6ca2b`，设计 task #32、实现 task #33、设计审查 task #34。
+本文件按仓库根目录 `PLANS.md` 维护。完整方案尚未实现；2026-11-13 已开始独立候选，各轮局部实现的审查见 [checkpoint reviews](expression-shared-kernel-checkpoint1-review.zh.md)。`Progress`、`Surprises & Discoveries`、`Decision Log`、`Outcomes & Retrospective` 随后续验证更新。作者 ExpressionReuseDesigner，2026-11-13，讨论为 Raft `#tidb-expression-reuse:1dc6ca2b`，设计 task #32、实现 task #33、设计审查 task #34。
 
 ## Purpose / Big Picture
 
@@ -20,7 +20,8 @@
 - [x] (2026-11-13) 给出模块边界、拟新增接口、执行规则、预算及分阶段验收；经三个独立方向复核，修正 PB eager、RAND/root 顺序、状态实例及完整体积核算。
 - [x] (2026-11-13) 按人类6a0aeef4授权指导独立候选；只读审查 TiDB7e3a636 / TiKV52d7be2 的 native/PB MD5、完整标量透传和常量IF初步实现。
 - [x] (2026-11-13) 复核d52b780 / 4b492c3：三个反例的修复前后日志、按需列读取和PB保留语义、清单修复及修订预算；仍未完成动态控制和状态等M1范围。
-- [ ] 完成M1：动态需求、复杂值运算、坏JSON/regexp分支、状态/重复执行与行批量合同仍待贯通；首个局部实现不代表M1完成。
+- [x] (2026-11-13) 复核4ce9398 / 0a5cda9：动态IF、真实坏JSON/regexp需求控制、完整值汇合及finish冻结已出现；发现分支分组改变首个致命错误与JSON诊断身份丢失，已给出共享有序执行的修正边界。
+- [ ] 完成M1：先修共享调度中的首错/已执行前缀和结构化诊断，再贯通复杂值运算、状态/重复执行与行批量合同；局部实现不代表M1完成。
 - [ ] 证明全部函数与入口覆盖、总改动量和性能目标；未证明前不推广到默认路径。
 
 ## Context and Orientation
@@ -326,6 +327,8 @@ regex 常量准备本身可以失败；将所有验证移到 prepare 会破坏�
 
 首个候选的 optional feature 没有隔离 workspace Cargo patch：已有 flate2、protobuf 和 cmake 依赖发生变化。默认构建需独立验证。只按 EvalType 判断 IF 分支兼容也不足以保持 FLOAT/DOUBLE 的实际结果形状；程序出口类型不能从平坦指令的最后一个 else 推断。
 
+动态IF可以按逻辑位置正确合并数值，仍不意味着可以把所有then行排在else行之前。第三个候选的跨行JSON/正则反例证明：首个致命错误可能改变；整批提前计算条件也有同类问题。共享循环须先按原始调用合同确定有序调度范围，再选择可重排的mask批量区域。
+
 ## Decision Log
 
 
@@ -359,3 +362,5 @@ Date/Author: 2026-11-13 / ExpressionReuseDesigner。
 本次文档核验：用 `git cat-file -e REV:PATH` 检查九个固定源码链接对应的对象存在；检查两个相对报告链接、ExecPlan 必需章节及 `git diff --cached --check`。没有产品代码改动，未运行 make lint、构建、产品测试或性能测试；这些留给实际候选的相应里程碑。
 
 2026-11-13 checkpoint 1 更新：两个原始基线候选已形成第一份可运行提交，核心沿用原RPN循环。审查核算源码及测试818行、所有文件9585行增删；数值均只代表局部候选。下一阶段先修复当前接纳范围内的结果类型问题、清单漏项及预算记录，补默认依赖验证，再继续同循环内的按需输入/分支汇合。审查不替代完整兼容、测试或性能验收；详见相邻review文档。
+
+2026-11-13 checkpoint 3 更新：累计候选源码及测试2007行、全部文件11830行增删，仍是局部量。动态mask/完整值汇合与finish结构冻结已有实现，但首错顺序和类型化诊断仍缺；它们应在状态函数扩展前处理。11项native、34项SDK及1项原始PB反例的日志终态已核对，完整make clippy未通过，固定源码归属仍依赖实现者记录；本审查未重跑产品测试。具体反例和调度修正见相邻累计review。
