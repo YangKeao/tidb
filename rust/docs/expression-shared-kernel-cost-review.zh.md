@@ -251,3 +251,26 @@ ExpressionReuseEngineer继续在当前候选推进一个限定切片：**同一�
 产品变更后运行现有35项共享原生、8项prepared、受影响datatype定向回归及SDK表达式库回归，并执行make lint、格式和diff检查；用报告中已有cargo包装器与rust/工作目录，精确命令及退出结果随固定提交交付。若转换primitive移动改变原Constant路径，以原测试／独立预期确认未改变其语义，不能用两边同时改后的相同结果作为唯一依据。只按变化补必要测量，不新开广泛常量性能研究，也不从参数接入成功推断向量成本已解决。完整原始增删、实际接纳边界、默认SDK／完整clippy／RAND生命周期／245族余项继续报告。
 
 本轮仅更新设计文档，固定Git链接对象、相对链接、ExecPlan格式及`git diff --check`、`git diff --cached --check`验证后提交；未对产品另跑lint或测试。
+
+
+## 类型化参数首版复审：记录吻合，两处语义缺陷待修正
+
+本轮固定TiDB源码`be800b9126653ff96620cb78e51ef350b1c352a0`、[报告bb94be0e](https://github.com/YangKeao/tidb/blob/bb94be0e55bd8c590829a2ff12b8ea25b9b9a7aa/rust/docs/shared-kernel/typed-parameters.zh.md)，SDK为`3c9b12cfb80e2928896a28def1b2a3b8b7dc3517`；本批起点bfde2f35／d822fbf。原Constant和共享循环确实共用既有datatype中的类型化Decimal转换／补尺度及原值格式化，未回调旧表达式求值。完整Decimal、当前推导NULL、按需读取及真实Vector测试已有实质进展，但**首版尚不通过限定正确性复审**：独立源码审查发现以下两处可达差异。Designer未另运行产品构建、测试或性能；下面反例需由实现者保留实际失败与修正证据。
+
+**静态源类型接纳过宽。** [编译器](https://github.com/YangKeao/tidb/blob/be800b9126653ff96620cb78e51ef350b1c352a0/rust/crates/tidb-expr/src/shared_kernel.rs#L348)对无Deferred参数跳过原`admitted(t)`检查。父函数返回Decimal且`numeric_operand_domain()`成功，并不证明参数原本请求Decimal：原生先按静态源类型请求入口，再做目标转换。静态VarString参数、当前String值`2.5junk`参与Decimal加法，就是被接纳而未测试的情况。在warning上下文的Scalar入口，原生String入口后的转换产生1292；共享直接ToDecimal产生1265。真正三行Vector中两侧的截断码都是1265，但原生先广播String，再逐行转换，产生三条告警；新参数叶子只转换一次。新测试84个组合全部声明参数为Decimal，不能覆盖这个差异。
+
+最小修正是恢复原有静态有符号、非array Decimal操作数边界，而非增加另一套cast实现。当前raw绑定仍可以是Int／String／NULL等，由已证明的Decimal类型化入口处理；不能把静态源类型限制误做成运行时值家族限制。静态类型缺失、其他源域、unsigned／array等继续编译拒绝。新增负例先证明首版误接纳和真实原生源入口差异，再验证修正后拒绝。
+
+**诊断读取失败替换了实际算术错误。** [SDK溢出文本](https://github.com/YangKeao/tikv/blob/3c9b12cfb80e2928896a28def1b2a3b8b7dc3517/components/tidb_query_expr/src/types/native_arithmetic.rs#L131)中的`input.parameter(order)?`会传播读取错误。可达反例是隐藏Decimal物理列100，列的virtual_expr为缺失参数0，与80位全9的Decimal相乘。实际[Column求值](https://github.com/YangKeao/tidb/blob/be800b9126653ff96620cb78e51ef350b1c352a0/rust/crates/tidb-expr/src/column.rs#L229)只读物理值，运算正常触发溢出；仅诊断格式化递归访问virtual_expr。原生通过`.ok()?`放弃详细文本，返回通用1690；共享却改成未绑定1105。这不要求参数值变化或有副作用的读取器。诊断中参数不一定已被实际求值需求过。
+
+应在诊断模板渲染中将读取失败与不可格式化统一退回原通用1690；实际参数节点的读取失败仍保留1105。不能用编译拒绝原已接纳隐藏列、提前读取全部参数或吞掉实际参数错误来修复。该反例与诊断顺序无关，人类对warning和error顺序的放宽保持不变。
+
+固定版本的39项共享原生、8项prepared、89项Decimal、7项转换及429项SDK测试均有最终原始成功终态和CHECK_EXIT=0；89与7重叠两项，不相加伪装独立总数。限定native表达式Clippy完成且有警告，不能替代正式完整SDK Clippy。根lint／rustfmt／diff的退出0来自receipt，留存lint没有独立退出尾行；报告中的错误edition格式检查失败未在26份记录内留存，不能视为本次独立核实的失败证据。
+
+独立重建5525项固定Git输入与最终snapshot逐项相同，摘要`ca2ccab18525009f7d8b84eb511e282622560be652446b54a93ba14f005e86af`；26份原始记录哈希吻合。早期snapshot仅scalar_function.rs和shared_kernel.rs与最终不同，六份pre-guard记录单列；最终六份检查各有不同日志，未用旧版本通过结果替代最终签名检查。原转换primitive的迁移源码及独立预期值支持已测路径，但两侧共同调用该primitive也不构成全部转换兼容的独立oracle。本轮没有新性能或封闭可复现构建证明。
+
+本批生产`+299/−73`、净增226；测试`+346/−2`、文档核验`+275/−0`、构建0；全部`+920/−75`，增删995、净增845。相对原始两仓基线，源码测试`+6791/−119`、增删**6910**；全部`+24201/−219`、增删**24420**。全部数字独立重算一致，最终报告提交仅改变文档与receipt。这仍是局部候选，不证明完整245族、旧入口退役或10K目标。
+
+下一步按Designer消息2fa948e4-1b07-4328-a9d0-fc273af26b26在task #40内完成上述两处修正；范围由Designer负责，到修正固定版本复审结束。先保留两个真实反例，再用现有包装器及rust/工作目录运行受影响shared_kernel／prepared／SDK回归、make lint、格式和diff，更新固定输入、报告及两套基线的全部增删。若datatype源码未改，既有89／7项记录按原版本保留，不机械重跑无关测试或性能矩阵。显式程序按每执行持有仍是调用合同，尚未安装SQL执行器生命周期管理；默认SDK工具链／相邻布局、完整Clippy、RAND生命周期和原生向量性能差距继续保留。独立默认构建修复可以并行，不把本次有限修正当作完整M1。
+
+本轮只改设计和复审文档，检查固定Git对象链接、相对链接、ExecPlan结构及diff；未另执行产品lint或测试。
