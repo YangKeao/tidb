@@ -292,6 +292,29 @@ fn column_bench(iterations: usize) {
             black_box(&output);
         });
     }
+    #[cfg(direct_chunk)]
+    {
+        shared
+            .evaluate_into_chunk(&input, &rows, &mut ctx, &NoColumns, &mut output)
+            .unwrap();
+        let actual = (0..width)
+            .map(|r| output.physical_row(r).get_datum(0, &ty))
+            .collect::<Vec<_>>();
+        assert_eq!(parts(&actual), parts(&native_chunk));
+        measure(
+            "column_mul",
+            width,
+            "reuse",
+            "direct_chunk",
+            iterations,
+            || {
+                shared
+                    .evaluate_into_chunk(&input, &rows, &mut ctx, &NoColumns, &mut output)
+                    .unwrap();
+                black_box(&output);
+            },
+        );
+    }
     // Diagnostic slices only; their temporary ownership differs, so do not sum
     // or subtract them as an exact decomposition of the complete call.
     if std::env::var_os("DECIMAL_BENCH_COLUMN_PHASES").is_some() {

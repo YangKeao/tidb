@@ -418,3 +418,78 @@ A compact original-owner value plus root output adapter needs broader interfaces
 so this authorized finite batch ends with attribution and a counted proposal.
 No optimization, lifecycle/default SQL change or universal performance claim.
 See shared-kernel/decimal-column-cost.zh.md for evidence, limits and counts.
+
+## Complete compact Decimal and root-output prototype (task43)
+
+
+This finite prototype follows the accepted task42 attribution. Its baseline is
+TiDB e18f0b5c282c728192b0c502d2e151c405807b0d and SDK
+780ab3e776f47d634ac8963437baf8477a7b2df7. The goal is to remove avoidable
+Decimal text materialization while retaining one original RPN evaluation.
+Designer bcf4e55a authorizes the entire prototype without intermediate review.
+Default SQL admission, lifecycle and additional function families remain outside
+this scope; a need for a generic numerical rewrite or a new execution mechanism
+ends this prototype at a fixed, reviewable result.
+
+Milestone one moves the existing native signed i128 coefficient primitive into
+`rust/crates/tidb-datatype/src/decimal/compact.rs`. All existing native add,
+subtract, multiply, integer and cast callers in `tidb-expr/src/scalar_function.rs`
+use that owner; the original Decimal fast paths share it and retain wide fallbacks.
+The full private arithmetic carrier keeps hidden scale and declared column shape.
+Only shared multiplication takes its compact path; other arithmetic delegates to
+original Decimal with already evaluated operands. The ordinary Chunk reader and
+shared reader use one datatype-owned column shape rule.
+
+Milestone two keeps `SharedProjection::evaluate` and adds
+`evaluate_into_chunk(input, rows, ctx, effects, output)` through the same
+`RpnExpression::eval_group` call. Detect input/output and output/output aliases;
+the caller additionally must own output independently of other live chunks.
+Evaluate all roots and validate their results before resetting output. Errors
+leave output untouched; session effects are not rolled back. Wide result writing
+retains original lossy Chunk conversion. No second interpreter is introduced.
+
+Milestone three validates both old and direct APIs against native output, including
+NULLs, hidden precision, wide fallback, declared shape, selections, empty batches,
+multiple roots and error/effect behavior. Run targeted datatype Decimal tests and
+`cargo test -p tidb-expr --features shared-kernel shared_kernel`; record failures
+and corrections. Run existing SDK expression regressions, scoped checks and
+root `make lint`. Commit the datatype owner, pin the SDK Git dependency and lock,
+and verify the independent SDK and TiDB patched dependency graphs each have one
+owner identity. Repeat the existing real-column complete-call benchmark with
+separate timing and allocation binaries; compare native and old owned API before
+and after, listing the new direct API separately. Preparation remains excluded.
+
+Initial 810-line estimate is provisional. Actual additions/deletions must include
+all native callers, datatype, SDK, tests, configuration and evidence separately.
+Commands and build environment follow `shared-kernel/independent-sdk-build.zh.md`;
+use declared nightly with ordinary Cargo, preserving failed logs outside immutable
+previous evidence. Local evidence for this batch is `evidence/compact-output` in
+the Engineer workspace. Never overwrite earlier measurements or protected trees.
+
+### Progress
+
+
+- [x] Claimed task43; inspected primitive, native callers, original Decimal paths,
+  shared typed values, column conversion and Chunk alias interfaces.
+- [x] First implementation compiles in the TiDB patched graph.
+- [ ] Complete boundary tests, independent SDK pin and build, fixed measurements.
+- [ ] Self-review, full counts, signed commits and review handoff.
+
+### Surprises & Discoveries
+
+
+The native primitive also serves addition, subtraction and integer cast; removing
+only its multiply use leaves a duplicate owner. Chunk already exposes column
+identity checks, so no new ownership mechanism is needed.
+
+### Decision Log
+
+
+Use a private compact/wide carrier under the existing datatype owner. Preserve
+owned output and add a common result consumer after the existing group evaluator.
+This changes the output boundary without adding execution dispatch. (2026-11-13)
+
+### Outcomes & Retrospective
+
+
+Implementation and validation are in progress; no performance conclusion yet.

@@ -13,6 +13,7 @@ p.add_argument('--cargo', type=Path, required=True)
 p.add_argument('--rustc', type=Path, required=True)
 p.add_argument('--output', type=Path, required=True)
 p.add_argument('--allocations', action='store_true', help='link allocation wrappers; omit for plain timing')
+p.add_argument('--direct-chunk', action='store_true', help='enable the new direct output API; omit for old-product comparison')
 a = p.parse_args()
 a.output.mkdir(parents=True, exist_ok=True)
 env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='false', CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
@@ -50,6 +51,7 @@ for directory in sorted(search_paths):
     command += ['-L', directory]
 for name, path in sorted(artifacts.items()):
     command += ['--extern', name+'='+path, '--extern', name+'='+rlibs[name]]
+if a.direct_chunk: command += ['--cfg', 'direct_chunk']
 if a.allocations:
     command += ['--cfg', 'allocation_counting']
     for name in ('malloc','calloc','realloc','aligned_alloc','posix_memalign'):
@@ -59,7 +61,7 @@ with (a.output/'harness.log').open('w') as log:
     result = subprocess.run(command, cwd=a.repo/'rust', stdout=log, stderr=log)
     if result.returncode:
         raise SystemExit(f'harness compilation failed ({result.returncode}); see {a.output}/harness.log')
-receipt = {'allocations': a.allocations, 'artifacts': artifacts, 'harness_command': command, 'profile': {'opt_level':3, 'lto':False, 'codegen_units':16}, 'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest()}
+receipt = {'direct_chunk': a.direct_chunk, 'allocations': a.allocations, 'artifacts': artifacts, 'harness_command': command, 'profile': {'opt_level':3, 'lto':False, 'codegen_units':16}, 'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest()}
 receipt['libraries_sha256'] = {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in sorted(set(artifacts.values()) | set(rlibs.values()))}
 (a.output/'build-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
 print(binary)

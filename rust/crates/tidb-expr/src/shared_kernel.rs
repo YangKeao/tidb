@@ -150,7 +150,7 @@ impl SharedExpression {
                             Some((ExpressionScalar::Real(Some(*v)), FieldTypeTp::Double))
                         }
                         Datum::Decimal(v) => Some((
-                            ExpressionScalar::Decimal(Some(v.clone())),
+                            ExpressionScalar::Decimal(Some(v.clone().into())),
                             FieldTypeTp::NewDecimal,
                         )),
                         _ => None,
@@ -804,13 +804,126 @@ impl SharedProjection {
         ctx: &mut EvalContext,
         effects: &dyn crate::context::Columns,
     ) -> Result<Vec<Vec<Datum>>, SharedEvaluationError> {
+        self.with_results(input, rows, ctx, effects, |results| {
+            if rows.is_empty() {
+                return Ok(self.expressions.iter().map(|_| Vec::new()).collect());
+            }
+            results
+                .into_iter()
+                .map(|v| native_output(v, rows.len()).map_err(SharedEvaluationError::from))
+                .collect()
+        })
+    }
+
+    /// Writes the same evaluated roots without materializing Decimal text.
+    /// Output must own its columns independently of all other live chunks.
+    /// Detectable input/output and output/output aliases are rejected before
+    /// effects. Evaluation/validation errors preserve output; effects remain.
+    pub fn evaluate_into_chunk(
+        &self,
+        input: &Chunk,
+        rows: &[usize],
+        ctx: &mut EvalContext,
+        effects: &dyn crate::context::Columns,
+        output: &mut Chunk,
+    ) -> Result<(), SharedEvaluationError> {
+        if output.num_cols() != self.expressions.len() {
+            return Err("output column count differs from projection".into());
+        }
+        for col in 0..output.num_cols() {
+            if (0..input.num_cols()).any(|i| output.columns_share_identity(col, input, i))
+                || (0..col).any(|i| output.columns_share_identity(col, output, i))
+            {
+                return Err("direct output requires independent columns".into());
+            }
+        }
+        for (col, expression) in self.expressions.iter().enumerate() {
+            let expected = match expression
+                .program
+                .ret_field_type(&expression.schema)
+                .as_accessor()
+                .tp()
+            {
+                FieldTypeTp::NewDecimal => tidb_chunk::column::MY_DECIMAL_STRUCT_SIZE,
+                FieldTypeTp::Double | FieldTypeTp::LongLong => 8,
+                _ => -1,
+            };
+            if output.column(col).type_size() != expected {
+                return Err("output column storage type mismatch".into());
+            }
+        }
+        self.with_results(input, rows, ctx, effects, |results| {
+            enum Root {
+                Decimal(Vec<Option<tidb_datatype::DecimalArithmeticValue>>),
+                Datum(Vec<Datum>),
+            }
+            let mut prepared = Vec::with_capacity(results.len());
+            for result in results {
+                let values = match result {
+                    RpnStackNode::ExpressionVector {
+                        value: ExpressionVector::Decimal(values),
+                        ..
+                    } => Some(values),
+                    RpnStackNode::ExpressionScalar { value, .. }
+                        if matches!(value.as_ref(), ExpressionScalar::Decimal(_)) =>
+                    {
+                        let ExpressionScalar::Decimal(value) = value.as_ref() else {
+                            unreachable!()
+                        };
+                        Some(vec![value.clone(); rows.len()])
+                    }
+                    other => {
+                        prepared.push(Root::Datum(native_output(other, rows.len())?));
+                        None
+                    }
+                };
+                if let Some(values) = values {
+                    if values.len() != rows.len() || values.iter().flatten().any(|v| !v.is_valid())
+                    {
+                        return Err("invalid expression decimal result".into());
+                    }
+                    prepared.push(Root::Decimal(values));
+                }
+            }
+            output.reset();
+            for (col, values) in prepared.into_iter().enumerate() {
+                match values {
+                    Root::Decimal(values) => {
+                        for value in values {
+                            match value {
+                                Some(value) => output
+                                    .append_my_decimal(col, &value.to_chunk_my_decimal_lossy()),
+                                None => output.append_null(col),
+                            }
+                        }
+                    }
+                    Root::Datum(values) => {
+                        for value in values {
+                            output.append_datum(col, &value);
+                        }
+                    }
+                }
+            }
+            output.set_num_virtual_rows(rows.len());
+            Ok(())
+        })
+    }
+
+    fn with_results<T>(
+        &self,
+        input: &Chunk,
+        rows: &[usize],
+        ctx: &mut EvalContext,
+        effects: &dyn crate::context::Columns,
+        consume: impl FnOnce(Vec<RpnStackNode<'_>>) -> Result<T, SharedEvaluationError>,
+    ) -> Result<T, SharedEvaluationError> {
         if rows.iter().any(|r| *r >= input.physical_rows())
             || rows.len() > tidb_query_datatype::codec::data_type::BATCH_MAX_SIZE
         {
             return Err("invalid group selection".into());
         }
         if rows.is_empty() {
-            return Ok(self.expressions.iter().map(|_| Vec::new()).collect());
+            return consume(Vec::new());
         }
         let inputs: Vec<_> = self
             .expressions
@@ -827,7 +940,7 @@ impl SharedProjection {
             .zip(&inputs)
             .map(|(e, i)| (&e.program, e.schema.as_slice(), i as &dyn InputColumns))
             .collect();
-        RpnExpression::eval_group(
+        let results = RpnExpression::eval_group(
             &programs,
             ctx,
             rows,
@@ -838,10 +951,8 @@ impl SharedProjection {
                 InvocationMode::Scalar
             },
         )
-        .map_err(SharedEvaluationError::from)?
-        .into_iter()
-        .map(|v| native_output(v, rows.len()).map_err(SharedEvaluationError::from))
-        .collect()
+        .map_err(SharedEvaluationError::from)?;
+        consume(results)
     }
 }
 
@@ -941,16 +1052,17 @@ impl InputColumns for NativeInput<'_> {
             return Err(Error::InvalidDataType("selected row is outside input".into()).into());
         }
         if eval_type == EvalType::Decimal {
-            // Row conversion owns storage decoding and unspecified-scale handling.
+            let column = self.chunk.column(index);
             let values = rows
                 .iter()
-                .map(
-                    |row| match self.chunk.physical_row(*row).get_datum(index, field_type) {
-                        Datum::Decimal(value) => Some(value),
-                        Datum::Null => None,
-                        _ => unreachable!("compiler checks input types"),
-                    },
-                )
+                .map(|row| {
+                    (!column.is_null(*row)).then(|| {
+                        tidb_datatype::DecimalArithmeticValue::from_column(
+                            &column.get_my_decimal(*row),
+                            field_type,
+                        )
+                    })
+                })
                 .collect();
             return Ok(RpnStackNode::ExpressionVector {
                 value: ExpressionVector::Decimal(values),
@@ -1082,13 +1194,15 @@ fn native_output(result: RpnStackNode<'_>, rows: usize) -> Result<Vec<Datum>, St
                 .collect()),
             ExpressionVector::Decimal(values) => Ok(values
                 .into_iter()
-                .map(|v| v.map_or(Datum::Null, Datum::Decimal))
+                .map(|v| v.map_or(Datum::Null, |v| Datum::Decimal(v.into_decimal())))
                 .collect()),
         },
         RpnStackNode::ExpressionScalar { value, .. } => {
             let datum = match value.as_ref() {
                 ExpressionScalar::Real(v) => v.map_or(Datum::Null, Datum::Real),
-                ExpressionScalar::Decimal(v) => v.clone().map_or(Datum::Null, Datum::Decimal),
+                ExpressionScalar::Decimal(v) => v
+                    .clone()
+                    .map_or(Datum::Null, |v| Datum::Decimal(v.into_decimal())),
             };
             Ok(vec![datum; rows])
         }
@@ -2023,6 +2137,14 @@ mod tests {
                     let actual = projection
                         .evaluate(&input, &rows, &mut ctx, &session)
                         .unwrap();
+                    let mut direct = Chunk::new(
+                        &vec![decimal.clone(); expressions.len()],
+                        rows.len(),
+                        rows.len(),
+                    );
+                    projection
+                        .evaluate_into_chunk(&input, &rows, &mut ctx, &session, &mut direct)
+                        .unwrap();
                     for (root, expression) in expressions.iter().enumerate() {
                         let mut expected_chunk =
                             Chunk::new(std::slice::from_ref(&decimal), rows.len(), rows.len());
@@ -2043,6 +2165,12 @@ mod tests {
                         for r in 0..rows.len() {
                             let a = actual_chunk.physical_row(r).get_datum(0, &decimal);
                             let e = expected_chunk.physical_row(r).get_datum(0, &decimal);
+                            let d = direct.physical_row(r).get_datum(root, &decimal);
+                            if e == Datum::Null {
+                                assert_eq!(d, e);
+                            } else {
+                                assert_same_decimal(&d, &e);
+                            }
                             if e == Datum::Null {
                                 assert_eq!(a, e);
                             } else {
@@ -2063,6 +2191,10 @@ mod tests {
                             .unwrap(),
                         vec![Vec::<Datum>::new(); 3]
                     );
+                    projection
+                        .evaluate_into_chunk(&input, &[], &mut ctx, &session, &mut direct)
+                        .unwrap();
+                    assert_eq!(direct.num_rows(), 0);
                     assert!(projection
                         .evaluate(&input, &[7], &mut ctx, &session)
                         .is_err());
@@ -2592,7 +2724,7 @@ mod tests {
                 }
             };
             Ok(RpnStackNode::ExpressionVector {
-                value: ExpressionVector::Decimal(vec![value; rows.len()]),
+                value: ExpressionVector::Decimal(vec![value.map(Into::into); rows.len()]),
                 field_type: &schema[offset],
             })
         }
@@ -4044,7 +4176,7 @@ mod tests {
         if let Ok(value) = invalid {
             assert!(RpnExpression::finish(
                 vec![RpnExpressionNode::ExpressionConstant {
-                    value: ExpressionScalar::Decimal(Some(value)),
+                    value: ExpressionScalar::Decimal(Some(value.into())),
                     field_type: FieldTypeTp::NewDecimal.into()
                 }],
                 &[],
@@ -4399,5 +4531,164 @@ mod tests {
         ))))
         .unwrap();
         assert_eq!(literal.evaluate(&input, &[7], &mut ctx).unwrap()[0], got[0]);
+    }
+    #[test]
+    fn shared_kernel_direct_output_failure_and_alias_contract() {
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let real = FieldType::new(FieldTypeCode::Double);
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal);
+        let rand = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("rand"),
+            real.clone(),
+            vec![],
+        ));
+        let overflow = numeric_binary(
+            "mul",
+            &decimal,
+            Datum::Decimal(Decimal::from_literal(&"9".repeat(81))),
+            Datum::Decimal(Decimal::from_int(100)),
+        );
+        let projection = SharedProjection::compile(&[rand.clone(), overflow]).unwrap();
+        let mut input = Chunk::new(&[], 2, 2);
+        input.set_num_virtual_rows(2);
+        let mut output = Chunk::new(&[real.clone(), decimal.clone()], 2, 2);
+        output.append_datum(0, &Datum::Real(99.0));
+        output.append_datum(1, &Datum::Decimal(Decimal::from_int(88)));
+        let session = Session::default();
+        let error = projection
+            .evaluate_into_chunk(
+                &input,
+                &[0, 1],
+                &mut EvalContext::default(),
+                &session,
+                &mut output,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, Some(1690));
+        assert!(session.draws.get() > 0);
+        assert_eq!(output.num_rows(), 1);
+        assert_eq!(
+            output.physical_row(0).get_datum(0, &real),
+            Datum::Real(99.0)
+        );
+        assert_eq!(
+            output.physical_row(0).get_datum(1, &decimal),
+            Datum::Decimal(Decimal::from_int(88).with_declared_shape(-1, 0))
+        );
+
+        let projection = SharedProjection::compile(&[rand.clone(), rand]).unwrap();
+        let mut input = Chunk::new(&[real.clone(), real.clone()], 1, 1);
+        input.append_datum(0, &Datum::Real(5.0));
+        input.append_datum(1, &Datum::Real(6.0));
+        let mut output = Chunk::new(&[real.clone(), real.clone()], 1, 1);
+        output.make_ref_to(0, &mut input, 0).unwrap();
+        let session = Session::default();
+        assert!(projection
+            .evaluate_into_chunk(
+                &input,
+                &[0],
+                &mut EvalContext::default(),
+                &session,
+                &mut output
+            )
+            .is_err());
+        assert_eq!(session.draws.get(), 0);
+        assert_eq!(input.column(0).get_float64(0), 5.0);
+        let mut output = Chunk::new(&[real.clone(), real.clone()], 1, 1);
+        output.make_ref(0, 1);
+        assert!(projection
+            .evaluate_into_chunk(
+                &input,
+                &[0],
+                &mut EvalContext::default(),
+                &session,
+                &mut output
+            )
+            .is_err());
+        assert_eq!(session.draws.get(), 0);
+
+        let mut wrong = Chunk::new(&[decimal.clone(), decimal.clone()], 1, 1);
+        assert!(projection
+            .evaluate_into_chunk(
+                &input,
+                &[0],
+                &mut EvalContext::default(),
+                &session,
+                &mut wrong
+            )
+            .is_err());
+        assert_eq!(session.draws.get(), 0);
+
+        for off in [false, true] {
+            let original = Session {
+                vectorized_off: off,
+                ..Session::default()
+            };
+            let direct = Session {
+                vectorized_off: off,
+                ..Session::default()
+            };
+            let expected = projection
+                .evaluate(&input, &[0, 0], &mut EvalContext::default(), &original)
+                .unwrap();
+            let mut output = Chunk::new(&[real.clone(), real.clone()], 2, 2);
+            projection
+                .evaluate_into_chunk(
+                    &input,
+                    &[0, 0],
+                    &mut EvalContext::default(),
+                    &direct,
+                    &mut output,
+                )
+                .unwrap();
+            for col in 0..2 {
+                for row in 0..2 {
+                    assert_eq!(
+                        output.physical_row(row).get_datum(col, &real),
+                        expected[col][row]
+                    );
+                }
+            }
+            assert_eq!(original.draws.get(), direct.draws.get());
+        }
+    }
+
+    #[test]
+    fn shared_kernel_direct_wide_output_keeps_lossy_contract() {
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let ty = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(-1);
+        let negative_zero = Decimal::from_literal(&format!("-{}", "9".repeat(81)))
+            .mul_mysql(&Decimal::from_int(100))
+            .0;
+        for value in [
+            Decimal::from_literal(&"9".repeat(85)),
+            negative_zero,
+            Decimal::from_literal("0.00000000000000000000000000000000000000001"),
+            Decimal::from_literal("-170141183460469231731687303715884105728"),
+        ] {
+            let projection =
+                SharedProjection::compile(&[numeric_literal(Datum::Decimal(value), &ty)]).unwrap();
+            let mut input = Chunk::new(&[], 1, 1);
+            input.set_num_virtual_rows(1);
+            let mut output = Chunk::new(std::slice::from_ref(&ty), 1, 1);
+            let owned = projection
+                .evaluate(&input, &[0], &mut EvalContext::default(), &crate::NoColumns)
+                .unwrap();
+            let mut expected = Chunk::new(std::slice::from_ref(&ty), 1, 1);
+            expected.append_datum(0, &owned[0][0]);
+            expected.set_num_virtual_rows(1);
+            projection
+                .evaluate_into_chunk(
+                    &input,
+                    &[0],
+                    &mut EvalContext::default(),
+                    &crate::NoColumns,
+                    &mut output,
+                )
+                .unwrap();
+            assert_eq!(output, expected);
+        }
     }
 }
