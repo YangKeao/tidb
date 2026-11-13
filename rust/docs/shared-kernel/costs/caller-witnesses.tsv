@@ -1,0 +1,338 @@
+kind	path	line	source
+decimal_algorithm	rust/crates/tidb-datatype/src/datum_eval.rs	71	let (sum, warning) = left.add_mysql(right);
+native_entry	rust/crates/tidb-exec/src/multi_statement_transaction.rs	1183	tidb_expr::apply_binary(op, left, right)
+decimal_algorithm	rust/crates/tidb-exec/src/real_tikv_dml.rs	1627	let (sum, warning) = current.add_mysql(&addend_decimal);
+native_entry	rust/crates/tidb-exec/src/table_info_build.rs	2097	tidb_expr::eval_expression_once(&rewritten, context).map_err(|_| {
+planner_lifecycle	rust/crates/tidb-executor/src/access_cost.rs	2575	if constant.param_marker.is_none() && constant.deferred_expr.is_none() =>
+planner_lifecycle	rust/crates/tidb-executor/src/access_cost.rs	2751	|| tidb_expr::expr_util::contain_correlated_column(std::slice::from_ref(&filter))
+native_entry	rust/crates/tidb-executor/src/column_default.rs	730	tidb_expr::eval_expression_once(&rewritten, ctx)
+native_entry	rust/crates/tidb-executor/src/ddl/alter_table.rs	2531	let value = tidb_expr::eval_expression_once(&body.expr, ctx)
+native_entry	rust/crates/tidb-executor/src/driver/catalog.rs	3072	tidb_expr::eval_expression_once(expression, &self.constant_context)
+native_entry	rust/crates/tidb-executor/src/driver/dml.rs	2414	tidb_expr::eval_expression_once(expression, &parameters)
+planner_lifecycle	rust/crates/tidb-executor/src/driver/multi_dml.rs	400	collect_correlated_columns_query(
+planner_lifecycle	rust/crates/tidb-executor/src/driver/physical_builder.rs	4366	tidb_planner::physical::rebind_correlated_columns_by_schema_4_physical_plan(
+planner_lifecycle	rust/crates/tidb-executor/src/driver/planner_bridge.rs	903	constant.param_marker = None;
+native_entry	rust/crates/tidb-executor/src/driver/planner_bridge.rs	2315	tidb_expr::eval_expression_once(expression, self.context)
+native_entry	rust/crates/tidb-executor/src/driver/planner_bridge.rs	2526	tidb_expr::eval_expression_once(expression, ctx)
+native_entry	rust/crates/tidb-executor/src/driver/planner_bridge.rs	3354	tidb_expr::eval_expression_once(expression, &parameters)
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	167	pub(crate) fn collect_correlated_columns_query(
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	177	collect_correlated_columns(select, outer, catalog, current_db, found, ctx)
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	183	collect_correlated_columns(select, outer, catalog, current_db, found, ctx)
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	185	tidb_ast::SetOprTermBody::Nested(nested) => collect_correlated_columns_query(
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	199	fn collect_correlated_columns(
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	293	fn bind_correlated_columns(
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	387	bound.where_clause = Some(bind_correlated_columns(where_clause, bindings)?);
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	390	bound.having = Some(bind_correlated_columns(having, bindings)?);
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	393	item.expr = bind_correlated_columns(&item.expr, bindings)?;
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	396	item.expr = bind_correlated_columns(&item.expr, bindings)?;
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	453	pub(crate) fn correlated_column_indices(
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	507	let indices = correlated_column_indices(correlated, outer_scope)?;
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	726	collect_correlated_columns_query(
+planner_lifecycle	rust/crates/tidb-executor/src/driver/subquery.rs	853	collect_correlated_columns_query(query, outer, catalog, current_db, &mut columns, ctx);
+service_dependencies	rust/crates/tidb-executor/src/explain.rs	2157	tidb_util::plancodec::compress(&data.encode_to_vec())
+decimal_algorithm	rust/crates/tidb-executor/src/hash_agg/window_numeric.rs	172	sum.sub_mysql(&value)
+decimal_algorithm	rust/crates/tidb-executor/src/hash_agg/window_numeric.rs	174	sum.add_mysql(&value)
+planner_lifecycle	rust/crates/tidb-executor/src/plan_trace.rs	166	let value = if let Some(marker) = constant.param_marker {
+planner_lifecycle	rust/crates/tidb-executor/src/plan_trace.rs	214	let datum = if constant.param_marker.is_some() || constant.deferred_expr.is_some() {
+planner_lifecycle	rust/crates/tidb-executor/src/remote_scan.rs	211	let field_type = if constant.param_marker.is_some() {
+planner_lifecycle	rust/crates/tidb-executor/src/vec_group_checker.rs	94	if constant.param_marker.is_some() {
+algorithm_dispatch	rust/crates/tidb-expr/src/arg_eval_type.rs	153	crate::cast::cast_arg_as_datetime,
+algorithm_dispatch	rust/crates/tidb-expr/src/arg_eval_type.rs	266	crate::cast::cast_arg_as_int,
+algorithm_dispatch	rust/crates/tidb-expr/src/arg_eval_type.rs	407	wrap(mask, vals, arg_types, ctx, crate::cast::cast_arg_as_string)
+planner_lifecycle	rust/crates/tidb-expr/src/builtin_compare.rs	291	refined.param_marker = con.param_marker;
+planner_lifecycle	rust/crates/tidb-expr/src/builtin_compare.rs	639	&& (constant.param_marker.is_some() || constant.deferred_expr.is_some())
+planner_lifecycle	rust/crates/tidb-expr/src/builtin_compare.rs	853	&& constant.param_marker.is_none()
+planner_lifecycle	rust/crates/tidb-expr/src/builtin_compare.rs	937	&& constant.param_marker.is_none()
+algorithm_dispatch	rust/crates/tidb-expr/src/builtin_compare.rs	942	crate::cast::cast_arg_as_duration(
+planner_lifecycle	rust/crates/tidb-expr/src/builtin_compare.rs	952	&& constant.param_marker.is_none()
+algorithm_dispatch	rust/crates/tidb-expr/src/builtin_compare.rs	957	crate::cast::cast_arg_as_duration(
+planner_lifecycle	rust/crates/tidb-expr/src/builtin_compare.rs	1111	|| constant.param_marker.is_some()
+algorithm_dispatch	rust/crates/tidb-expr/src/builtin_ext/compare2.rs	349	let Datum::Time(time) = crate::cast::cast_arg_as_datetime(value, None, ctx)? else {
+algorithm_dispatch	rust/crates/tidb-expr/src/builtin_ext/compare2.rs	664	let value = crate::cast::cast_arg_as_int(&value, arg_types[index].as_ref(), ctx)?;
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	434	impl tidb_util::password_validation::GlobalVarAccessor for EvalGlobalVars<'_> {
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	462	fn password_eval_error(error: tidb_util::password_validation::PwdError<EvalError>) -> EvalError {
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	463	use tidb_util::password_validation::PwdError;
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	479	use tidb_util::password_validation::{self, PasswordUser};
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	490	let validation = password_validation::GlobalVarAccessor::get_global_sys_var(
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	494	.map_err(|error| password_eval_error(password_validation::PwdError::Accessor(error)))?;
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	509	password_validation::validate_user_name_in_password(&password, user.as_ref(), &globals)
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	514	let warning = password_validation::validate_password_low_policy(&password, &globals)
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	519	let warning = password_validation::validate_password_medium_policy(&password, &globals)
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/crypto.rs	524	if !password_validation::validate_dictionary_password(&password, &globals)
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/info.rs	46	tidb_parser::normalize_digest(sql).1.to_string(),
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/info.rs	57	Ok(match tidb_util::plancodec::decode_plan(&input) {
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/info.rs	70	tidb_util::plancodec::decode_binary_plan(&input).map_err(|error| error.to_string());
+algorithm_dispatch	rust/crates/tidb-expr/src/builtin_ext/json/mod.rs	237	paths_cache: Option<&crate::builtin_ext::BuiltinFuncCache<Option<Vec<JsonPath>>>>,
+algorithm_dispatch	rust/crates/tidb-expr/src/builtin_ext/json/report.rs	35	use crate::builtin_ext::BuiltinFuncCache;
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/json/report.rs	80	.get_or_init_cache(ctx.context_id(), || prepare_json_schema(&schema_value))?;
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/json/report.rs	87	let schema = prepare_json_schema(&schema_value)?;
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/json/report.rs	98	fn prepare_json_schema(value: &Datum) -> Result<Option<PreparedJsonSchema>, EvalError> {
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/json/report.rs	126	.with_retriever(LocalSchemaRetriever { client })
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/json/report.rs	131	struct LocalSchemaRetriever {
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/json/report.rs	135	impl jsonschema::Retrieve for LocalSchemaRetriever {
+service_dependencies	rust/crates/tidb-expr/src/builtin_ext/json/report.rs	177	let Some(schema) = prepare_json_schema(&values[0])? else {
+algorithm_dispatch	rust/crates/tidb-expr/src/builtin_ext/string2.rs	20	use crate::string_fn::{format_num_locale, substring};
+algorithm_dispatch	rust/crates/tidb-expr/src/builtin_ext/string2.rs	213	let binary = crate::string_fn::locate_collation(&vals[0], &vals[1]) == Collation::Binary;
+algorithm_dispatch	rust/crates/tidb-expr/src/cast.rs	27	use crate::time_fn::calendar::parse_date_ymd;
+algorithm_dispatch	rust/crates/tidb-expr/src/cast.rs	259	CastType::Json => crate::builtin_ext::cast_as_json(&v),
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	54	pub param_marker: Option<ParamMarker>,
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	90	pub fn replace_cached_value(&mut self, value: Datum) {
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	127	if let Some(marker) = self.param_marker {
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	161	let value = if let Some(marker) = self.param_marker {
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	279	if self.deferred_expr.is_some() || self.param_marker.is_some() {
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	324	let value = if let Some(marker) = self.param_marker {
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	391	} else if let Some(param) = self.param_marker {
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	409	if let Some(param) = self.param_marker {
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	439	&& self.param_marker == other.param_marker
+planner_lifecycle	rust/crates/tidb-expr/src/constant.rs	496	} else if let Some(param) = constant.param_marker {
+planner_lifecycle	rust/crates/tidb-expr/src/constant_propagation.rs	72	if constant.param_marker.is_some() || constant.deferred_expr.is_some() {
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/fold.rs	134	if constant.param_marker.is_some() {
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/fold.rs	155	if constant.param_marker.is_some() {
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/fold.rs	215	|| constant.param_marker.is_some();
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/fold.rs	355	let is_deferred_const = constant.deferred_expr.is_some() || constant.param_marker.is_some();
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/mod.rs	158	param_marker_expression, pos_from_position_expr, ConstantReadError, ParamMarkerValue,
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/mod.rs	163	const_expr_consider_plan_cache, contain_correlated_column, contain_mutable_const,
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/param.rs	63	pub fn param_marker_expression(
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/param.rs	73	constant.param_marker = Some(ParamMarker { order: v.order });
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/param.rs	169	let value = param_marker_expression(marker, false, false, inferred_type);
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/predicates.rs	290	let value = if constant.param_marker.is_some() {
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/predicates.rs	325	pub fn contain_correlated_column(exprs: &[Expression]) -> bool {
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/predicates.rs	328	Expression::ScalarFunction(function) => contain_correlated_column(function.get_args()),
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/predicates.rs	400	constant.param_marker.is_some() || constant.deferred_expr.is_some()
+planner_lifecycle	rust/crates/tidb-expr/src/expr_util/predicates.rs	431	constant.param_marker = None;
+planner_lifecycle	rust/crates/tidb-expr/src/expression.rs	322	if constant.param_marker.is_none() {
+planner_lifecycle	rust/crates/tidb-expr/src/expression.rs	439	if constant.param_marker.is_none() && constant.deferred_expr.is_none() =>
+planner_lifecycle	rust/crates/tidb-expr/src/expression.rs	510	if constant.param_marker.is_some() || constant.deferred_expr.is_some() {
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	22	use crate::string_fn::{
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	30	use crate::time_fn::calendar::{date_add, date_diff, date_format, date_part, from_days, time_part};
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	134	if let Some(result) = crate::builtin_ext::eval_aes_lazy(
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	228	let value = crate::cast::cast_arg_as_string(&value, None, cols)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	294	if let Some(result) = crate::math_fn::dispatch(name.as_str(), args, &vals, cols, function_key) {
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	304	crate::time_fn::dispatch(name.as_str(), &vals, cols)
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	314	match crate::cast::cast_arg_as_int(&value, source, ctx)? {
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	518	"crate::builtin_ext::json::dispatch(""JSON_MEMBER_OF"", vals)"
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	656	if let Some(result) = crate::math_fn::dispatch_values(name, vals, ctx) {
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	696	match crate::ops::eval_binary_in(BinaryOp::Eq, value.clone(), item.clone(), ctx) {
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	750	let equal = match crate::ops::eval_binary_in(BinaryOp::Eq, a.clone(), b, ctx) {
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	858	_ => return crate::builtin_ext::dispatch(name, vals, ctx),
+algorithm_dispatch	rust/crates/tidb-expr/src/func.rs	1014	match crate::ops::eval_binary_in(BinaryOp::Eq, v.clone(), iv, cols)? {
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	444	let Some(expression) = crate::math_fn::render_ast_binary_expression(operator, left, right)
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	459	use string_fn::{position, trim_value};
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	700	time_fn::calendar::date_add(unit, date, amount, sign)
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	706	string_fn::concat(values)
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	933	time_fn::extract::extract(unit, &eval_in(value, cols)?, None, cols)
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	958	time_fn::add_sub::timestamp_add(&vals, cols)
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	972	Ok(Datum::new_string(time_fn::get_format(
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	1077	let ge = crate::ops::eval_binary_in(
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	1084	crate::ops::eval_binary_in(tidb_ast::BinaryOp::Le, v, eval_in(high, cols)?, cols)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/lib.rs	1249	if crate::ops::eval_binary_in(tidb_ast::BinaryOp::Eq, v.clone(), w, cols)?
+decimal_algorithm	rust/crates/tidb-expr/src/ops.rs	1053	let (sum, warning) = a.add_mysql(&b);
+decimal_algorithm	rust/crates/tidb-expr/src/ops.rs	1060	let (difference, warning) = a.sub_mysql(&b);
+decimal_algorithm	rust/crates/tidb-expr/src/ops.rs	1067	let (product, warning) = a.mul_mysql(&b);
+algorithm_dispatch	rust/crates/tidb-expr/src/ops.rs	1366	let _ = crate::math_fn::numeric_arg(value, ctx);
+planner_lifecycle	rust/crates/tidb-expr/src/pushdown_catalog.rs	2413	let parameter_type = (bind_values && constant.param_marker.is_some())
+algorithm_dispatch	rust/crates/tidb-expr/src/regexp.rs	86	cache: &crate::builtin_ext::BuiltinFuncCache<CachedRegexp>,
+planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	1203	crate::expr_util::param_marker_expression(&value, true, false, None),
+planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	1533	if constant.param_marker.is_none() && constant.deferred_expr.is_none());
+planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	1536	if constant.param_marker.is_none() && constant.deferred_expr.is_none()
+planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	1541	if constant.param_marker.is_none() && constant.deferred_expr.is_none() {
+algorithm_dispatch	rust/crates/tidb-expr/src/rewriter.rs	2103	crate::builtin_ext::json::parse_path(&path_text)
+planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	2646	assert_eq!(constant.param_marker.unwrap().order, order as i64);
+service_dependencies	rust/crates/tidb-expr/src/rewriter.rs	3717	"let encoded = tidb_util::plancodec::compress(b""0\t1\t0\t1\teq(a, 1)\n"");"
+service_dependencies	rust/crates/tidb-expr/src/rewriter.rs	3728	let binary_discarded = tidb_util::plancodec::BINARY_PLAN_DISCARDED_ENCODED.as_str();
+algorithm_dispatch	rust/crates/tidb-expr/src/rewriter/result_type.rs	33	use crate::builtin_ext::{GlCmpStringMode, GlSignature};
+algorithm_dispatch	rust/crates/tidb-expr/src/rewriter/result_type.rs	1022	let fsp = i64::from(crate::time_fn::calendar::date_add_result_fsp(
+algorithm_dispatch	rust/crates/tidb-expr/src/rewriter/result_type.rs	1079	crate::cast::cast_arg_as_int(
+algorithm_dispatch	rust/crates/tidb-expr/src/row.rs	35	use crate::ops::eval_binary;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	87	Ok(crate::math_fn::numeric_arg(value, ctx)?.map(|float| float != 0.0))
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	308	json_schema_cache: crate::builtin_ext::JsonSchemaCache,
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	310	crate::builtin_ext::BuiltinFuncCache<Option<Vec<crate::builtin_ext::JsonPath>>>,
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	311	find_in_set_cache: crate::builtin_ext::BuiltinFuncCache<crate::builtin_ext::FindInSetLookup>,
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	312	regexp_cache: crate::builtin_ext::BuiltinFuncCache<crate::regexp::CachedRegexp>,
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	314	crate::builtin_ext::BuiltinFuncCache<Vec<crate::builtin_ext::regexp::ReplacementPart>>,
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	315	like_pattern_cache: crate::builtin_ext::BuiltinFuncCache<crate::like::CompiledLikePattern>,
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	316	ilike_pattern_cache: crate::builtin_ext::BuiltinFuncCache<crate::like::CompiledIlikePattern>,
+planner_lifecycle	rust/crates/tidb-expr/src/scalar_function.rs	706	pub fn invalidate_cached_arguments(&mut self) {
+planner_lifecycle	rust/crates/tidb-expr/src/scalar_function.rs	762	decorrelated.invalidate_cached_arguments();
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	1410	crate::ops::eval_binary_full(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	1514	crate::cast::cast_arg_as_string(&value, self.args[index].static_type(), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	1763	crate::cast::cast_arg_as_string(&raw_name, self.args[0].static_type(), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	1769	let int_timeout = crate::cast::cast_arg_as_int(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	1855	return crate::builtin_ext::interval_lazy(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	1939	crate::cast::cast_arg_as_int(&raw_escape, self.args[2].static_type(), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2092	let value = crate::cast::cast_arg_as_string(&value, Some(&arg_type), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2095	let string_type = crate::cast::cast_arg_as_string_type(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2191	let result_fsp = crate::time_fn::calendar::date_add_result_fsp(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2202	return crate::time_fn::add_sub::date_add_duration(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2218	crate::cast::cast_arg_as_datetime(&date, self.args[0].static_type(), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2220	let result = crate::time_fn::calendar::date_add_with_result_fsp(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2344	let cast = crate::cast::cast_arg_as_int(&value, self.args[0].static_type(), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2366	return Ok(crate::string_fn::trim_value(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2409	return crate::math_fn::eval_rand_values(&vals, ctx, function_key, arg_is_constant);
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2455	crate::cast::cast_arg_as_datetime(value, source, ctx)?
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2458	crate::cast::cast_arg_as_duration(value, source, ctx)?
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2467	crate::builtin_ext::cast_as_json_typed(value, source)?
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2470	crate::builtin_ext::cast_as_json_value_typed(value, source)?
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2518	crate::cast::cast_arg_as_duration(&value, expression.static_type(), ctx)
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2548	match crate::ops::eval_binary_full(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2624	let position = crate::cast::cast_arg_as_int(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2629	return crate::string_fn::locate_with_position(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2634	return crate::string_fn::locate(&substr, &str, collation);
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2639	return crate::string_fn::locate(&b, &a, collation);
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2643	return crate::string_fn::strcmp_with_collation(&vals, collation);
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2652	crate::builtin_ext::build_find_in_set_lookup(&list, collation)
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2654	return crate::builtin_ext::find_in_set_lookup(&needle, &lookup, collation);
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2657	return crate::builtin_ext::find_in_set_with_collation(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2705	return crate::builtin_ext::extremum_with_signature(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2742	let value = crate::cast::cast_arg_as_string(&value, Some(&arg_type), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2746	let string_type = crate::cast::cast_arg_as_string_type(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2767	return crate::string_fn::field_with_collation(&vals, collation, ctx);
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2772	if let Some(result) = crate::builtin_ext::eval_aes_lazy(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2802	return crate::time_fn::extract::extract(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2821	return crate::string_fn::hex_with_type(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2856	return crate::builtin_ext::regexp::dispatch_with_cache(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2868	return crate::string_fn::ord_with_type(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2882	let Some(document) = crate::builtin_ext::parse_json_document_argument(&vals[0])? else {
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2888	crate::builtin_ext::parse_json_modify_paths(&vals)
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2893	return crate::builtin_ext::json_dispatch_typed_with_paths_and_document(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2898	if let Some(result) = crate::builtin_ext::json_dispatch_typed(&upper, &vals, &arg_types) {
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2908	use crate::time_fn::add_sub::{add_sub_time, kind_of, TemporalKind};
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2936	let result = crate::time_fn::add_sub::timestamp(&vals, ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2945	let result = crate::time_fn::add_sub::sysdate(&vals, ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	2976	let mut result = crate::time_fn::dispatch(&upper, &vals, ctx)
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	3013	return crate::math_fn::round_or_truncate_with_result_decimal(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	3023	return crate::math_fn::ceil_floor_with_result_domain(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	3032	if let Some(result) = crate::math_fn::dispatch_values(&upper, &vals, ctx) {
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	3040	if let Some(result) = crate::time_fn::dispatch(&upper, &vals, ctx) {
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	3072	"(""time"", _) => return crate::cast::cast_arg_as_datetime(&value, None, ctx),"
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	3883	crate::builtin_ext::cast_as_json_typed(&value, Some(field))
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function.rs	3885	crate::builtin_ext::cast_as_json_value_typed(&value, Some(field))
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	138	Acos => Kernel::Values(crate::math_fn::acos),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	139	Asin => Kernel::Values(crate::math_fn::asin),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	140	Atan1Arg => Kernel::Values(crate::math_fn::atan),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	141	Atan2Args => Kernel::Values(crate::math_fn::atan2),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	142	Cos => Kernel::Values(crate::math_fn::cos),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	143	Cot => Kernel::Values(crate::math_fn::cot),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	144	Sin => Kernel::Values(crate::math_fn::sin),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	145	Pow => Kernel::Values(crate::math_fn::pow),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	146	Pi => Kernel::Values(|values, _| crate::math_fn::pi(values)),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	147	Conv => Kernel::Values(|values, _| crate::math_fn::conv(values)),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	149	Date => Kernel::Values(crate::time_fn::date),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	150	DateDiff => Kernel::Values(|values, _| crate::time_fn::calendar::date_diff(values)),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	155	crate::time_fn::calendar::date_format(date, format)
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	158	crate::time_fn::calendar::time_part(values, |time| i64::from(time.0))
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	161	crate::time_fn::calendar::time_part(values, |time| i64::from(time.1))
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	164	crate::time_fn::calendar::time_part(values, |time| i64::from(time.2))
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	166	MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	167	Month => Kernel::Values(|values, _| crate::time_fn::month(values)),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	169	crate::time_fn::week(values, ctx.default_week_format())
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	172	Kernel::Values(|values, _| crate::time_fn::calendar::timestamp_diff(values))
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	175	Kernel::Values(crate::time_fn::session_tz::unix_timestamp)
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	261	crate::ops::eval_binary_full(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	346	Kernel::Round => crate::math_fn::round_or_truncate_with_result_decimal(
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	377	StringOp::Upper => crate::string_fn::case_convert(&values, true),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	378	StringOp::Lower => crate::string_fn::case_convert(&values, false),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	379	StringOp::Substring => crate::string_fn::substring(&values, ctx),
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	383	let result = crate::time_fn::session_tz::from_unixtime(&values, ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/scalar_function/pb_builtin.rs	407	crate::builtin_ext::json::eval_pb(
+algorithm_dispatch	rust/crates/tidb-expr/src/string_fn.rs	663	let value = crate::cast::cast_arg_as_string(value, Some(arg_type), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/string_fn.rs	667	let value = crate::cast::cast_arg_as_int(value, Some(arg_type), ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/time_fn/extract.rs	44	return match crate::cast::cast_arg_as_datetime(value, source, ctx)? {
+algorithm_dispatch	rust/crates/tidb-expr/src/time_fn/extract.rs	53	let text = crate::cast::cast_arg_as_string(value, source, ctx)?;
+algorithm_dispatch	rust/crates/tidb-expr/src/time_fn/extract.rs	96	match crate::cast::cast_arg_as_duration(value, source, ctx)? {
+service_dependencies	rust/crates/tidb-parser/src/digest.rs	102	pub fn normalize_digest(sql: &str) -> (String, Digest) {
+planner_lifecycle	rust/crates/tidb-parser/src/expr.rs	364	order: self.next_param_marker_position(),
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	557	p.reset_param_marker_positions();
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	613	param_marker_position: usize,
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	804	param_marker_position: 0,
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	886	fn reset_param_marker_positions(&mut self) {
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	887	self.param_marker_position = 0;
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	896	fn next_param_marker_position(&mut self) -> usize {
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	897	let position = self.param_marker_position;
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	898	self.param_marker_position = self
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	899	.param_marker_position
+planner_lifecycle	rust/crates/tidb-parser/src/lib.rs	922	param_marker_position: 0,
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	476	fn visit_expression_correlated_columns_mut(
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	484	visit_expression_correlated_columns_mut(argument, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	491	fn visit_logical_correlated_columns_mut(
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	497	visit_expression_correlated_columns_mut(expression, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	507	visit_expression_correlated_columns_mut(argument, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	525	visit_expression_correlated_columns_mut(&mut item.expr, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	532	visit_expression_correlated_columns_mut(&mut item.expr, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	537	visit_expression_correlated_columns_mut(&mut item.expr, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	557	visit_logical_correlated_columns_mut(seed, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	560	visit_logical_correlated_columns_mut(recursive, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	574	visit_logical_correlated_columns_mut(child, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/expression_rewriter.rs	588	visit_logical_correlated_columns_mut(plan, &mut |correlated| {
+planner_lifecycle	rust/crates/tidb-planner/src/final_mode_agg.rs	1398	fn contain_correlated_column(exprs: &[Expression]) -> bool {
+planner_lifecycle	rust/crates/tidb-planner/src/final_mode_agg.rs	1401	Expression::ScalarFunction(func) => contain_correlated_column(func.get_args()),
+planner_lifecycle	rust/crates/tidb-planner/src/final_mode_agg.rs	1425	|| contain_correlated_column(&agg_func.base.args)
+planner_lifecycle	rust/crates/tidb-planner/src/final_mode_agg.rs	1503	|| contain_correlated_column(&agg_func.base.args)
+planner_lifecycle	rust/crates/tidb-planner/src/find_best_task/dispatch.rs	1520	if constant.deferred_expr.is_some() || constant.param_marker.is_some() {
+planner_lifecycle	rust/crates/tidb-planner/src/find_best_task/dispatch.rs	2385	let mut most_correlated_column = None;
+planner_lifecycle	rust/crates/tidb-planner/src/find_best_task/dispatch.rs	2395	most_correlated_column = columns.get(unique_id).cloned();
+planner_lifecycle	rust/crates/tidb-planner/src/find_best_task/dispatch.rs	2401	.then_some(most_correlated_column)
+planner_lifecycle	rust/crates/tidb-planner/src/joinorder.rs	873	swapped.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/joinorder.rs	1184	function.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/joinorder.rs	2001	function.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/logical/functional_dependencies.rs	232	&& constant.param_marker.is_none()
+native_entry	rust/crates/tidb-planner/src/logical/rewrite.rs	3208	tidb_expr::eval_expression_once(expression, self.eval_context)
+native_entry	rust/crates/tidb-planner/src/logical/rewrite.rs	3567	tidb_expr::eval_expression_once(expression, self.eval_context)
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rewrite.rs	4414	value.param_marker = Some(ParamMarker { order });
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rewrite.rs	4499	value.param_marker = Some(ParamMarker { order });
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rewrite.rs	4559	missing.param_marker = Some(ParamMarker { order: 2 });
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rule.rs	882	if constant.deferred_expr.is_some() || constant.param_marker.is_some() {
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rule_generate_column_substitute.rs	185	function.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rule_join_reorder.rs	1131	rewritten.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rule_projection_elimination.rs	76	function.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rule_util.rs	73	function.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/logical/rule_util.rs	117	function.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/logical/show.rs	367	if constant.deferred_expr.is_some() || constant.param_marker.is_some() {
+service_dependencies	rust/crates/tidb-planner/src/physical/mod.rs	1536	tidb_util::plancodec::TYPE_CTE_FULL_SCAN,
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4693	fn visit_expression_correlated_columns_mut(
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4701	visit_expression_correlated_columns_mut(argument, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4708	fn visit_physical_correlated_columns_mut(
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4717	visit_expression_correlated_columns_mut(expression, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4727	visit_expression_correlated_columns_mut(argument, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4771	visit_expression_correlated_columns_mut(&mut item.expr, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4787	visit_physical_correlated_columns_mut(plan, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4792	visit_physical_correlated_columns_mut(plan, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4797	visit_physical_correlated_columns_mut(plan, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4800	visit_physical_correlated_columns_mut(plan, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4805	visit_physical_correlated_columns_mut(plan, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4808	visit_physical_correlated_columns_mut(plan, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4813	visit_expression_correlated_columns_mut(&mut item.expr, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4825	visit_physical_correlated_columns_mut(child, visitor);
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4833	pub fn rebind_correlated_columns_by_schema_4_physical_plan(
+planner_lifecycle	rust/crates/tidb-planner/src/physical/mod.rs	4857	visit_physical_correlated_columns_mut(plan, &mut |correlated| {
+native_entry	rust/crates/tidb-planner/src/physical_plan_cache.rs	344	None => tidb_expr::eval_expression_once(expression, self),
+planner_lifecycle	rust/crates/tidb-planner/src/physical_plan_cache.rs	438	if let Some(marker) = constant.param_marker {
+planner_lifecycle	rust/crates/tidb-planner/src/physical_plan_cache.rs	443	constant.replace_cached_value(value.clone());
+planner_lifecycle	rust/crates/tidb-planner/src/physical_plan_cache.rs	458	constant.replace_cached_value(value);
+planner_lifecycle	rust/crates/tidb-planner/src/physical_plan_cache.rs	466	function.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/physical_plan_cache.rs	489	Expression::Constant(constant) if constant.param_marker.is_some() => {
+planner_lifecycle	rust/crates/tidb-planner/src/physical_plan_cache.rs	501	function.invalidate_cached_arguments();
+planner_lifecycle	rust/crates/tidb-planner/src/plan_builder.rs	784	if constant.deferred_expr.is_some() || constant.param_marker.is_some() {
+planner_lifecycle	rust/crates/tidb-planner/src/ranger/detacher.rs	493	let mutable = c.param_marker.is_some() || c.deferred_expr.is_some();
+planner_lifecycle	rust/crates/tidb-planner/src/residual_condition.rs	155	"category: ""param_marker"","
+planner_lifecycle	rust/crates/tidb-planner/src/residual_condition.rs	229	"category: ""param_marker"","
+planner_lifecycle	rust/crates/tidb-planner/src/residual_condition.rs	264	"Expr::ParamMarker { .. } => ""param_marker"","
+planner_lifecycle	rust/crates/tidb-planner/src/task.rs	1282	parameter.param_marker = Some(ParamMarker { order: 0 });
+planner_lifecycle	rust/crates/tidb-planner/src/task.rs	1329	Expression::Constant(value) if value.param_marker.is_some() => Ok(Datum::Int(3)),
+service_dependencies	rust/crates/tidb-server/src/cluster_session_node/mod.rs	235	tidb_parser::normalize_digest(sql)
+service_dependencies	rust/crates/tidb-server/src/sql_node.rs	626	let digest = tidb_parser::normalize_digest(&sql).1.to_string();
+service_dependencies	rust/crates/tidb-server/src/sql_node.rs	644	digest: tidb_parser::normalize_digest(prepared_ast.sql())
+service_dependencies	rust/crates/tidb-session/src/account.rs	25	use tidb_util::password_validation::{self, GlobalVarAccessor, PasswordUser, PwdError};
+service_dependencies	rust/crates/tidb-session/src/account.rs	270	password_validation::validate_password(&password, user.as_ref(), &globals)
+service_dependencies	rust/crates/tidb-session/src/lib.rs	832	tidb_parser::normalize_digest(sql)
+service_dependencies	rust/crates/tidb-session/src/lib.rs	2349	tidb_parser::normalize_digest(sql).0
+service_dependencies	rust/crates/tidb-session/src/lib.rs	2367	tidb_parser::normalize_digest(sql).0
+service_dependencies	rust/crates/tidb-stmtsummary/src/reader.rs	1128	let plan = tidb_util::plancodec::decode_plan(stats.sample_plan.as_bytes())
+service_dependencies	rust/crates/tidb-stmtsummary/src/statement_summary.rs	27	use tidb_util::plancodec::{BINARY_PLAN_DISCARDED_ENCODED, PLAN_DISCARDED_ENCODED};
+service_dependencies	rust/crates/tidb-stmtsummary/src/v2/column.rs	71	use tidb_util::plancodec::decode_plan;
+service_dependencies	rust/crates/tidb-stmtsummary/src/v2/record.rs	90	use tidb_util::plancodec::{BINARY_PLAN_DISCARDED_ENCODED, PLAN_DISCARDED_ENCODED};
+decimal_algorithm	rust/crates/tidb-unistore/src/cophandler.rs	2730	SimpleSig::DivideDecimal => left.div_mysql(&right, div_precision_increment as u32),
+decimal_algorithm	rust/crates/tidb-unistore/src/cophandler.rs	2731	SimpleSig::PlusDecimal => Some(left.add_mysql(&right).0),
+decimal_algorithm	rust/crates/tidb-unistore/src/cophandler.rs	2732	SimpleSig::MinusDecimal => Some(left.sub_mysql(&right).0),
+decimal_algorithm	rust/crates/tidb-unistore/src/cophandler.rs	2733	SimpleSig::MultiplyDecimal => Some(left.mul_mysql(&right).0),
+service_dependencies	rust/crates/tidb-util/src/memoryusagealarm.rs	38	use crate::plancodec::decode_binary_plan_for_connection;

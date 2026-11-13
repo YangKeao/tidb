@@ -1,0 +1,944 @@
+{
+  "tidb": "4958bb6959104db9b17258212c887befaa84d1d7",
+  "tikv": "3ad4dc75eec6af91b77f2c36f3d10ee61073b942",
+  "denominator": 245,
+  "exceptions_included": [
+    "json_schema_valid",
+    "tidb_decode_binary_plan",
+    "tidb_decode_plan",
+    "tidb_encode_sql_digest",
+    "validate_password_strength"
+  ],
+  "caller_witness_count": 337,
+  "largest_add_split": {
+    "temporal": {
+      "semantic_add": [
+        1400,
+        3200
+      ],
+      "boundary_add": [
+        800,
+        1600
+      ]
+    },
+    "integration": {
+      "semantic_add": [
+        200,
+        600
+      ],
+      "boundary_add": [
+        700,
+        1600
+      ]
+    },
+    "json": {
+      "semantic_add": [
+        1000,
+        2600
+      ],
+      "boundary_add": [
+        600,
+        1000
+      ]
+    },
+    "cast": {
+      "semantic_add": [
+        1200,
+        2800
+      ],
+      "boundary_add": [
+        600,
+        1200
+      ]
+    },
+    "string": {
+      "semantic_add": [
+        800,
+        1800
+      ],
+      "boundary_add": [
+        400,
+        800
+      ]
+    }
+  },
+  "family_counts": {
+    "math": 26,
+    "temporal": 57,
+    "crypto": 12,
+    "control": 13,
+    "misc": 12,
+    "string": 43,
+    "comparison": 12,
+    "operator_numeric": 14,
+    "cast": 1,
+    "convert_charset": 1,
+    "pattern": 6,
+    "network": 8,
+    "json": 27,
+    "exceptions": 5,
+    "vector": 8
+  },
+  "groups": {
+    "operator_numeric": {
+      "add": [
+        900,
+        1800
+      ],
+      "delete": [
+        900,
+        1700
+      ],
+      "test_add": [
+        300,
+        700
+      ],
+      "test_edit_both_sides": [
+        100,
+        250
+      ],
+      "native_files": "builtin_arithmetic.rs ops.rs ops/operand.rs ops/integer_coerce.rs ops/real_coerce.rs",
+      "scope": "Signed/unsigned arithmetic, mixed Decimal/Real, native overflow text, division policy and bit width; shared expression algorithms only, retain storage codecs.",
+      "tests": "Unsigned edges; mixed types; signed zero/NaN; 81-digit bounds; NULL demand; exact warning code/count."
+    },
+    "math": {
+      "add": [
+        650,
+        1300
+      ],
+      "delete": [
+        800,
+        1400
+      ],
+      "test_add": [
+        250,
+        650
+      ],
+      "test_edit_both_sides": [
+        100,
+        250
+      ],
+      "native_files": "math_fn/mod.rs math_fn/go_exp_log.rs math_fn/go_trig.rs",
+      "scope": "Retain Go-compatible transcendental behavior and rounding; share numeric coercion with cast package. RAND state identity is charged to lifecycle, not every math function.",
+      "tests": "ULP/large-angle vectors; signed-zero/NaN; decimal rounding; numeric prefixes; seed/reset lifetime."
+    },
+    "string": {
+      "add": [
+        1200,
+        2600
+      ],
+      "delete": [
+        1800,
+        3300
+      ],
+      "test_add": [
+        600,
+        1400
+      ],
+      "test_edit_both_sides": [
+        200,
+        500
+      ],
+      "native_files": "string_fn.rs string_packet.rs string_signature.rs builtin_ext/string2.rs",
+      "scope": "Unicode case and byte/character indexing, result carrier/collation, packet limits and type-dependent demand. Charset conversion charged once to convert_charset.",
+      "tests": "Invalid UTF8, GBK/binary, multibyte positions, packet warnings, NULL/effect ordering, output collation."
+    },
+    "pattern": {
+      "add": [
+        350,
+        900
+      ],
+      "delete": [
+        350,
+        600
+      ],
+      "test_add": [
+        250,
+        600
+      ],
+      "test_edit_both_sides": [
+        100,
+        250
+      ],
+      "native_files": "builtin_ext/regexp.rs like.rs",
+      "scope": "Shared regex/LIKE algorithm with native diagnostics, sequential argument checks, constant caches and replacement instruction semantics; cache lifetime charged separately.",
+      "tests": "Invalid pattern/UTF8/flags; NULL skips later writes; Unicode positions; empty matches; replacement escapes; rebinding."
+    },
+    "temporal": {
+      "add": [
+        2200,
+        4800
+      ],
+      "delete": [
+        2800,
+        5200
+      ],
+      "test_add": [
+        900,
+        2000
+      ],
+      "test_edit_both_sides": [
+        350,
+        800
+      ],
+      "native_files": "time_fn/mod.rs time_fn/add_sub.rs time_fn/calendar.rs time_fn/convert_tz.rs time_fn/duration_parse.rs time_fn/extract.rs time_fn/session_tz.rs time_literal.rs",
+      "scope": "Migrate only needed native calendar/format/parse policies into shared execution; SDK time representation is not native coercion equivalence. Retain timezone/storage APIs and statement clocks.",
+      "tests": "Zero/invalid dates; DST/named zones; SQL modes; fsp; calendar carries; duration versus datetime signatures; stable statement time."
+    },
+    "json": {
+      "add": [
+        1600,
+        3600
+      ],
+      "delete": [
+        1700,
+        3000
+      ],
+      "test_add": [
+        700,
+        1600
+      ],
+      "test_edit_both_sides": [
+        300,
+        650
+      ],
+      "native_files": "builtin_ext/json/mod.rs builtin_ext/json/construct.rs builtin_ext/json/merge.rs builtin_ext/json/modify.rs builtin_ext/json/path.rs builtin_ext/json/predicate.rs builtin_ext/json/report.rs builtin_ext/json/search.rs builtin_ext/json/text.rs builtin_ext/json/value.rs builtin_ext/json2.rs",
+      "scope": "Native typed JSON versus text, argument ParseToJSONFlag, path grammar/equality/rendering and CRC32. Reuse SDK binary JSON where compatible; preserve differing native policies. Schema service integration charged to exceptions.",
+      "tests": "Typed versus text JSON; invalid/path wildcard; numeric precision; key ordering; duplicate keys; mutation path cache; schema errors; CRC32."
+    },
+    "crypto": {
+      "add": [
+        250,
+        700
+      ],
+      "delete": [
+        350,
+        550
+      ],
+      "test_add": [
+        180,
+        450
+      ],
+      "test_edit_both_sides": [
+        80,
+        200
+      ],
+      "native_files": "builtin_ext/crypto.rs",
+      "scope": "Reuse digest/compression/AES libraries; adapt AES lazy argument requirements, mode/IV/session policy, encoding and framing diagnostics. Password service capability charged to exceptions.",
+      "tests": "AES mode/IV/key; skipped argument effects; corrupt compression; raw bytes; digest variants; password session policy."
+    },
+    "network": {
+      "add": [
+        100,
+        300
+      ],
+      "delete": [
+        120,
+        250
+      ],
+      "test_add": [
+        80,
+        220
+      ],
+      "test_edit_both_sides": [
+        40,
+        100
+      ],
+      "native_files": "builtin_ext/compare2.rs",
+      "scope": "Network parsing helpers are inside compare2; budget only inet/is_ipv functions here, comparison helpers below. Preserve invalid-input NULL and byte-width behavior.",
+      "tests": "IPv4 shorthand/overflow; IPv6 mapped/compat; binary length; invalid UTF8 and NULL."
+    },
+    "vector": {
+      "add": [
+        80,
+        250
+      ],
+      "delete": [
+        70,
+        130
+      ],
+      "test_add": [
+        100,
+        250
+      ],
+      "test_edit_both_sides": [
+        30,
+        80
+      ],
+      "native_files": "builtin_ext/vec.rs",
+      "scope": "Reuse vector kernels after native vector carrier and dimension/NaN behavior match. Carrier construction charged to cast, not eight times.",
+      "tests": "Dimension mismatch; empty vectors; zero norm; NaN/Inf; parse/format; signed-zero accumulation."
+    },
+    "misc": {
+      "add": [
+        250,
+        700
+      ],
+      "delete": [
+        250,
+        450
+      ],
+      "test_add": [
+        150,
+        400
+      ],
+      "test_edit_both_sides": [
+        60,
+        180
+      ],
+      "native_files": "builtin_ext/misc.rs builtin_ext/info.rs",
+      "scope": "UUID byte transforms, grouping metadata, formatting and hash functions; service plan functions excluded from this package. Identity-return functions need complete Datum carriers.",
+      "tests": "UUID layout/version/timestamp; invalid binary; grouping bits; identity carrier preservation; hash signedness."
+    },
+    "comparison": {
+      "add": [
+        500,
+        1200
+      ],
+      "delete": [
+        500,
+        850
+      ],
+      "test_add": [
+        300,
+        750
+      ],
+      "test_edit_both_sides": [
+        150,
+        350
+      ],
+      "native_files": "builtin_compare.rs builtin_ext/compare2.rs",
+      "scope": "Typed signed/unsigned/Decimal/time/JSON comparison, collation, IN preparation, extrema and INTERVAL demand. Network helpers in same file charged only to network.",
+      "tests": "Mixed domains; collation weights/padding; NULL IN; prepared IN sets; extrema/time errors; lazy interval effects."
+    },
+    "control": {
+      "add": [
+        300,
+        750
+      ],
+      "delete": [
+        0,
+        0
+      ],
+      "test_add": [
+        300,
+        650
+      ],
+      "test_edit_both_sides": [
+        120,
+        300
+      ],
+      "native_files": "builtin_op.rs scalar_function.rs",
+      "scope": "Generalize shared demand/coercion for CASE/COALESCE/logical/NULLIF; PB eager versus native scalar/vector stays explicit. Whole old dispatcher deletion charged to integration.",
+      "tests": "Selected/unselected errors and writes; three-valued logic; mixed branch types; PB eager IF; zero/duplicate rows."
+    },
+    "cast": {
+      "add": [
+        1800,
+        4000
+      ],
+      "delete": [
+        700,
+        1800
+      ],
+      "test_add": [
+        700,
+        1600
+      ],
+      "test_edit_both_sides": [
+        300,
+        700
+      ],
+      "native_files": "cast.rs coerce.rs builtin_cast_semantics.rs arg_eval_type.rs",
+      "scope": "Single shared coercion layer for full native Decimal/Real/unsigned/enum/set/bit/time/duration/JSON/vector; preserve declared result shape. Do not relocate entire datatype storage package.",
+      "tests": "All admitted source/result domains; strict/warning modes; string prefix; rounding; timezone; hidden precision; metadata."
+    },
+    "convert_charset": {
+      "add": [
+        400,
+        1000
+      ],
+      "delete": [
+        100,
+        200
+      ],
+      "test_add": [
+        200,
+        500
+      ],
+      "test_edit_both_sides": [
+        80,
+        200
+      ],
+      "native_files": "convert_charset.rs",
+      "scope": "Share BinAware/to_binary/from_binary/CONVERT USING policies. Reuse existing charset/collation tables without copying generated tables into expression kernel.",
+      "tests": "GBK/UTF8/binary; invalid sequence; source-versus-result collation; warning/error and packet boundary."
+    },
+    "exceptions": {
+      "add": [
+        300,
+        1000
+      ],
+      "delete": [
+        0,
+        200
+      ],
+      "test_add": [
+        200,
+        600
+      ],
+      "test_edit_both_sides": [
+        80,
+        200
+      ],
+      "native_files": "builtin_ext/info.rs builtin_ext/crypto.rs builtin_ext/json/report.rs",
+      "scope": "Five existing exceptions stay in the245 denominator. Budget only concrete service capabilities/wrappers; underlying plan/schema/password services remain owned outside shared loop. Full service relocation is unbounded, not hidden in this interval.",
+      "tests": "Unavailable service; session identity/policy; exact errors; parameter changes; invalid schemas/plans; sensitive output behavior."
+    },
+    "input_lifecycle": {
+      "add": [
+        1200,
+        2600
+      ],
+      "delete": [
+        100,
+        350
+      ],
+      "test_add": [
+        600,
+        1300
+      ],
+      "test_edit_both_sides": [
+        200,
+        450
+      ],
+      "native_files": "column.rs constant.rs context.rs",
+      "scope": "Parameter rebinding, correlated/ordinary columns, complete immutable carriers, program validity, statement/evaluator reset, RAND identity after destruction, caches and scratch cleanup.",
+      "tests": "Rebind values/types/context; column remap; empty/duplicate selections; clone/drop/recreate; cache invalidation; concurrent sessions; failures then reuse."
+    },
+    "integration": {
+      "add": [
+        900,
+        2200
+      ],
+      "delete": [
+        2800,
+        6000
+      ],
+      "test_add": [
+        450,
+        1100
+      ],
+      "test_edit_both_sides": [
+        400,
+        1000
+      ],
+      "native_files": "lib.rs func.rs expression.rs scalar_function.rs evaluator.rs simple_expr.rs pb_predicate.rs distsql_builtin.rs",
+      "scope": "Build native AST/PB into shared program; integrate projection/filter/sort/aggregate and Unistore. Retire only runtime evaluation branches; retain construction/type/planner APIs and compatibility entry adapters.",
+      "tests": "Real SQL entry routes; AST/PB differences; filter/sort/aggregate effects; Unistore response errors; plan cache; release performance."
+    },
+    "engine": {
+      "add": [
+        650,
+        1500
+      ],
+      "delete": [
+        80,
+        300
+      ],
+      "test_add": [
+        350,
+        750
+      ],
+      "test_edit_both_sides": [
+        120,
+        300
+      ],
+      "native_files": "shared_kernel.rs",
+      "scope": "Generalized native signature mapping and shared SDK control/type validation; remove remaining nested execution only when PB callers migrate. No second native evaluator or host-resume protocol.",
+      "tests": "Malformed programs; deep controls; batching and side effects; output traversal; diagnostics policy; cancellation."
+    }
+  },
+  "deduplicated_source_units": {
+    "tidb:rust/crates/tidb-expr/src/builtin_arithmetic.rs": {
+      "groups": [
+        "operator_numeric"
+      ],
+      "raw_lines": 662,
+      "non_test_nonblank_lines": 427,
+      "sha256": "bc9f7aec3e5173f7dff56aa615a3519f92807bd90b71c3cf1f0c29ffab855db5"
+    },
+    "tidb:rust/crates/tidb-expr/src/ops.rs": {
+      "groups": [
+        "operator_numeric"
+      ],
+      "raw_lines": 2667,
+      "non_test_nonblank_lines": 1411,
+      "sha256": "982f93a196b77b3830fc19f2e0fa4c79b3dc8a8fb2a9138b18b93e349e322758"
+    },
+    "tidb:rust/crates/tidb-expr/src/ops/operand.rs": {
+      "groups": [
+        "operator_numeric"
+      ],
+      "raw_lines": 147,
+      "non_test_nonblank_lines": 134,
+      "sha256": "d0464423d5d8511625290ba622949a59da0bfb009dd5e180db2e1af9e60218cb"
+    },
+    "tidb:rust/crates/tidb-expr/src/ops/integer_coerce.rs": {
+      "groups": [
+        "operator_numeric"
+      ],
+      "raw_lines": 439,
+      "non_test_nonblank_lines": 307,
+      "sha256": "f7495d3f033e8417547991c67551e7566d75e688af3314a020176dee219f48a5"
+    },
+    "tidb:rust/crates/tidb-expr/src/ops/real_coerce.rs": {
+      "groups": [
+        "operator_numeric"
+      ],
+      "raw_lines": 331,
+      "non_test_nonblank_lines": 320,
+      "sha256": "5f4ded235e145a64f31950d8fbee6336f0b6460e5540da0d7cebfbbe46ef9b03"
+    },
+    "tidb:rust/crates/tidb-expr/src/math_fn/mod.rs": {
+      "groups": [
+        "math"
+      ],
+      "raw_lines": 1232,
+      "non_test_nonblank_lines": 1072,
+      "sha256": "f67f8217bf0e57affe05e23a005a9c651f52d3859e5b14f2c3a7b688b004f0f2"
+    },
+    "tidb:rust/crates/tidb-expr/src/math_fn/go_exp_log.rs": {
+      "groups": [
+        "math"
+      ],
+      "raw_lines": 170,
+      "non_test_nonblank_lines": 158,
+      "sha256": "8c8ec1c6c0cd69be8a2de68c471b616b021d11a028c3a1a076f2501488e50b22"
+    },
+    "tidb:rust/crates/tidb-expr/src/math_fn/go_trig.rs": {
+      "groups": [
+        "math"
+      ],
+      "raw_lines": 535,
+      "non_test_nonblank_lines": 383,
+      "sha256": "238b0d26b48a8bec9c170d8a26ad660fc5808243646d52b86eabe7ea27b37958"
+    },
+    "tidb:rust/crates/tidb-expr/src/string_fn.rs": {
+      "groups": [
+        "string"
+      ],
+      "raw_lines": 2400,
+      "non_test_nonblank_lines": 1860,
+      "sha256": "0f8ebd3b40019c79114c9aabc5599d870e6a105f980d095848411183a10e4b63"
+    },
+    "tidb:rust/crates/tidb-expr/src/string_packet.rs": {
+      "groups": [
+        "string"
+      ],
+      "raw_lines": 741,
+      "non_test_nonblank_lines": 356,
+      "sha256": "1b119c4436ad3f835eb956927fdecdfb4975233be12354a88198ef885eabbdbd"
+    },
+    "tidb:rust/crates/tidb-expr/src/string_signature.rs": {
+      "groups": [
+        "string"
+      ],
+      "raw_lines": 256,
+      "non_test_nonblank_lines": 154,
+      "sha256": "27561670cff0238109bdc5126e1cb4e253e37da1fd6e1327788982255c2f65af"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/string2.rs": {
+      "groups": [
+        "string"
+      ],
+      "raw_lines": 1250,
+      "non_test_nonblank_lines": 386,
+      "sha256": "8e0023d82576e846d59c1a23481852f823cb9a0f88b4adb2c68cc09e793bc8e5"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/regexp.rs": {
+      "groups": [
+        "pattern"
+      ],
+      "raw_lines": 891,
+      "non_test_nonblank_lines": 378,
+      "sha256": "d6e8a1cd0be084548426397846eb78df0ab7b37d5b2c5ed8d071b25356012ab8"
+    },
+    "tidb:rust/crates/tidb-expr/src/like.rs": {
+      "groups": [
+        "pattern"
+      ],
+      "raw_lines": 465,
+      "non_test_nonblank_lines": 271,
+      "sha256": "0c1f60e5ae32e902c22f68291e9368806abfe0ea2d0aee4e2e4dd7e0cacc9843"
+    },
+    "tidb:rust/crates/tidb-expr/src/time_fn/mod.rs": {
+      "groups": [
+        "temporal"
+      ],
+      "raw_lines": 1465,
+      "non_test_nonblank_lines": 1278,
+      "sha256": "3376345e9b89a22ac526a9851f8096814653f4f6acbf371515723287cb39daf8"
+    },
+    "tidb:rust/crates/tidb-expr/src/time_fn/add_sub.rs": {
+      "groups": [
+        "temporal"
+      ],
+      "raw_lines": 789,
+      "non_test_nonblank_lines": 673,
+      "sha256": "905759a0e9eb362890ddb3b2b935866d1e61f7045fa7a132aa20fe296e6f7680"
+    },
+    "tidb:rust/crates/tidb-expr/src/time_fn/calendar.rs": {
+      "groups": [
+        "temporal"
+      ],
+      "raw_lines": 2565,
+      "non_test_nonblank_lines": 2274,
+      "sha256": "e7e46870eb7839d89fd8fd7eadda8ef62e96ec23112c65d86725bbc5f7c8b6c4"
+    },
+    "tidb:rust/crates/tidb-expr/src/time_fn/convert_tz.rs": {
+      "groups": [
+        "temporal"
+      ],
+      "raw_lines": 583,
+      "non_test_nonblank_lines": 166,
+      "sha256": "6a8c58b4c67d0ec674182f4afc03dd764ff8c9101968064fad1c516ccbb5fa6e"
+    },
+    "tidb:rust/crates/tidb-expr/src/time_fn/duration_parse.rs": {
+      "groups": [
+        "temporal"
+      ],
+      "raw_lines": 611,
+      "non_test_nonblank_lines": 551,
+      "sha256": "7aed672c60c400bed4c78d2e27becbf3a8ac19e44469d90b8781852c2036cdc6"
+    },
+    "tidb:rust/crates/tidb-expr/src/time_fn/extract.rs": {
+      "groups": [
+        "temporal"
+      ],
+      "raw_lines": 103,
+      "non_test_nonblank_lines": 99,
+      "sha256": "45eafe6ab6b5c64b5c34ca4fe1aa01f28b34767fd564b2f7296b40ca8b0d1c5a"
+    },
+    "tidb:rust/crates/tidb-expr/src/time_fn/session_tz.rs": {
+      "groups": [
+        "temporal"
+      ],
+      "raw_lines": 535,
+      "non_test_nonblank_lines": 381,
+      "sha256": "308ed113a3b5469b5424e92dd1006462e02c42ede464e7042cb8266aea1b06db"
+    },
+    "tidb:rust/crates/tidb-expr/src/time_literal.rs": {
+      "groups": [
+        "temporal"
+      ],
+      "raw_lines": 440,
+      "non_test_nonblank_lines": 246,
+      "sha256": "3aafe4b2cba11993df572e42e292b8ef8c673bc7722702ae11f8fdac410f40f6"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/mod.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 261,
+      "non_test_nonblank_lines": 246,
+      "sha256": "298ce8d22b13be12126eeea5bb9ac9ebb662c34a436dd62b84db49de73924a48"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/construct.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 192,
+      "non_test_nonblank_lines": 124,
+      "sha256": "9e9c97993ec172ccf327e5958d1cdfd82c5964e69b470605a032a346af6c3f55"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/merge.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 175,
+      "non_test_nonblank_lines": 165,
+      "sha256": "eee8e8cfea716e3437c3dda3aa9293ca7ff1483cffc41f6715feca018981a18d"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/modify.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 438,
+      "non_test_nonblank_lines": 419,
+      "sha256": "408424ea38feb5b5db3a8128ecc74bb37da4dc7333e46e46700c14ec9e7c6484"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/path.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 393,
+      "non_test_nonblank_lines": 372,
+      "sha256": "5149e903aed85627cfb1154e78714de86e30d86a5187001cfcae782af02dd952"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/predicate.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 260,
+      "non_test_nonblank_lines": 246,
+      "sha256": "feb1df9da2b5998c328c76f91d6b1ac7159d7a1232d367453edde8cf4c158d51"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/report.rs": {
+      "groups": [
+        "json",
+        "exceptions"
+      ],
+      "raw_lines": 437,
+      "non_test_nonblank_lines": 412,
+      "sha256": "63f88f43c0bb10da669cb9d87f015888c93e575c2af4a2efc0c0dcdd0bfe9cd2"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/search.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 392,
+      "non_test_nonblank_lines": 381,
+      "sha256": "58eee0433d67250f422983b0c997ae54523c07a09ae47cd87bb6639bb6655dbe"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/text.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 164,
+      "non_test_nonblank_lines": 155,
+      "sha256": "462baa1956e66f5db3e1eb5bfaf7c644c89669e1b59a6aebf6d067d35bbc3a67"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json/value.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 453,
+      "non_test_nonblank_lines": 434,
+      "sha256": "8bc37bb3b3c2ce3151b24dd901935b4d6a7998529e2043ca5694ec7675a89942"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/json2.rs": {
+      "groups": [
+        "json"
+      ],
+      "raw_lines": 257,
+      "non_test_nonblank_lines": 106,
+      "sha256": "3c71180b9b1a6521d7981f90e3112a6077d67a640b56db132b8d5be9f47ad965"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/crypto.rs": {
+      "groups": [
+        "crypto",
+        "exceptions"
+      ],
+      "raw_lines": 1469,
+      "non_test_nonblank_lines": 673,
+      "sha256": "838f6ebb36b6e65ea78ae34d31b2bec1c601c82920e97a39ba2fe86eb4649c5d"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/compare2.rs": {
+      "groups": [
+        "network",
+        "comparison"
+      ],
+      "raw_lines": 1409,
+      "non_test_nonblank_lines": 949,
+      "sha256": "ecc68485cfe2b6861bd09285b5c816cec76e12e79f3d705eeaec4f178cef5664"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/vec.rs": {
+      "groups": [
+        "vector"
+      ],
+      "raw_lines": 200,
+      "non_test_nonblank_lines": 95,
+      "sha256": "ad67d1d09f3a0fc6a200ff6aea9adb7a3a65a10f3060a475b45c9bf58f477fc1"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/misc.rs": {
+      "groups": [
+        "misc"
+      ],
+      "raw_lines": 1128,
+      "non_test_nonblank_lines": 486,
+      "sha256": "ca4d5b8c9f8faa297c4e47ac2272933d2afaf4e5fbe5c29de3abf80dae2e5330"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_ext/info.rs": {
+      "groups": [
+        "misc",
+        "exceptions"
+      ],
+      "raw_lines": 433,
+      "non_test_nonblank_lines": 161,
+      "sha256": "98ff3c34c50980aa8ef25203d75d136540125ee9c22b19268659bdd292878821"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_compare.rs": {
+      "groups": [
+        "comparison"
+      ],
+      "raw_lines": 2199,
+      "non_test_nonblank_lines": 1309,
+      "sha256": "e9a1dac4f8483b1dc66e8ab9e745a077a8e97e3b4360000b33fa921df4af9bc9"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_op.rs": {
+      "groups": [
+        "control"
+      ],
+      "raw_lines": 337,
+      "non_test_nonblank_lines": 176,
+      "sha256": "5389fb252cc502ae6f7b52550a4fec1491f4c4ca94dde3fe5f1925727c4bb71f"
+    },
+    "tidb:rust/crates/tidb-expr/src/scalar_function.rs": {
+      "groups": [
+        "control",
+        "integration"
+      ],
+      "raw_lines": 5838,
+      "non_test_nonblank_lines": 4369,
+      "sha256": "20f152c8dda3eb7965b530fc2065db94db73c36f9d7fe482a24688e4ad7442fe"
+    },
+    "tidb:rust/crates/tidb-expr/src/cast.rs": {
+      "groups": [
+        "cast"
+      ],
+      "raw_lines": 2489,
+      "non_test_nonblank_lines": 1813,
+      "sha256": "46d963cbe877924cbbe8086f743eebb7c6e77b2aaca8960561adaa727b824acb"
+    },
+    "tidb:rust/crates/tidb-expr/src/coerce.rs": {
+      "groups": [
+        "cast"
+      ],
+      "raw_lines": 211,
+      "non_test_nonblank_lines": 195,
+      "sha256": "1ca6f17a3b5b65d677ba3f3a632032d7e7f1e47c54feac192b97870bd8a9040b"
+    },
+    "tidb:rust/crates/tidb-expr/src/builtin_cast_semantics.rs": {
+      "groups": [
+        "cast"
+      ],
+      "raw_lines": 322,
+      "non_test_nonblank_lines": 52,
+      "sha256": "a7b801dcb403df7767bd1b8640239eded26273d62089d3be6df6fb2d5c46b8aa"
+    },
+    "tidb:rust/crates/tidb-expr/src/arg_eval_type.rs": {
+      "groups": [
+        "cast"
+      ],
+      "raw_lines": 683,
+      "non_test_nonblank_lines": 478,
+      "sha256": "446e9a9aa08336587f1c92312d69d95e86812b59544794bf229e69c4a03be9fa"
+    },
+    "tidb:rust/crates/tidb-expr/src/convert_charset.rs": {
+      "groups": [
+        "convert_charset"
+      ],
+      "raw_lines": 228,
+      "non_test_nonblank_lines": 216,
+      "sha256": "87b7ba154c0e19bf91a10fbd8cc3adaaa717504d401e21050b12a85f65e70d05"
+    },
+    "tidb:rust/crates/tidb-expr/src/column.rs": {
+      "groups": [
+        "input_lifecycle"
+      ],
+      "raw_lines": 923,
+      "non_test_nonblank_lines": 484,
+      "sha256": "409a72dd482fa0799a54f938d519ef5e5c7d29ab703b8daea681c17da47ba5da"
+    },
+    "tidb:rust/crates/tidb-expr/src/constant.rs": {
+      "groups": [
+        "input_lifecycle"
+      ],
+      "raw_lines": 995,
+      "non_test_nonblank_lines": 581,
+      "sha256": "ec93df009e4edc6d827cfaf05c7cb6b6b4c8cba44bf968b157d5e2aa61393a74"
+    },
+    "tidb:rust/crates/tidb-expr/src/context.rs": {
+      "groups": [
+        "input_lifecycle"
+      ],
+      "raw_lines": 1049,
+      "non_test_nonblank_lines": 962,
+      "sha256": "affa540083880c50bb83cb9b0757d92d64c9cb05d209242a82492b9c767c45f7"
+    },
+    "tidb:rust/crates/tidb-expr/src/lib.rs": {
+      "groups": [
+        "integration"
+      ],
+      "raw_lines": 1302,
+      "non_test_nonblank_lines": 1265,
+      "sha256": "a4364ecd081f0972d0c88632766fea1f57096a14a221ffe8dc870b620e42f279"
+    },
+    "tidb:rust/crates/tidb-expr/src/func.rs": {
+      "groups": [
+        "integration"
+      ],
+      "raw_lines": 1226,
+      "non_test_nonblank_lines": 1033,
+      "sha256": "76294f73f523ee6b3d9453df674f40c48345269acd1df449ccf9483968f0fd76"
+    },
+    "tidb:rust/crates/tidb-expr/src/expression.rs": {
+      "groups": [
+        "integration"
+      ],
+      "raw_lines": 1506,
+      "non_test_nonblank_lines": 761,
+      "sha256": "6c75257417e651fe7091bc1c910e50de8ce46306026e102fd9ba1616bafeceea"
+    },
+    "tidb:rust/crates/tidb-expr/src/evaluator.rs": {
+      "groups": [
+        "integration"
+      ],
+      "raw_lines": 1584,
+      "non_test_nonblank_lines": 432,
+      "sha256": "f699494f7075eb476b7294c81e31c8a3c3a25c93a7e32738d3508b4e4b3d1ff7"
+    },
+    "tidb:rust/crates/tidb-expr/src/simple_expr.rs": {
+      "groups": [
+        "integration"
+      ],
+      "raw_lines": 2067,
+      "non_test_nonblank_lines": 940,
+      "sha256": "dc069eb048cb51ea46da2d5fa2907dd9cd253e43f5943b5fd0b01fc8cf22e553"
+    },
+    "tidb:rust/crates/tidb-expr/src/pb_predicate.rs": {
+      "groups": [
+        "integration"
+      ],
+      "raw_lines": 821,
+      "non_test_nonblank_lines": 776,
+      "sha256": "afd31ca03f3da71e069d1faeae2a6cda13b1b4dc86e0ac5ccfe841f4b08833a5"
+    },
+    "tidb:rust/crates/tidb-expr/src/distsql_builtin.rs": {
+      "groups": [
+        "integration"
+      ],
+      "raw_lines": 398,
+      "non_test_nonblank_lines": 166,
+      "sha256": "36c2c8a96b05b37e311157251ebd0c535d591c6ee22c5aa7491061fefb3cc89c"
+    },
+    "tidb:rust/crates/tidb-expr/src/shared_kernel.rs": {
+      "groups": [
+        "engine"
+      ],
+      "raw_lines": 3248,
+      "non_test_nonblank_lines": 1006,
+      "sha256": "5e2ccceefd41f5852eb954bbe5f8787abcfbcd85f249ddeca5656a8ad6c9ecd8"
+    }
+  },
+  "remaining_estimate": {
+    "add": [
+      13630,
+      31200
+    ],
+    "delete": [
+      13420,
+      26280
+    ],
+    "test_add": [
+      6610,
+      15520
+    ],
+    "test_edit_both_sides": [
+      2810,
+      6760
+    ]
+  },
+  "note": "Planning interval only, conditional on reusing underlying storage/charset/service libraries. Non-test lines include comments/declarations; shared files are counted once in source exposure, not once per family. Unbounded items are in cost-report.zh.md."
+}

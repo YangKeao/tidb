@@ -12,7 +12,7 @@ Both Rust frontends will compile expressions into one TiKV RPN program, where RP
 
 - [x] 2026-11-13: create independent expression-shared-kernel-m1 worktrees from TiDB364aef2bab5cc633ecb76a775ae8f36f86a6687d and TiKV548812e1ef57aef077a2062a9cc356640a6347f5.
 - [x] Read original entry points, repository instructions and Designer ddb87c63ff2d0dbe40ede1e84d4b1182b6541cbe design.
-- [ ] Inventory 245 function families, five exceptions, production entry points and file-level cost.
+- [x] Inventory245 family identities (including five exceptions), fixed source witnesses and deduplicated conditional cost packages; per-overload compatibility remains unproved.
 - [x] Build opt-in shared MD5 through native and protobuf inputs; checkpoint1 published 7e3a636 / 52d7be2.
 - [ ] Add exact Decimal/full-domain floating carriers and demanded complex input conversion.
 - [ ] Extend original RPN control flow to lazy IF, state and repeated evaluation; verify original PB behavior independently.
@@ -158,3 +158,19 @@ checked-i128 branch and exact storage/result scales. Native full-part comparison
 cover multiplication and a following division, including negative and zero factors.
 See shared-kernel/checkpoint-7.md for final validation and counts. Minimum M1
 remains subject to review; these fixes do not extend the admitted type families.
+
+
+## Task35 — full-scope cost audit
+
+
+The fixed checkpoint7 pair is the input for shared-kernel/cost-report.zh.md and
+cost-inventory.py. All245 identities reference18 deduplicated work packages;
+five exceptions are within245, not additional families. Include algorithm
+migration/semantic revisions, original-code retirement, new/modified tests and
+parameter/column/lifecycle integration. Distinguish observed current size from
+conditional estimates and unbounded dependencies; no10K feasibility claim.
+The largest five packages split semantic additions from module-boundary wiring,
+old-code deletion and tests, with explicit overlap against checkpoint7's16348
+changed lines. No product code changes or M2 rollout in this audit. Next work
+selection prioritizes the remaining input/lifecycle contract before broadening
+function coverage. FullM1 and product validation remain open.
