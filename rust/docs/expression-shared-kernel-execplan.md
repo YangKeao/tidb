@@ -179,3 +179,22 @@ Review correction: Rust escaped-newline strings desynchronized the lexical mask,
 misclassifying10 test references in4 files. Regression assertions fail before the
 fix and pass after it; full regeneration leaves327 witnesses. Budget grouping
 does not establish disjoint actual line edits; those require final Git diffs.
+
+
+## Task36 — reuse existing value algorithms
+
+
+Designer d461fa2a limits this experiment to native Decimal and String-to-Real.
+Keep the current admission checks and PB kernels. Add a path dependency from
+SDK tidb_query_expr to the sibling TiDB tidb-datatype crate; verify both workspace
+resolutions and absence of a dependency cycle. Re-export the existing Decimal
+as ExpressionDecimal, pass that value directly through RPN scalars/vectors, and
+remove the copied arithmetic and field reconstruction. Use str_to_float and
+float_warning_input with the existing RPN diagnostic policy.
+
+Retain invalid-value admission checks and full-value/hidden-precision regressions.
+Run the31 native probes, full SDK expression library tests, scoped Clippy and
+root lint; record incomplete formal gates separately. Compare both repos against
+the original bases, including manifests/locks and docs. If a real cycle or
+per-node carrier conversion is necessary, report evidence before widening the
+boundary. No time/JSON/lifecycle expansion or default frontend activation.

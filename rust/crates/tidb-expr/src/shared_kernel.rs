@@ -14,8 +14,8 @@ use tidb_query_datatype::{
     EvalType, FieldTypeAccessor, FieldTypeFlag, FieldTypeTp,
 };
 use tidb_query_expr::{
-    ExpressionDecimal, ExpressionScalar, ExpressionVector, InputColumns, InputResult,
-    InvocationMode, NativeArithmetic, OutputOrder, RpnExpression, RpnExpressionNode, RpnStackNode,
+    ExpressionScalar, ExpressionVector, InputColumns, InputResult, InvocationMode,
+    NativeArithmetic, OutputOrder, RpnExpression, RpnExpressionNode, RpnStackNode,
     RpnStackNodeVectorValue,
 };
 
@@ -137,13 +137,7 @@ impl SharedExpression {
                             Some((ExpressionScalar::Real(Some(*v)), FieldTypeTp::Double))
                         }
                         Datum::Decimal(v) => Some((
-                            ExpressionScalar::Decimal(Some(ExpressionDecimal {
-                                negative: v.is_negative(),
-                                coefficient: v.coefficient_digits().as_bytes().to_vec(),
-                                storage_scale: v.storage_scale(),
-                                result_scale: v.scale(),
-                                declared_shape: v.declared_shape(),
-                            })),
+                            ExpressionScalar::Decimal(Some(v.clone())),
                             FieldTypeTp::NewDecimal,
                         )),
                         _ => None,
@@ -960,36 +954,15 @@ fn native_output(result: RpnStackNode<'_>, rows: usize) -> Result<Vec<Datum>, St
                 .into_iter()
                 .map(|v| v.map_or(Datum::Null, Datum::Real))
                 .collect()),
-            ExpressionVector::Decimal(values) => values
+            ExpressionVector::Decimal(values) => Ok(values
                 .into_iter()
-                .map(|v| match v {
-                    None => Ok(Datum::Null),
-                    Some(v) => tidb_datatype::Decimal::from_expression_parts(
-                        v.negative,
-                        v.coefficient,
-                        v.storage_scale,
-                        v.result_scale,
-                        v.declared_shape,
-                    )
-                    .map(Datum::Decimal)
-                    .map_err(str::to_owned),
-                })
-                .collect(),
+                .map(|v| v.map_or(Datum::Null, Datum::Decimal))
+                .collect()),
         },
         RpnStackNode::ExpressionScalar { value, .. } => {
             let datum = match value.as_ref() {
                 ExpressionScalar::Real(v) => v.map_or(Datum::Null, Datum::Real),
-                ExpressionScalar::Decimal(None) => Datum::Null,
-                ExpressionScalar::Decimal(Some(v)) => Datum::Decimal(
-                    tidb_datatype::Decimal::from_expression_parts(
-                        v.negative,
-                        v.coefficient.clone(),
-                        v.storage_scale,
-                        v.result_scale,
-                        v.declared_shape,
-                    )
-                    .map_err(str::to_owned)?,
-                ),
+                ExpressionScalar::Decimal(v) => v.clone().map_or(Datum::Null, Datum::Decimal),
             };
             Ok(vec![datum; rows])
         }
@@ -2882,21 +2855,21 @@ mod tests {
             )
             .is_err());
         }
-        assert!(RpnExpression::finish(
-            vec![RpnExpressionNode::ExpressionConstant {
-                value: ExpressionScalar::Decimal(Some(ExpressionDecimal {
-                    negative: false,
-                    coefficient: b"x".to_vec(),
-                    storage_scale: 0,
-                    result_scale: 0,
-                    declared_shape: None
-                })),
-                field_type: FieldTypeTp::NewDecimal.into()
-            }],
-            &[],
-            FieldTypeTp::NewDecimal.into()
-        )
-        .is_err());
+        // Native Decimal rejects malformed literal digits during construction in
+        // debug builds; release builds still reject them at program admission.
+        let invalid = std::panic::catch_unwind(|| tidb_datatype::Decimal::from_literal("x"));
+        assert_eq!(invalid.is_err(), cfg!(debug_assertions));
+        if let Ok(value) = invalid {
+            assert!(RpnExpression::finish(
+                vec![RpnExpressionNode::ExpressionConstant {
+                    value: ExpressionScalar::Decimal(Some(value)),
+                    field_type: FieldTypeTp::NewDecimal.into()
+                }],
+                &[],
+                FieldTypeTp::NewDecimal.into()
+            )
+            .is_err());
+        }
         let mut program = RpnExpression::finish(
             vec![int(), branch(4, 5), int(), jump(5), int()],
             &[],

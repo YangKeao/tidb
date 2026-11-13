@@ -6044,6 +6044,7 @@ dependencies = [
  "serde",
  "serde_json",
  "static_assertions",
+ "tidb-datatype",
  "tidb_query_codegen",
  "tidb_query_common",
  "tidb_query_datatype",
