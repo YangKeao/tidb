@@ -13,7 +13,13 @@ build = "../../scripts/aggregate-tests.rs"
 [lints]
 workspace = true
 
+[features]
+shared-kernel = ["dep:tidb_query_expr", "dep:tidb_query_datatype", "dep:tipb"]
+
 [dependencies]
+tidb_query_expr = { path = "../../../../tikv/components/tidb_query_expr", optional = true }
+tidb_query_datatype = { path = "../../../../tikv/components/tidb_query_datatype", optional = true }
+tipb = { git = "https://github.com/pingcap/tipb.git", optional = true }
 stacker = { workspace = true }
 tidb-hack = { path = "../tidb-hack" }
 tidb-ast = { path = "../tidb-ast" }

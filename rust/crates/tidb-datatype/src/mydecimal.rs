@@ -1851,6 +1851,33 @@ impl MyDecimal {
         Some((magnitude, digits_frac as u32))
     }
 
+    /// Exact base-1e9 numeric parts for expression input/output adapters.
+    pub fn to_parts(&self) -> (u8, u8, u8, bool, [u32; 9]) {
+        (
+            self.digits_int as u8,
+            self.digits_frac as u8,
+            self.result_frac as u8,
+            self.negative,
+            self.word_buf.map(|w| w as u32),
+        )
+    }
+
+    /// Restore exact parts, retaining stored and displayed fractional precision.
+    pub fn from_parts(parts: (u8, u8, u8, bool, [u32; 9])) -> Result<Self, &'static str> {
+        let (integer, fraction, result, negative, words) = parts;
+        let used = (usize::from(integer) + 8) / 9 + (usize::from(fraction) + 8) / 9;
+        if used > 9 || result > 81 || words[..used].iter().any(|w| *w >= 1_000_000_000) {
+            return Err("invalid exact MyDecimal parts");
+        }
+        Ok(Self {
+            digits_int: integer as i8,
+            digits_frac: fraction as i8,
+            result_frac: result as i8,
+            negative,
+            word_buf: words.map(|w| w as i32),
+        })
+    }
+
     /// The exact 40 bytes a Go chunk `NewDecimal` cell stores (Go copies the
     /// struct through `unsafe.Pointer`; this assembles the identical bytes
     /// field by field -- same layout, no `unsafe`).

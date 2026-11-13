@@ -347,6 +347,8 @@ pub use constant_fold::{
 mod context;
 pub mod convert_charset;
 pub mod evaluator;
+#[cfg(feature = "shared-kernel")]
+pub mod shared_kernel;
 pub mod expr_collation;
 pub mod expr_util;
 pub mod exprctx;

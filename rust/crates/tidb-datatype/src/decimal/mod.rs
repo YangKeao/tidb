@@ -225,6 +225,31 @@ impl Decimal {
         }
     }
 
+    /// Restore expression coefficient data without narrowing to storage or f64.
+    pub fn from_expression_parts(
+        negative: bool,
+        coefficient: Vec<u8>,
+        storage_scale: u32,
+        result_scale: u32,
+        declared_shape: Option<(i64, i64)>,
+    ) -> Result<Self, &'static str> {
+        if coefficient.is_empty()
+            || !coefficient.iter().all(u8::is_ascii_digit)
+            || result_scale > storage_scale
+            || storage_scale as usize > coefficient.len()
+        {
+            return Err("invalid Decimal expression parts");
+        }
+        let mut value = Self::new_with_storage_preserving_zero_sign(
+            negative,
+            DecimalDigits::from_ascii(coefficient.into()),
+            result_scale,
+            storage_scale,
+        );
+        value.declared_shape = declared_shape;
+        Ok(value)
+    }
+
     /// Parses a decimal literal's canonical text — an optional `-`/`+` sign
     /// then digits with at most one `.`, which is exactly what this type's own
     /// [`Display`](std::fmt::Display) produces.

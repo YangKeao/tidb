@@ -247,6 +247,15 @@ rustls-pemfile = "2"
 # this node never does: it only emits one self-signed leaf.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 
+[patch.crates-io]
+raft = { git = "https://github.com/tikv/raft-rs", branch = "master" }
+raft-proto = { git = "https://github.com/tikv/raft-rs", branch = "master" }
+protobuf = { git = "https://github.com/pingcap/rust-protobuf", branch = "v2.8" }
+protobuf-codegen = { git = "https://github.com/pingcap/rust-protobuf", branch = "v2.8" }
+fs2 = { git = "https://github.com/tikv/fs2-rs", branch = "tikv" }
+cmake = { git = "https://github.com/rust-lang/cmake-rs" }
+sysinfo = { git = "https://github.com/tikv/sysinfo", branch = "0.26-fix-cpu" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"        # Phase 0 is safe Rust end-to-end.
 missing_docs = "warn"
