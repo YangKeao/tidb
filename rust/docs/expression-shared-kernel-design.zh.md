@@ -10,7 +10,7 @@
 
 达到目标的关键不是把一个复杂接口写得更短，而是缩小新增机制的数量：**一个程序、一个执行循环、一种类型化值边界、每个语义一种函数实现**。原有存储格式、优化器和与表达式无关的 datatype 公共 API 留在原处；共享表达式内核不要求统一它们的全部实现。
 
-目标保持为人类提出的“总修改在 10K 数量级”。最初为核心接入和基础测试分配13–22K原始增删量，后来全范围成本清单表明既定迁移路线缺少达到目标的证据。当前已验证限定范围内直接复用已有底层类型／算法，并修正25／30位系数物化退化；真实Decimal列及跨Chunk复用也已通过限定复审；参数合同的有限验证也已完成；显式Decimal类型化参数的首版复审发现两处边界缺陷，下一步先收窄静态源类型并修正诊断失败回退。这不改变完整共享表达式内核的目标。**完整体积仍未证明；第6节保留核算口径，最新边界与限定试验见[成本复审](expression-shared-kernel-cost-review.zh.md)。**
+目标保持为人类提出的“总修改在 10K 数量级”。最初为核心接入和基础测试分配13–22K原始增删量，后来全范围成本清单表明既定迁移路线缺少达到目标的证据。当前已验证限定范围内直接复用已有底层类型／算法，并修正25／30位系数物化退化；真实Decimal列及跨Chunk复用也已通过限定复审；参数合同的有限验证也已完成；显式Decimal类型化参数的两处首版缺陷也已修正并通过限定复审；下一步闭合独立SDK表达式库的依赖与声明工具链构建。这不改变完整共享表达式内核的目标。**完整体积仍未证明；第6节保留核算口径，最新边界与限定试验见[成本复审](expression-shared-kernel-cost-review.zh.md)。**
 
 ## Progress
 
@@ -33,7 +33,8 @@
 - [x] (2026-11-14) 复核b4a67850产品／c08c8164报告：完整FieldType与原生Decimal列读取、跨Chunk／上下文复用成立；33／429项、16计时／4分配单元、72记录及5525输入核实，源码测试5947／全部22962。向量耗时仍为原生2.43–2.87倍。
 - [x] (2026-11-14) 复核3034ea26测试／bfde2f35报告：参数按需槽及Int转换／动态诊断反例有效；35／8／1项记录与5525输入、13日志核实，生产零改动，源码测试6226／全部23461。产品继续拒绝参数。
 - [x] 复核be800b91／bb94be0e与SDK3c9b12cf的参数首版：5525输入、26记录及全部计数吻合；发现静态源类型过度接纳和诊断读取替代1690两个缺陷。
-- [ ] 修正参数首版的两处边界并保留失败到通过证据；一次执行所有权仍为显式调用合同，不新增跨EXECUTE缓存或默认后端。
+- [x] 复核184f5258／dece8367与SDK05130ce8：两处修正、旧生产加最终115行测试的失败、41／8／429项及5525输入／15记录核实；原始源码测试7030／全部24704行。
+- [ ] 闭合独立SDK表达式库构建：固定Git原datatype、单一类型身份、仓库声明工具链与无相邻TiDB检出；一次执行所有权仍只是显式调用合同。
 - [ ] 证明全部函数与入口覆盖、总改动量和性能目标；未证明前不推广到默认路径。
 
 ## Context and Orientation
@@ -264,7 +265,7 @@ warning/error 的相对顺序已被人类 `2979a576` 放宽，保留实际执行
 
 固定checkpoint7仍是语义对照。先在SDK tidb_query_expr/Cargo.toml增加现有tidb-datatype的向下依赖；types/expr.rs中的ExpressionDecimal改为原Decimal的别名或薄封装，native_arithmetic.rs调用原算术／转换primitive，移除候选native_decimal.rs。TiDB shared_kernel.rs在编译时克隆原Decimal，输出时直接移动／克隆成Datum，避免每节点重建。保持当前接纳范围与PB合同，用现有反例、两个构建入口及限定release测量检查行为、依赖和分配；具体路径、验收与失败回退见[成本复审](expression-shared-kernel-cost-review.zh.md)。
 
-该试验的限定功能和优化补证已在598a313e／d822fbf完成复审，原等待补证的顺序条件解除。保留既有datatype所有者；SDK默认工具链已证实不兼容，必须在默认集成前处理。数值定位及真实Decimal列里程碑均已完成限定复审，参数合同验证也已完成，显式入口的类型化参数首版尚需修正两处复审缺陷，随后逐步补M1缺口及DATE／CONVERT_TZ、JSON_SET等真实调用链；不以源码保留原位置推断免费兼容。
+该试验的限定功能和优化补证已在598a313e／d822fbf完成复审，原等待补证的顺序条件解除。保留既有datatype所有者；SDK默认工具链已证实不兼容，必须在默认集成前处理。数值定位及真实Decimal列里程碑均已完成限定复审，参数合同验证也已完成，显式入口的类型化参数修正已通过限定复审，先修复独立SDK表达式库构建，再逐步补M1缺口及DATE／CONVERT_TZ、JSON_SET等真实调用链；不以源码保留原位置推断免费兼容。
 
 ### M1后续：定位当前Decimal退化并作最小修正
 
@@ -311,6 +312,36 @@ warning/error 的相对顺序已被人类 `2979a576` 放宽，保留实际执行
 首版be800b91／SDK3c9b12cf已经实现共用primitive及参数叶子，但不通过本次限定正确性复审。参数免检静态源类型会接纳VarString等不同原生入口；直接请求Decimal不能替代原String入口之后的转换。隐藏列的virtual_expr还可能只参与诊断，未绑定参数未必已经被实际求值读取；诊断失败必须回到通用1690。具体固定源码和反例见成本复审末节。
 
 Designer消息2fa948e4-1b07-4328-a9d0-fc273af26b26据此收束task #40：恢复原静态有符号非array Decimal源类型条件；在SDK溢出文本生成处抑制诊断参数读取失败，保留实际参数节点的1105。先实跑两个最小反例并保存失败，再修正和运行受影响shared_kernel／prepared／SDK及lint；原datatype primitive若未改变，无须机械重复其全套检查。第一项先证明被错误接纳的VarString入口及其真实原生告警差异，再断言编译拒绝；第二项用隐藏物理Decimal列100乘80位全9、虚拟表达式仅引用缺失参数，核对原生通用1690。不得通过拒绝原已接纳隐藏列、全局预取参数或增加cast框架绕过。范围由Designer负责，到修正固定版本复审结束；独立默认构建修复仍可并行。
+
+修正版本184f5258／SDK05130ce8已关闭上述两处差异，dece8367固定证据通过独立复审，2fa948e4的顺序条件结束。精确旧生产源码加最终115行测试确实失败，修正后真实Scalar／Vector断言成立。输入、41／8／429项记录及全部计数吻合；原datatype未改，本次没有重复运行89／7筛选。默认SQL和跨执行生命周期仍未接入。
+
+### M1后续：独立SDK表达式库构建闭合
+
+
+本批使独立检出的SDK在没有相邻TiDB目录时，用仓库声明的工具链和普通Cargo命令构建表达式库。当前SDK `components/tidb_query_expr/Cargo.toml`无条件依赖相邻`tidb-datatype`；Jan30工具链又无法满足该库MSRV1.97。继续增加函数或执行器层会放大这个已有缺口。Designer消息dd2cd5b5-7996-4421-a1e3-8bc10531c7b2授权此限定构建批次，由Designer负责，到固定构建结果复审结束；不改默认SQL后端、worker或跨EXECUTE缓存。
+
+保留原TiDB datatype代码所有者，在SDK manifest将相邻路径改为同一TiDB仓库的固定Git revision，优先使用已发布且包含所需接口的184f525870dd5e519928217e119bc3d4a7c6dd2b。先验证Cargo能够发现其嵌套rust workspace包，随Git树取得继承metadata、aggregate-tests.rs及所需资源；不可假定仅源码文件存在就可独立构建。TiDB `rust/Cargo.toml`以该Git来源的path patch接回本地datatype，避免本地Datum与Git来源Datum成为两份不同Rust类型。每个实际构建图分别核对：独立SDK只选中固定Git的datatype；TiDB共享构建中native和SDK两条路径汇合到同一个本地datatype，error／hack／kvcache／mysql等原叶子依赖一致。核对Git与本地对应源码版本，不要求两个独立构建图的package ID字面相同。无反向expr依赖或隐藏全局path覆盖。不是复制库目录、增加值转换副本或新执行框架。
+
+在SDK `rust-toolchain.toml`显式修复与MSRV冲突的声明，优先验证已用于本项目的nightly-2026-08-22，不降低原库MSRV或仅靠环境变量覆盖旧声明。选择器改变会影响整个SDK，当前验收必须限定为表达式包；列出其余workspace和CI尚未验证的影响，不能称为全部TiKV兼容。必要C/C++编译器及CMake条件写成可重建的系统先决条件，不能依赖未提交、带个人绝对路径的cargo-tidb脚本。
+
+先以临时独立SDK检出及实际Git来源证明manifest和锁文件闭合，再在原候选固定最小接线变更。保留原相邻路径／旧工具链失败与修正后成功结果，检查实际Cargo／rustc版本及来源；独立目录旁不得放TiDB或软链接伪装成功。可以复用下载缓存，但不得有隐藏source patch或RUSTC覆盖，使声明和实际工具链不一致。两仓Cargo.lock只更新必要闭包，统计包括工具链、锁文件、脚本和文档。
+
+在独立SDK根目录记录并运行：
+
+    cargo --version
+    rustc --version
+    cargo metadata --format-version 1 --locked
+    cargo tree -p tidb_query_expr -e normal
+    CARGO_BUILD_JOBS=4 cargo test -p tidb_query_expr --lib --locked -- --nocapture
+
+在TiDB rust/目录用其声明工具链运行：
+
+    cargo metadata --format-version 1 --locked
+    cargo tree -p tidb-expr --features shared-kernel -e normal
+    CARGO_BUILD_JOBS=4 cargo test -p tidb-expr --features shared-kernel --lib shared_kernel_ --locked -- --nocapture
+    CARGO_BUILD_JOBS=4 cargo test -p tidb-expr --features shared-kernel --lib constant::tests::prepared_ --locked -- --nocapture
+
+预期SDK429、native41及prepared8项通过，且TiDB共享构建内native／SDK使用同一datatype类型身份而非运行时适配，独立SDK构建使用所固定的Git版本。运行范围所需lint、格式和diff检查，保持正式完整SDK Clippy未完成的限定。依赖解析或工具链暴露障碍时，保留最小失败和确切依赖链，调整声明接线；不回退到算法副本，也不借此扩大到所有CI、内核兼容或性能改造。完整原始增删及未完成项随固定提交交付，产品测试命令的成功只证明实际执行的包与配置。
 
 ### M2：并行补齐适配与兼容
 
@@ -414,6 +445,8 @@ regex 常量准备本身可以失败；将所有验证移到 prepare 会破坏�
 
 静态源类型和动态绑定类型是不同边界。只测“声明Decimal、当前String”的转换，不能证明“声明String、当前String”也能绕过原String入口；后者的告警身份和向量转换次数不同。仅在诊断中出现的参数也可未绑定，调用期间绑定不可变不能消除这个情况。
 
+构建成功的环境本身也是接口的一部分。相邻path和外部cargo包装器可以支持研发验证，却不能证明独立SDK按其声明构建；改为Git依赖还必须检查本地与Git包的Rust类型身份一致。
+
 ## Decision Log
 
 
@@ -469,6 +502,10 @@ Decision: 参数首版保留为待修正版本；下一步只关闭静态接纳�
 Rationale: 39项既有通过记录和完整输入核验不能覆盖未测试的源入口与隐藏列诊断。修复只需恢复原接纳条件及错误文本回退，不扩大参数框架或SQL生命周期。
 Date/Author: 2026-11-14 / ExpressionReuseDesigner。
 
+Decision: 接受参数两处限定修正，下一批先闭合独立SDK表达式库的依赖与工具链声明。
+Rationale: 当前参数、真实列和已有控制测试可继续保留；默认工具链与相邻布局已经是实证缺口。原datatype Git依赖及本地patch可在不搬迁算法的前提下验证分发边界，但需实测包发现、单一类型身份与两侧回归。
+Date/Author: 2026-11-14 / ExpressionReuseDesigner。
+
 ## Outcomes & Retrospective
 
 
@@ -503,3 +540,5 @@ Date/Author: 2026-11-14 / ExpressionReuseDesigner。
 2026-11-14 参数合同复审更新：3034ea26／bfde2f35的测试限定交付通过，源码与13日志、35／8／1项终态及累计23461行核对；未独立运行产品检查。计划匹配、类型化转换与动态诊断的差异已明确，下一批转入限定产品实现，不把测试槽或旧缓存generation升级为完整生命周期证明。完整M1、默认SDK构建、向量性能及全部函数目标保持未完成。
 
 2026-11-14 类型化参数首版复审：be800b91／bb94be0e及SDK3c9b12cf的39／8／89／7／429项记录、5525输入和26哈希独立核验，累计源码测试6910、全部24420行增删吻合；Designer未另运行产品检查。发现两处源码可达差异并交由实现者补失败实证与修正，本批尚未通过限定正确性复审。更新计划的原因是防止将成功的Decimal声明入口测试推广到其他静态源类型，或以绑定不变掩盖诊断独有参数。
+
+2026-11-14 参数修正版复审：184f5258／dece8367与SDK05130ce8通过限定审查；旧生产加最终测试重建、5525输入／15记录和计数独立核对，未运行新产品检查。task40修正顺序条件结束，下一批转入独立SDK表达式库构建接线；这是补已有基础缺口，不把参数测试成功升级为默认SQL生命周期或全项目规模证明。

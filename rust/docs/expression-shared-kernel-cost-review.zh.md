@@ -274,3 +274,37 @@ ExpressionReuseEngineer继续在当前候选推进一个限定切片：**同一�
 下一步按Designer消息2fa948e4-1b07-4328-a9d0-fc273af26b26在task #40内完成上述两处修正；范围由Designer负责，到修正固定版本复审结束。先保留两个真实反例，再用现有包装器及rust/工作目录运行受影响shared_kernel／prepared／SDK回归、make lint、格式和diff，更新固定输入、报告及两套基线的全部增删。若datatype源码未改，既有89／7项记录按原版本保留，不机械重跑无关测试或性能矩阵。显式程序按每执行持有仍是调用合同，尚未安装SQL执行器生命周期管理；默认SDK工具链／相邻布局、完整Clippy、RAND生命周期和原生向量性能差距继续保留。独立默认构建修复可以并行，不把本次有限修正当作完整M1。
 
 本轮只改设计和复审文档，检查固定Git对象链接、相对链接、ExecPlan结构及diff；未另执行产品lint或测试。
+
+
+## 参数修正版复审：两处缺陷关闭，限定实现成立
+
+固定TiDB源码`184f525870dd5e519928217e119bc3d4a7c6dd2b`、[修正报告dece8367](https://github.com/YangKeao/tidb/blob/dece836798231e5a59e484340652569191866f24/rust/docs/shared-kernel/typed-parameters.zh.md)，SDK为`05130ce8dde0299a93ad86cf93132087d7171ff9`。本次独立源码与证据复审未发现新的限定范围缺陷，接受两处修正，task #40的2fa948e4顺序条件结束；不把该结论扩大为全参数、默认SQL、并发或跨执行生命周期完成。Designer没有另运行产品构建、测试或性能。
+
+编译器移除了参数免检例外，恢复原静态有符号、非array NewDecimal条件；当前raw值为Int／String／NULL的原类型化Decimal转换不受此限制。[SDK诊断](https://github.com/YangKeao/tikv/blob/05130ce8dde0299a93ad86cf93132087d7171ff9/components/tidb_query_expr/src/types/native_arithmetic.rs#L131)改为读取失败或不可格式化均放弃详细文本，保持本次算术通用1690；真正参数节点仍传播读取失败，既有用例保留1105。没有拒绝原已接纳的隐藏物理列、提前读参数或新增cast框架。
+
+两项新测试分别调用原`Expression::eval`和真正`EvaluatorSuite::run`，避免以单行Vector代替Scalar。静态String原生三行Scalar为三条1292，Vector为三条1265；修正前共享分别为三条1265和一条1265，最终断言其编译拒绝，另外拒绝unsigned／array／LongLong声明并接受原Decimal声明。隐藏列用例在最终成功运行中覆盖Scalar及Vector的通用1690全文，原实际参数缺失1105回归仍通过。
+
+证据比单独保留失败日志更强：独立将`before-fixed-tests.patch`精确应用到首版生产源码，重建115增0删的文件摘要`fc546246581892276f162d81f089c6f942a65a104aa8a1125fd76345a7214f0c`，与记录一致；生产前缀逐字是旧实现，整个测试模块逐字是最终版本。恢复的旧SDK算术文件摘要也吻合；这两文件正是所选源码输入中的全部修正差异。`before-fixed.log`明确0通过／2失败、exit101。静态String失败日志执行了两种入口；隐藏诊断失败在首个Vector断言停止，不能说该失败日志也执行了后面的Scalar。最终定向及整组通过日志才覆盖隐藏诊断的两种入口。错误重建导致的编译失败和早期Vector错误码预期均单列，未当作语义失败证据。
+
+最终5525项固定Git输入与snapshot逐项相同，摘要`477ecf74ebb3927fb69fe834399ae7dead009cfad8a39103037ee51638753283`；15份记录哈希吻合。41项共享、8项prepared、429项SDK及限定Clippy都有最终原始终态和CHECK_EXIT=0，Clippy有警告。datatype未变，89／7项只保留首版历史结果，未宣称重跑。lint退出0来自receipt，原日志无退出尾行；format-diff记录是完成摘要而非逐命令输出。核验支持留存输入与结果一致，不是独立或封闭可复现构建证明。
+
+| 统计范围 | 生产新增／删除 | 测试新增／删除 | 文档核验新增／删除 | 全部新增／删除 |
+| --- | ---: | ---: | ---: | ---: |
+| 相对首版的修正 | 9／4 | 115／0 | 169／5 | 293／9 |
+| task40完整最终变更 | 303／72 | 461／2 | 439／0 | 1203／74 |
+
+构建文件本次未改。修正增删302、净增284；task40全部增删1277、净增1129。相对原始两仓基线，源码测试`+6911/−119`、增删**7030**，全部`+24485/−219`、增删**24704**，独立重算一致。最终树计数不等于把相互重叠的每批差分机械相加。原生向量成本、完整245族与10K目标仍未证明。
+
+## 下一批：使独立SDK表达式库按声明构建
+
+依据Designer消息dd2cd5b5-7996-4421-a1e3-8bc10531c7b2，下一批转入构建接线，由Designer负责范围，到固定构建结果复审结束。当前声明为Jan30的SDK工具链与原datatype MSRV1.97不兼容；SDK还无条件依赖相邻TiDB路径。外部Aug22包装器证明特定研发环境可运行表达式库，却没有关闭这两个问题。先处理这条已有基础边界，再增加新函数或默认执行器层。
+
+首选实现是在SDK `components/tidb_query_expr/Cargo.toml`固定引用原TiDB仓库的datatype Git revision，原算法和存储API保持原所有者；TiDB `rust/Cargo.toml`以相同Git来源的path patch使用本地同一包。先验证Cargo发现嵌套workspace和继承metadata／构建脚本／资源，再分别核对实际依赖图：独立SDK选中固定Git的datatype；TiDB共享构建内native与SDK两条路径汇合到同一本地datatype及其error、hack、kvcache、mysql叶子闭包。检查两次构建对应源码版本，不要求独立Git图和本地path图的package ID相同。若TiDB共享构建内仍同时出现两份不同datatype包，Datum、ConversionContext和warning trait就不能直接跨边界；不能通过额外转换层掩盖，也不能复制整个库或仅用optional feature掩盖路径解析。
+
+SDK `rust-toolchain.toml`优先与已测Aug22对齐，不降低原库MSRV。该声明改变具有全SDK影响，本批验收只覆盖表达式包及TiDB消费端；其余workspace／CI未验证项要明确保留。构建需要的C/C++、CMake条件应有可复建的文档或最小仓库配置，移除对未提交个人绝对路径包装器的依赖。不得用隐藏RUSTC、全局source patch或相邻目录软链接把指定工具链／固定Git检验伪装成已通过。
+
+在没有相邻TiDB的独立SDK检出里运行普通`cargo metadata --format-version 1 --locked`、`cargo tree -p tidb_query_expr -e normal`及`cargo test -p tidb_query_expr --lib --locked -- --nocapture`，记录实际cargo／rustc版本，预期429项通过。TiDB rust/内以其声明工具链运行metadata／tree及现有41项shared_kernel、8项prepared回归。下载缓存可以复用，依赖来源和锁文件需可审查；它不是空缓存或全系统可复现性承诺。相关lint／格式／diff及原始全部增删随固定提交交付，正式完整SDK Clippy仍按实际运行结果报告。
+
+如果嵌套包发现、单一类型身份或工具链升级暴露具体障碍，保留最小失败和确切依赖链，调整声明接线，不回退到算法副本或扩大为整套执行器重写。该批不接默认SQL后端、worker、跨EXECUTE缓存，不增加新性能矩阵；仓库声明工具链的表达式测试通过也不能冒称整个TiKV或全部CI通过。完整共享内核目标及诊断顺序放宽不变。
+
+本轮仅更新两份设计文档，验证链接对象、相对链接、ExecPlan结构和diff；没有运行新的产品检查。
