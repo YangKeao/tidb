@@ -292,6 +292,79 @@ fn column_bench(iterations: usize) {
             black_box(&output);
         });
     }
+    // Diagnostic slices only; their temporary ownership differs, so do not sum
+    // or subtract them as an exact decomposition of the complete call.
+    if std::env::var_os("DECIMAL_BENCH_COLUMN_PHASES").is_some() {
+        let operands = (0..2)
+            .map(|c| {
+                rows.iter()
+                    .map(|r| input.physical_row(*r).get_datum(c, &ty))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let arithmetic = || {
+            operands[0]
+                .iter()
+                .zip(&operands[1])
+                .map(|(a, b)| match (a, b) {
+                    (Datum::Decimal(a), Datum::Decimal(b)) => {
+                        let (value, warning) = a.mul_mysql(b);
+                        assert!(warning.is_none());
+                        Some(value)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let values = arithmetic()
+            .into_iter()
+            .map(|v| v.map_or(Datum::Null, Datum::Decimal))
+            .collect::<Vec<_>>();
+        assert_eq!(parts(&values), parts(&expected));
+        measure(
+            "column_mul",
+            width,
+            "input",
+            "native_owner",
+            iterations,
+            || {
+                (0..2)
+                    .map(|c| {
+                        rows.iter()
+                            .map(|r| input.physical_row(*r).get_datum(c, &ty))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            },
+        );
+        measure(
+            "column_mul",
+            width,
+            "arithmetic",
+            "native_owner",
+            iterations,
+            arithmetic,
+        );
+        measure(
+            "column_mul",
+            width,
+            "evaluate",
+            "shared",
+            iterations,
+            || {
+                shared
+                    .evaluate(&input, &rows, &mut ctx, &NoColumns)
+                    .unwrap()
+            },
+        );
+        measure("column_mul", width, "write", "shared", iterations, || {
+            output.reset();
+            for value in &values {
+                output.append_datum(0, value);
+            }
+            black_box(&output);
+        });
+    }
 }
 
 fn main() {
