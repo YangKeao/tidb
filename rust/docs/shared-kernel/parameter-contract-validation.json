@@ -1,0 +1,90 @@
+{
+  "source_commits": {
+    "tidb": "3034ea26f3780299b6931fb241bed6cd7cbc9874",
+    "tikv": "d822fbf9fbee8e0b635974a8d38e42f9e73f067a"
+  },
+  "source_inputs": {
+    "count": 5525,
+    "sha256": "75da1f299d6aac7d248e0de52d25d6fb2a1bbd179c6a5c68accd94bf5e19d485"
+  },
+  "tests": {
+    "native_shared": {
+      "passed": 35,
+      "filtered": 1323
+    },
+    "native_prepared": {
+      "passed": 8,
+      "filtered": 1350
+    },
+    "session_parameter_type_compatibility": {
+      "passed": 1,
+      "filtered": 2077
+    }
+  },
+  "checks": {
+    "root_lint": 0,
+    "rustfmt": 0,
+    "diff_check": 0
+  },
+  "attempts": {
+    "attempt1": "wrong edit path; zero tests selected, not a pass",
+    "attempt2": "test API compile failure",
+    "attempt3": "one pass, one failed: RPN requires nonempty input",
+    "attempt4": "two pass",
+    "attempt5": "two pass with real empty-entry and exact typed-result checks"
+  },
+  "logs": [
+    {
+      "name": "attempt1.log",
+      "sha256": "90ad495f600db15b8961e0233f5839eb5a5066aafb6adf4990ae8fe63d88c0e6"
+    },
+    {
+      "name": "attempt2.log",
+      "sha256": "3dc0764d03b7688c63a3e236ecbc9aac70cb9ceb808fdc79c264aa3916953888"
+    },
+    {
+      "name": "attempt3.log",
+      "sha256": "06a61119752dea3b3fc324a7a194574734f655e9bb32f9acfe4ce808de7e1dd3"
+    },
+    {
+      "name": "attempt4.log",
+      "sha256": "bce7a9c25880afc205bf877120a757fcceef4940b506927da43e60eba0a60e04"
+    },
+    {
+      "name": "attempt5.log",
+      "sha256": "bb43792846471f5b495ef569063f1b9d445ed51478a8fc5d7513344351009217"
+    },
+    {
+      "name": "final-lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    },
+    {
+      "name": "lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    },
+    {
+      "name": "native-f30d2377.log",
+      "sha256": "2ac6bc0a0990d11226b653c6b1c363dafd2576d830477e64ba1fb9ef3b106afd"
+    },
+    {
+      "name": "native-final.log",
+      "sha256": "cd8b9e79ef0ab5c877b963ed54c3857cbbb99560d4cf53025fd97dc5e4a7d6ab"
+    },
+    {
+      "name": "native-prepared.log",
+      "sha256": "46480f1a25537b4b4dceb8a400861520793a0b884e5ca4795f9c25a4f3e8d51f"
+    },
+    {
+      "name": "owner-f30d2377.log",
+      "sha256": "0324adf08da79ab1c2fda2161331e46a18ce737f669478dc750e664acc79f9ec"
+    },
+    {
+      "name": "owner-test.log",
+      "sha256": "5ce3b40fe0fef53427ebcaa48c54a4113416f11a4bf36b863bcf50444adb41c5"
+    },
+    {
+      "name": "prepared-f30d2377.log",
+      "sha256": "3bc9ce85038ee0c67cad52c3201201c45adc9ab5c8c3c6bf52bbe8d2684fbbfe"
+    }
+  ]
+}
