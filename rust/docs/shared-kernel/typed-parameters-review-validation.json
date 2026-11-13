@@ -1,0 +1,102 @@
+{
+  "source_commits": {
+    "tidb": "184f525870dd5e519928217e119bc3d4a7c6dd2b",
+    "tikv": "05130ce8dde0299a93ad86cf93132087d7171ff9"
+  },
+  "source_inputs": {
+    "count": 5525,
+    "sha256": "477ecf74ebb3927fb69fe834399ae7dead009cfad8a39103037ee51638753283"
+  },
+  "tests": {
+    "native-final": {
+      "passed": 41,
+      "ignored": 0,
+      "filtered": 1323
+    },
+    "native-prepared": {
+      "passed": 8,
+      "ignored": 0,
+      "filtered": 1356
+    },
+    "sdk-tests": {
+      "passed": 429,
+      "ignored": 0,
+      "filtered": 0
+    }
+  },
+  "checks": {
+    "root_lint": 0,
+    "scoped_clippy": 0,
+    "rustfmt_2021": 0,
+    "git_diff_check": 0,
+    "final_root_lint": 0
+  },
+  "limits": [
+    "unchanged datatype tests not rerun in this correction",
+    "adjacent-source Aug22 wrapper only",
+    "no full SDK make clippy or default-toolchain success",
+    "no performance or default executor integration"
+  ],
+  "logs": [
+    {
+      "name": "after.log",
+      "sha256": "c0231714d1bd781e45add83360b261bd4608c675a2c6f2162c8e4b1b58e071d6"
+    },
+    {
+      "name": "before-final.log",
+      "sha256": "c3f78e38212a0b59bc27ddda48ee4d5db7c7b0ba1c55de49a1ffcaeba6c8b87f"
+    },
+    {
+      "name": "before-fixed-inputs.json",
+      "sha256": "740604054e3c1c76fa0d7ba8a4db6f222c53d65a9d144e10f6dc2765902abb4a"
+    },
+    {
+      "name": "before-fixed-tests.patch",
+      "sha256": "6d35909d4c7920ff3dac3cac85180469cebc8f17b35125305431b7c2550a4998"
+    },
+    {
+      "name": "before-fixed.log",
+      "sha256": "a8e3290612e6ff8f1b1713386ea2a30a09ed8982ec12519ab1875714494bcda1"
+    },
+    {
+      "name": "before.log",
+      "sha256": "90f920100c12e2561f97bdfbd48550ccd25b6e39853f0eb66322508216a79f58"
+    },
+    {
+      "name": "before2.log",
+      "sha256": "c1cbbc8adf0720950f2d12600f0e4ab0c396b298ecf867cd895a56be6c658077"
+    },
+    {
+      "name": "before3.log",
+      "sha256": "77bf875a3434b3c2e3be81b392bbd69c00a46ab085f9169c100c2d14d791e045"
+    },
+    {
+      "name": "format-diff.log",
+      "sha256": "d380cf664a1548154b2be9cd76912f89c12d36578ca82242497e6ba2f3cdbd1f"
+    },
+    {
+      "name": "lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    },
+    {
+      "name": "native-final.log",
+      "sha256": "23f3ac46bf2ea2175acde19e39499076cd55827179038721c273bb35cf5a412d"
+    },
+    {
+      "name": "native-prepared.log",
+      "sha256": "5bf469f92a2f9c9db8d20df554c453351fedba0c0cffd050fcc1d11fc098740c"
+    },
+    {
+      "name": "scoped-clippy.log",
+      "sha256": "06ee9dd1fddcfef2fcb55a1463e4f7aa34d0dce0988e0b9e057176956607fb89"
+    },
+    {
+      "name": "sdk-tests.log",
+      "sha256": "ae06332b2e25a1fa0ef5fc21210bdb0c3485d8064434ee6b25221d72670b77f3"
+    },
+    {
+      "name": "final-lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    }
+  ]
+}

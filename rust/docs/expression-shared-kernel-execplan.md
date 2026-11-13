@@ -343,3 +343,14 @@ cache changes. Explicit callers own bound-signature programs for one execution.
       runtime carriers, demand, empty input, recovery and retained outputs.
 - [x] Run affected datatype/native/SDK checks and lint; publish fixed evidence,
       complete counts and remaining limitations.
+
+### Task40 review correction (Designer 2fa948e4)
+
+Keep the existing signed, nonarray Decimal static source boundary for parameter
+leaves. Static String enters a different native conversion path and is rejected.
+Diagnostic-only parameter read failure must retain generic Decimal overflow1690;
+a demanded parameter leaf still propagates its original1105. No broader casts.
+
+- [x] Preserve both before-fix native differential failures.
+- [x] Apply the two minimal shared fixes: 41 shared, 8 prepared, 429 SDK pass; root lint/scoped Clippy complete.
+- [x] Publish corrected fixed pair, evidence and full incremental/cumulative counts in typed-parameters.zh.md and its review receipt.

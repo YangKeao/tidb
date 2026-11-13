@@ -9,10 +9,10 @@
 
 | 输入位置或边界 | 行为 |
 | --- | --- |
-| 已支持Decimal `plus/minus/mul/div`的无DeferredExpr参数操作数 | 接纳；父算术必须通过原生`numeric_operand_domain`的Decimal签名检查 |
+| 已支持Decimal `plus/minus/mul/div`的有符号、非array、静态NewDecimal且无DeferredExpr的参数操作数 | 接纳；父算术必须通过原生`numeric_operand_domain`的Decimal签名检查 |
 | IF包住上述算术 | 接纳，沿用现有共享整根逐行调用方式 |
 | 裸参数结果、IF直接返回参数、其他请求域、DeferredExpr | 编译拒绝 |
-| 参数缺少静态类型或父签名尚未解析 | 编译拒绝，不把固定RPN输出当成原生签名证明 |
+| 参数静态类型为String／其他域／unsigned／array，缺少静态类型或父签名尚未解析 | 编译拒绝，不把固定RPN输出当成原生签名证明 |
 | 当前值变为Int／UInt／Real／Float32／String／NULL等 | 在共享循环执行原类型化Decimal转换；原来不能转换的值返回原错误，不回退 |
 | 原生把MinNotNull／MaxValue等推导为NULL类型 | 保持原类型判断，返回NULL；不只检查Datum是否为Null |
 | 程序与绑定 | 调用方从本次执行已绑定、已解析的表达式快照编译；同一执行内跨Chunk复用，下一EXECUTE重新构造；一次求值期间绑定必须不变 |
@@ -35,7 +35,8 @@
   宿主会话的向量开关继续决定入口调用方式，没有参数值缓存或全局预取。
 - 仅包含参数的可格式化Decimal算术保存静态文本与参数位置。
   发生1690时读取本次不变绑定的原始值，不再次转换；列名和嵌套括号保留。
-  无法按原生详细格式表达的子树（例如内部IF）继续返回通用Decimal溢出文本。
+  无法按原生详细格式表达的子树（例如内部IF），或仅为诊断读取参数失败，均返回通用Decimal溢出文本。
+  实际参数叶子的读取失败仍传播原错误。
   没有诊断值句柄、第二个求值循环或失败后旧入口重试。
 
 ## 原生对照与失败记录
@@ -64,7 +65,7 @@
 它们已保留，未记为通过。SDK Rustfmt曾误用2024 edition，因原有`gen`标识符失败，随后按
 Cargo声明的2021 edition检查。没有修改这些原有标识符。
 
-## 验证与固定材料
+## 首版验证与固定材料（历史记录）
 
 精确输入摘要、固定提交和原始日志哈希见[`typed-parameters-validation.json`](typed-parameters-validation.json)。
 所有Cargo命令从TiDB `rust/`目录执行，使用同一nightly-2026-08-22包装器：
@@ -86,7 +87,7 @@ CARGO_BUILD_JOBS=4 ../../tools/cargo-tidb clippy -p tidb-expr --features shared-
 本批不做新性能测量。SDK原默认工具链／独立检出问题、正式完整`make clippy`、全部SQL入口、
 完整参数／Deferred兼容、跨EXECUTE生命周期与性能目标仍未完成；本次成功使用相邻源码和固定包装器。
 
-## 全部增删
+## 首版全部增删（历史记录）
 
 统计以Main bfde2f35／SDK d822为本批基线，原始累计以364aef2／548812e为基线；
 包括生产、测试、报告及验证材料，按最终树计数，不累计相互覆盖的提交行数。
@@ -98,3 +99,53 @@ CARGO_BUILD_JOBS=4 ../../tools/cargo-tidb clippy -p tidb-expr --features shared-
 本批测试：+346/−2；文档／证据+275/−0；构建文件0。
 本批全部：+920/−75，净增845，原始增删995行。
 原始累计：源码及测试6910行增删；全部+24201/−219，共24420行增删。
+
+## 复审修正
+
+Designer 2fa948e4及补充f486edc9指出两处未覆盖的边界。首版已通过的记录并不证明
+这些边界正确；本次保持参数范围不扩张，按原接纳条件拒绝静态String、unsigned和array。
+首版中的“当前raw值为String”指静态声明为Decimal的参数，与静态String源入口不同。
+
+`shared_kernel_parameter_review_static_source`先记录原生行为，再要求共享编译拒绝。
+使用静态VarString参数、当前`2.5junk`乘Decimal 2：
+
+| 调用方式 | 原生 | 修正前共享 |
+| --- | --- | --- |
+| 直接逐行`Expression::eval`，三行Scalar | 3条1292，完整文本含原始String | 3条1265 |
+| 真实`EvaluatorSuite::run`，三行Vector | 3条1265 | 1条1265 |
+
+修正后上述静态String表达式拒绝编译；同一测试也核对unsigned／array Decimal及
+LongLong静态参数拒绝、原有有符号非array Decimal参数可编译。已有84组合仍检验
+静态Decimal参数的当前Int／String等raw载体、实际转换次数和告警。
+
+`shared_kernel_parameter_review_hidden_diagnostic`使用物理值100的隐藏Decimal列，
+其virtual_expr仅在诊断中引用缺失参数0，再乘80位全9Decimal。直接Scalar及真实Vector
+原生均返回通用Decimal溢出1690。修正前共享错误返回1105；修正后保持1690和通用全文。
+SDK只在溢出诊断的参数读取处使用失败转None的原生语义，实际参数指令仍使用`?`传播错误；
+已有demand测试继续证明实际未绑定参数返回1105。
+
+新测试在首版生产源码上保存了两项失败（`before-fixed.log`），最终测试补丁及两个修改文件
+的SHA也已保存。`before3.log`是较早版本的同两项失败；`before2.log`另包含Vector告警码
+误写为1292的测试预期错误。`before.log`为测试闭包借用编译错误；`before-final.log`是重建
+旧生产输入时文本替换误命中另一类型检查的编译失败，随后改用原提交文件插入最终测试，
+生成上述`before-fixed.log`。这些尝试均保留，不作为成功证据。
+
+修正后41项共享、8项prepared、429项SDK表达式测试通过；两项新增用例另行通过。
+根`make lint`通过，限定Clippy完成有既有警告，两侧Rustfmt2021及diff检查通过。
+原datatype未改动，本次没有重复运行其89／7项筛选；首版结果只保留为历史记录。
+精确命令沿用上节的shared、prepared、SDK及Clippy命令；新增用例筛选为
+`shared_kernel_parameter_review_`。5525项最终源码输入在检查前后及恢复原始输入后核验。
+
+本次源码固定为Main `184f525870dd5e519928217e119bc3d4a7c6dd2b`、SDK `05130ce8dde0299a93ad86cf93132087d7171ff9`。
+输入摘要、测试终态及记录哈希见[`typed-parameters-review-validation.json`](typed-parameters-review-validation.json)。
+验证器使用`--receipt typed-parameters-review-validation.json --evidence <本地typed-parameters-review目录>`。
+未扩大默认执行器、生命周期、跨EXECUTE缓存或cast范围；没有新性能测量，默认SDK构建和完整M1仍未完成。
+
+## 修正后完整统计
+
+修正增量以Main bb94be0e55／SDK 3c9b12cf为基线；task40总量仍以bfde2f35／d822为基线。
+原始累计基线不变。统计包括本次文档和验证JSON，按最终树计数。
+
+本次修正：生产+9/−4（净增5），测试+115/−0，文档证据+169/−5，构建0；全部+293/−9，净增284，增删302行。
+task40最终总量：生产+303/−72（净增231），测试+461/−2，文档证据+439/−0，构建0；全部+1203/−74，净增1129，增删1277行。
+原始累计：源码与测试7030行增删；全部+24485/−219，共24704行增删。
