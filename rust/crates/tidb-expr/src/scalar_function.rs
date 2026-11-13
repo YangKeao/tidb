@@ -3387,96 +3387,7 @@ impl ScalarFunction {
     }
 }
 
-/// One decimal value of a column-wise arithmetic evaluation, in the shape
-/// the value-layer `Decimal` fast paths compute in: a signed `i128`
-/// coefficient at `storage_scale` fraction digits, of which `scale` are the
-/// SQL-visible result scale.
-#[derive(Clone, Copy)]
-struct DecimalValue {
-    coefficient: i128,
-    storage_scale: u32,
-    scale: u32,
-}
-
-impl DecimalValue {
-    fn from_my_decimal(value: &tidb_datatype::MyDecimal) -> Option<Self> {
-        // `Decimal::from_my_decimal`: the stored fraction digits are padded
-        // up to the result scale when the cell declares more of them.
-        let (coefficient, digits_frac) = value.to_i128_scaled()?;
-        let result_frac = u32::try_from(value.result_frac()).ok()?;
-        let storage_scale = digits_frac.max(result_frac);
-        let coefficient = if storage_scale > digits_frac {
-            coefficient.checked_mul(10i128.checked_pow(storage_scale - digits_frac)?)?
-        } else {
-            coefficient
-        };
-        Some(Self {
-            coefficient,
-            storage_scale,
-            scale: result_frac,
-        })
-    }
-
-    fn from_integer(value: crate::coerce::Integer) -> Self {
-        let coefficient = match value {
-            crate::coerce::Integer::Signed(value) => i128::from(value),
-            crate::coerce::Integer::Unsigned(value) => i128::from(value),
-        };
-        Self {
-            coefficient,
-            storage_scale: 0,
-            scale: 0,
-        }
-    }
-
-    /// `Decimal::add` (`try_add_fast`): operands aligned to the wider storage
-    /// scale, the visible scale the wider of the two.
-    fn add(self, other: Self) -> Option<Self> {
-        let storage_scale = self.storage_scale.max(other.storage_scale);
-        let left = self.aligned(storage_scale)?;
-        let right = other.aligned(storage_scale)?;
-        Some(Self {
-            coefficient: left.checked_add(right)?,
-            storage_scale,
-            scale: self.scale.max(other.scale),
-        })
-    }
-
-    fn sub(self, other: Self) -> Option<Self> {
-        self.add(Self {
-            coefficient: other.coefficient.checked_neg()?,
-            ..other
-        })
-    }
-
-    /// `Decimal::mul_mysql` (`try_mul_mysql_fast`): scales add; a result
-    /// scale past MySQL's 30 takes the general path.
-    fn mul(self, other: Self) -> Option<Self> {
-        let scale = self.scale.checked_add(other.scale)?;
-        if scale > 30 {
-            return None;
-        }
-        Some(Self {
-            coefficient: self.coefficient.checked_mul(other.coefficient)?,
-            storage_scale: self.storage_scale.checked_add(other.storage_scale)?,
-            scale,
-        })
-    }
-
-    fn aligned(self, storage_scale: u32) -> Option<i128> {
-        if storage_scale == self.storage_scale {
-            Some(self.coefficient)
-        } else {
-            self.coefficient
-                .checked_mul(10i128.checked_pow(storage_scale - self.storage_scale)?)
-        }
-    }
-
-    /// `Decimal::to_chunk_my_decimal`: the cell the row path appends.
-    fn to_my_decimal(self) -> Option<tidb_datatype::MyDecimal> {
-        tidb_datatype::MyDecimal::from_scaled_i128(self.coefficient, self.storage_scale, self.scale)
-    }
-}
+use tidb_datatype::CompactDecimal as DecimalValue;
 
 /// Evaluates the Go numeric typed entrypoint without changing generic Eval.
 fn eval_numeric_row(
@@ -4237,9 +4148,9 @@ fn vec_eval_decimal(
                             (!column.is_null(row)).then(|| {
                                 let bits = column.get_int64(row);
                                 DecimalValue::from_integer(if signed {
-                                    crate::coerce::Integer::Signed(bits)
+                                    i128::from(bits)
                                 } else {
-                                    crate::coerce::Integer::Unsigned(bits as u64)
+                                    i128::from(bits as u64)
                                 })
                             })
                         })
@@ -4265,13 +4176,13 @@ fn vec_eval_decimal(
             let value = match constant.literal_value()? {
                 Datum::Null => None,
                 Datum::Int(value) if is_int => Some(DecimalValue::from_integer(if signed {
-                    crate::coerce::Integer::Signed(*value)
+                    i128::from(*value)
                 } else {
-                    crate::coerce::Integer::Unsigned(*value as u64)
+                    i128::from(*value as u64)
                 })),
-                Datum::UInt(value) if is_int => Some(DecimalValue::from_integer(
-                    crate::coerce::Integer::Unsigned(*value),
-                )),
+                Datum::UInt(value) if is_int => {
+                    Some(DecimalValue::from_integer(i128::from(*value)))
+                }
                 Datum::Decimal(value) if is_decimal => {
                     Some(DecimalValue::from_my_decimal(&value.to_my_decimal().ok()?)?)
                 }
@@ -4376,7 +4287,7 @@ fn vec_eval_cast_int_as_decimal(
     if flen == 0 || flen < scale.checked_add(if signed { 19 } else { 20 })? {
         return None;
     }
-    let factor = 10i128.checked_pow(scale)?;
+    10i128.checked_pow(scale)?;
     let index = usize::try_from(column.index).ok()?;
     if index >= input.num_cols() {
         return None;
@@ -4397,11 +4308,7 @@ fn vec_eval_cast_int_as_decimal(
             } else {
                 i128::from(bits as u64)
             };
-            Some(Some(DecimalValue {
-                coefficient: value.checked_mul(factor)?,
-                storage_scale: scale,
-                scale,
-            }))
+            Some(Some(DecimalValue::from_scaled_integer(value, scale)?))
         })
         .collect()
 }

@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod compact;
+pub use compact::{CompactDecimal, DecimalArithmeticValue};
+
 use std::cmp::Ordering;
 use std::ops::Deref;
 
@@ -288,6 +291,12 @@ impl Decimal {
             .into()
         };
         Self::new_with_storage(negative, digits, result_scale, storage_scale)
+    }
+
+    /// Decodes a column value with the ordinary unspecified-fraction contract.
+    pub fn from_column(value: &MyDecimal, field: &crate::FieldType) -> Self {
+        let (flen, fraction) = compact::column_shape(value, field);
+        Self::from_my_decimal(value).with_declared_shape(flen, fraction)
     }
 
     /// Converts this value to Go's exact `MyDecimal` storage shape without
@@ -775,47 +784,11 @@ impl Decimal {
     /// Any wider value or scale mismatch keeps the complete arbitrary-precision
     /// implementation above.
     fn try_add_fast(&self, other: &Decimal) -> Option<Decimal> {
-        // Operands with different storage scales are aligned the way the
-        // general path pads them: an exact scale-up by a power of ten. Go's
-        // `doAdd`/`doSub` align fractional word counts the same way, so
-        // `1 - l_discount` (scale 0 against scale 2) stays on the integer
-        // path instead of the digit-string path.
-        let storage_scale = self.storage_scale.max(other.storage_scale);
-        let left = Self::fast_operand(
-            &self.digits,
-            self.negative,
-            storage_scale - self.storage_scale,
-        )?;
-        let right = Self::fast_operand(
-            &other.digits,
-            other.negative,
-            storage_scale - other.storage_scale,
-        )?;
-        let sum = left.checked_add(right)?;
-        let negative = sum < 0;
-        let digits = DecimalDigits::from_unsigned(sum.unsigned_abs());
-        Some(Decimal::new_with_storage(
-            negative,
-            digits,
-            self.scale.max(other.scale),
-            storage_scale,
-        ))
-    }
-
-    /// The signed `i128` a coefficient holds after an exact scale-up by
-    /// `shift` decimal places, or `None` when it does not fit.
-    fn fast_operand(digits: &DecimalDigits, negative: bool, shift: u32) -> Option<i128> {
-        let value = digits.parse::<i128>().ok()?;
-        let value = if shift == 0 {
-            value
-        } else {
-            value.checked_mul(10i128.checked_pow(shift)?)?
-        };
-        if negative {
-            value.checked_neg()
-        } else {
-            Some(value)
-        }
+        Some(
+            CompactDecimal::from_decimal(self)?
+                .add_decimal(CompactDecimal::from_decimal(other)?)?
+                .into_decimal(),
+        )
     }
 
     /// Source `DecimalAdd`, including MyDecimal's nine-word result bound.
@@ -1032,26 +1005,11 @@ impl Decimal {
     /// Returning `None` deliberately keeps all overflow, scale, and nine-word
     /// warning behavior in [`Self::mul_mysql`]'s complete implementation.
     fn try_mul_mysql_fast(&self, other: &Decimal) -> Option<Decimal> {
-        let result_scale = self.scale.checked_add(other.scale)?;
-        if result_scale > CODEC_MAX_DECIMAL_SCALE as u32 {
-            return None;
-        }
-        let left = self.digits.parse::<i128>().ok()?;
-        let right = other.digits.parse::<i128>().ok()?;
-        let product = left.checked_mul(right)?;
-        let negative = (product < 0) || (self.negative != other.negative && product != 0);
-        // Keep the fixed-scale fast path allocation-free for the coefficient
-        // itself. `to_string` rebuilt a heap `String` for every DECIMAL
-        // multiply even though the value already fits in `i128`; the add
-        // path uses the same inline digit representation.
-        let digits = DecimalDigits::from_unsigned(product.unsigned_abs());
-        let storage_scale = self.storage_scale.checked_add(other.storage_scale)?;
-        Some(Decimal::new_with_storage(
-            negative,
-            digits,
-            result_scale,
-            storage_scale,
-        ))
+        Some(
+            CompactDecimal::from_decimal(self)?
+                .mul_decimal(CompactDecimal::from_decimal(other)?)?
+                .into_decimal(),
+        )
     }
 
     /// Source `MyDecimal.Shift`: multiply by `10^shift` inside MyDecimal's

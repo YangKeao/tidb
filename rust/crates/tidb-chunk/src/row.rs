@@ -28,7 +28,7 @@ use crate::chunk::Chunk;
 use crate::CellBytes;
 use tidb_datatype::{
     deserialize_vector_float32, Datum, Decimal, EvalType, FieldType, FieldTypeCode, GoString,
-    MyDecimal, MySqlDuration, Time, VectorFloat32, MYDECIMAL_STRUCT_SIZE, UNSPECIFIED_LENGTH,
+    MyDecimal, MySqlDuration, Time, VectorFloat32, MYDECIMAL_STRUCT_SIZE,
 };
 
 /// Shared typed-cell conversion for row cursors and column-wide consumers.
@@ -101,15 +101,7 @@ impl DatumCell<'_> {
             }
             FieldTypeCode::NewDecimal => {
                 let stored = self.column.get_my_decimal(self.row);
-                let fraction = if field_type.decimal() == UNSPECIFIED_LENGTH {
-                    i64::from(stored.digits_frac())
-                } else {
-                    field_type.decimal()
-                };
-                Datum::Decimal(
-                    Decimal::from_my_decimal(&stored)
-                        .with_declared_shape(field_type.flen(), fraction),
-                )
+                Datum::Decimal(Decimal::from_column(&stored, field_type))
             }
             FieldTypeCode::VectorFloat32 => {
                 Datum::VectorFloat32(self.column.get_vector_float32(self.row))
