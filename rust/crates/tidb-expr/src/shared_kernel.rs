@@ -361,15 +361,15 @@ impl SharedExpression {
                     };
                     if f.args.len() != 2
                         || !admitted(result)
-                        || (result.code() == Code::NewDecimal && f.numeric_operand_domain() != Some(tidb_datatype::EvalType::Decimal))
+                        || (result.code() == Code::NewDecimal
+                            && f.numeric_operand_domain() != Some(tidb_datatype::EvalType::Decimal))
                         || !matches!(
                             result.code(),
                             Code::LongLong | Code::Double | Code::NewDecimal
                         )
                         || f.args
                             .iter()
-                            .any(|a| !matches!(a, Expression::Constant(c) if result.code() == Code::NewDecimal && c.param_marker.is_some() && c.deferred_expr.is_none())
-                                && a.static_type().is_none_or(|t| !admitted(t)))
+                            .any(|a| a.static_type().is_none_or(|t| !admitted(t)))
                         || (result.code() == Code::LongLong
                             && !matches!(f.func_name.lowercase(), "plus" | "mul"))
                     {
@@ -2085,6 +2085,121 @@ mod tests {
                 drop(input);
                 assert_same_decimal(&retained[0][0], &expected);
             }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_parameter_review_static_source() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(-1);
+        let arithmetic = |source| {
+            let mut marker = Constant::new(Datum::Null, source);
+            marker.param_marker = Some(ParamMarker { order: 0 });
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("mul"),
+                decimal.clone(),
+                vec![
+                    Expression::Constant(marker),
+                    numeric_literal(Datum::Decimal(Decimal::from_int(2)), &decimal),
+                ],
+            ))
+        };
+        let expression = arithmetic(FieldType::new(FieldTypeCode::VarString));
+        let compiled = SharedProjection::compile(std::slice::from_ref(&expression));
+        for scalar in [false, true] {
+            let mut native = ParameterProbe::new(Some(Datum::new_string(b"2.5junk".to_vec())), 4);
+            native.session.vectorized_off = scalar;
+            let mut input = Chunk::new_empty(&[]);
+            input.set_num_virtual_rows(3);
+            if scalar {
+                for row in 0..3 {
+                    expression.eval(&native, input.get_row(row)).unwrap();
+                }
+            } else {
+                let mut output = Chunk::new_empty(std::slice::from_ref(&decimal));
+                crate::evaluator::EvaluatorSuite::new(vec![expression.clone()], false)
+                    .run(&native, &mut input, &mut output)
+                    .unwrap();
+            }
+            assert_eq!(native.session.warnings.borrow().len(), 3);
+            assert!(native
+                .session
+                .warnings
+                .borrow()
+                .iter()
+                .all(|w| w.0 == if scalar { 1292 } else { 1265 }));
+            // Preserve the before-fix source-entry mismatch if admission regresses.
+            if let Ok(shared) = &compiled {
+                let mut current =
+                    ParameterProbe::new(Some(Datum::new_string(b"2.5junk".to_vec())), 4);
+                current.session.vectorized_off = scalar;
+                shared
+                    .evaluate(&input, &[0, 1, 2], &mut EvalContext::default(), &current)
+                    .unwrap();
+                eprintln!("static VarString scalar={scalar}: native warnings={:?}, shared warnings={:?}, shared reads={}", native.session.warnings.borrow(), current.session.warnings.borrow(), current.reads.get());
+            }
+        }
+        assert!(
+            compiled.is_err(),
+            "static String parameter must retain original admission boundary"
+        );
+        for source in [
+            decimal.clone().with_unsigned(true),
+            decimal.clone().with_array(true),
+            FieldType::new(FieldTypeCode::LongLong),
+        ] {
+            assert!(SharedProjection::compile(&[arithmetic(source)]).is_err());
+        }
+        assert!(SharedProjection::compile(&[arithmetic(decimal.clone())]).is_ok());
+    }
+
+    #[test]
+    fn shared_kernel_parameter_review_hidden_diagnostic() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let ty = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(-1);
+        let mut marker = Constant::new(Datum::Null, ty.clone());
+        marker.param_marker = Some(ParamMarker { order: 0 });
+        let mut column = Column::new(1, ty.clone());
+        column.index = 0;
+        column.is_hidden = true;
+        column.virtual_expr = Some(Box::new(Expression::Constant(marker)));
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("mul"),
+            ty.clone(),
+            vec![
+                Expression::Column(column),
+                numeric_literal(Datum::Decimal(Decimal::from_literal(&"9".repeat(80))), &ty),
+            ],
+        ));
+        let shared = SharedProjection::compile(std::slice::from_ref(&expression)).unwrap();
+        let suite = crate::evaluator::EvaluatorSuite::new(vec![expression.clone()], false);
+        for vectorized_off in [false, true] {
+            let mut native = ParameterProbe::new(None, 4);
+            native.session.vectorized_off = vectorized_off;
+            let mut current = ParameterProbe::new(None, 4);
+            current.session.vectorized_off = vectorized_off;
+            let mut input = Chunk::new_empty(std::slice::from_ref(&ty));
+            input.append_datum(0, &Datum::Decimal(Decimal::from_int(100)));
+            let mut output = Chunk::new_empty(std::slice::from_ref(&ty));
+            let expected = if vectorized_off {
+                expression.eval(&native, input.get_row(0)).unwrap_err()
+            } else {
+                let crate::evaluator::EvaluatorError::Eval(error) =
+                    suite.run(&native, &mut input, &mut output).unwrap_err()
+                else {
+                    panic!("expected native overflow");
+                };
+                error
+            };
+            assert_eq!(expected, crate::EvalError::DecimalOverflow);
+            let actual = shared
+                .evaluate(&input, &[0], &mut EvalContext::default(), &current)
+                .unwrap_err();
+            eprintln!("hidden diagnostic: native={expected:?}, shared={actual:?}");
+            assert_eq!(actual.code, Some(1690));
+            assert_eq!(actual.message, "DECIMAL value is out of range");
         }
     }
 
