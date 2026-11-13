@@ -1,0 +1,59 @@
+{
+  "source_commits": {
+    "tidb": "f5daddcbdb39d91d20b99b012f29c1cdf4df1ae5",
+    "tikv": "d822fbf9fbee8e0b635974a8d38e42f9e73f067a"
+  },
+  "source_inputs": {
+    "count": 5524,
+    "sha256": "3aae7e1a62867bd83ba9bfb1d44aadc9a58c6c884373517b00bdd9f30db09e4e"
+  },
+  "tests": {
+    "native": {
+      "passed": 31,
+      "failed": 0,
+      "filtered": 1323
+    },
+    "sdk_expression_library": {
+      "passed": 429,
+      "failed": 0,
+      "filtered": 0
+    }
+  },
+  "first_native_attempt": "30 passed; malformed-literal fixture panicked at native constructor; corrected test boundary, not product algorithm",
+  "scoped_clippy": "completed with warnings",
+  "official_clippy": "not rerun; checkpoint6 official workflow remains incomplete",
+  "logs": [
+    {
+      "name": "native.log",
+      "sha256": "55df4ffbb42a66d85c2e309ed224ebed4221c189e12e42febb6ad76975ada436"
+    },
+    {
+      "name": "native-final.log",
+      "sha256": "56a62b363d7d1cc50e0d372e3a5c8ed73b3cdae0a0fcd93e4c71a376fe3aa52a"
+    },
+    {
+      "name": "sdk-final.log",
+      "sha256": "f604bad90adc106d6c5706767306697320edb472730855eb35f3fde495256eee"
+    },
+    {
+      "name": "clippy.log",
+      "sha256": "85f7dd2420f600c98b4c1ae077d9c8c08f0a285ca5e7270b8e02ccb0b98266b6"
+    },
+    {
+      "name": "final-docs-lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    },
+    {
+      "name": "tidb-dependencies.log",
+      "sha256": "5c61fa0ee1a92bb16b1b3f6d2035f9f3feb4f333d282bd6f370f7cfe8298aec7"
+    },
+    {
+      "name": "sdk-dependencies.log",
+      "sha256": "04dd46f3c1a4bd3b3099e167053ebe7f9129333f8d733deb80cecf59218d5e3e"
+    },
+    {
+      "name": "datatype-dependencies.log",
+      "sha256": "843e686abb9424059d5df8fc9209d428119a55701de40046753951ed21839e26"
+    }
+  ]
+}

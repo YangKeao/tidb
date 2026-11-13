@@ -21,6 +21,8 @@ Both Rust frontends will compile expressions into one TiKV RPN program, where RP
 - [x] Reproduce three review regressions, then fix/restrict admission; seven shared tests pass.
 - [ ] Complete dynamic branching, scalar/vector contracts, complex error guards and state execution; M1 is not complete.
 
+- [x] Task36: reuse existing native Decimal and String-to-Real algorithms;31 native and429 SDK tests pass. See shared-kernel/datatype-reuse.zh.md for dependencies, first test failure, full counts and incomplete gates.
+
 ## Context and Orientation
 
 
