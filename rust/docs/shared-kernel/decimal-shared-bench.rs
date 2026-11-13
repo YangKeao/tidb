@@ -391,6 +391,29 @@ fn column_bench(iterations: usize) {
 }
 
 fn main() {
+    if std::env::var_os("DECIMAL_BENCH_LAYOUT").is_some() {
+        fn layout<T>(name: &str) {
+            println!(
+                "{name},{},{}",
+                std::mem::size_of::<T>(),
+                std::mem::align_of::<T>()
+            );
+        }
+        use tidb_datatype::{CompactDecimal, DecimalArithmeticValue};
+        use tidb_query_expr::{
+            ExpressionScalar, ExpressionVector, RpnExpressionNode, RpnStackNode,
+        };
+        println!("type,size,alignment");
+        layout::<Decimal>("Decimal");
+        layout::<CompactDecimal>("CompactDecimal");
+        layout::<DecimalArithmeticValue>("DecimalArithmeticValue");
+        layout::<Option<DecimalArithmeticValue>>("Option<DecimalArithmeticValue>");
+        layout::<ExpressionScalar>("ExpressionScalar");
+        layout::<ExpressionVector>("ExpressionVector");
+        layout::<RpnExpressionNode>("RpnExpressionNode");
+        layout::<RpnStackNode<'static>>("RpnStackNode");
+        return;
+    }
     #[cfg(allocation_counting)]
     allocation::check_counter();
     let iterations = std::env::var("DECIMAL_BENCH_ITERATIONS")

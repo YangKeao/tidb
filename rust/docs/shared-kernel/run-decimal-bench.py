@@ -20,7 +20,9 @@ p.add_argument('--allocations', action='store_true')
 p.add_argument('--columns', action='store_true', help='run the single real-column complete-entry case')
 p.add_argument('--rounds', type=int, default=4)
 p.add_argument('--direct-chunk', action='store_true', help='after/candidate binaries additionally expose direct_chunk')
+p.add_argument('--before-direct-chunk', action='store_true', help='before binary also exposes direct_chunk; requires --before and --columns')
 a = p.parse_args()
+assert not a.before_direct_chunk or (a.before and a.columns), '--before-direct-chunk requires --before and --columns'
 assert a.iterations > 0
 a.output.mkdir(parents=True, exist_ok=True)
 cpu = max(os.sched_getaffinity(0))
@@ -48,7 +50,7 @@ for round_number in range(a.rounds):
         (a.output/'run-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
         assert run.returncode == 0, stem
         data = list(csv.DictReader(io.StringIO(run.stdout)))
-        expected_run = expected | ({('column_mul',64,'reuse','direct_chunk')} if a.direct_chunk and version != 'before' else set())
+        expected_run = expected | ({('column_mul',64,'reuse','direct_chunk')} if (a.before_direct_chunk if version == 'before' else a.direct_chunk) else set())
         assert len(data) == len(expected_run) and {(r['case'],int(r['width']),r['phase'],r['route']) for r in data} == expected_run, stem
         for r in data:
             assert int(r['iterations']) == a.iterations and int(r['alloc_iterations']) == (100 if a.allocations else 0) and int(r['nanos']) > 0

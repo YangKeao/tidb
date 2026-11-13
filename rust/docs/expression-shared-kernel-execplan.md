@@ -503,3 +503,30 @@ fails19 dependency advisories, also reproduced on baseline; no full-gate claim.
 An initial timing/allocation library mismatch is retained; final measurement uses
 identical explicit libraries within each product version and all rounds rerun.
 Default SQL, broader semantics and lifecycle remain outside this task.
+
+
+## Task44: one private carrier layout change
+
+
+Designer180bc037 authorizes moving declared shape into the private Compact variant in rust/crates/tidb-datatype/src/decimal/compact.rs. Wide keeps the original Decimal shape and uses Decimal::from_column. Keep native CompactDecimal and all arithmetic, admission, fallback and output contracts; do not add per-value boxing, packed/unsafe layout or external metadata. The observable goal is fewer requested allocation bytes without additional calls or reproducible same-route slowdown, not new SQL coverage.
+
+### Progress
+
+
+- [ ] Record baseline actual carrier/Option/embedded node sizes and alignment; seal twelve direct library inputs before measurement.
+- [ ] Change only private storage, publish original owner revision, synchronize SDK Git pin/lock and verify both dependency graphs.
+- [ ] Run existing shared, prepared, Decimal, Chunk, native-vector and independent SDK regressions; retain every failure.
+- [ ] Compare both five-route binaries with four alternating rounds (40 timing cells), plus 10 separately counted allocation cells; preserve old four-route runner mode.
+- [ ] Publish fixed result, all cost categories and full-base counts for review, even if negative; end this Decimal single-case optimization window.
+
+Use rust/docs/shared-kernel/build-decimal-bench.py with --direct-chunk for both versions. Link plain/counting harnesses against the same twelve copied libraries per version, verify hashes before measurement. Use run-decimal-bench.py --columns --direct-chunk --before-direct-chunk with 20000 iterations and four rounds for timing; --allocations --iterations 100 --rounds 1 for separate counters. DECIMAL_BENCH_LAYOUT=1 prints actual Rust type sizes without running measurements. Existing tests and make lint remain required. SDK tests use the standalone checkout, with no adjacent TiDB and a fixed Git dependency. Preserve existing numerical tests rather than invent new semantics. Receipt/scripts/raw records live in evidence/carrier-layout; never overwrite task43 evidence. All support material counts in the final diff.
+
+### Decision Log
+
+
+One layout trial only; a negative result is a complete bounded deliverable. Same-ID advisory observations from task43 did not pin the advisory database revision and do not establish a fixed audit snapshot. Task43 limited review accepted, broader M1 lifecycle and full migration budgets remain open.
+
+### Outcomes & Retrospective
+
+
+Pending fixed measurements and regression evidence.
