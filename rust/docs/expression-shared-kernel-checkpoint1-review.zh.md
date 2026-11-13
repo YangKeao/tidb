@@ -122,7 +122,7 @@ TiDB根`rust/Cargo.toml`新增workspace级patch；锁文件中原有依赖实际
 
 ## Checkpoint 3跟进
 
-2026-11-13复核固定TiDB `4ce93983a71da469d9070499d919374fd56e913c` / TiKV `0a5cda977bd9a6707b4a56971c23f0e77e7a7322`。[实现报告](https://github.com/YangKeao/tidb/blob/4ce93983a71da469d9070499d919374fd56e913c/rust/docs/shared-kernel/checkpoint-3.md)已列出剩余M1工作。结论：动态分支的结构和完整值汇合已贯通，但**当前按分支分组的执行改变首个致命错误；应先补共享有序调度，再接入状态函数**。JSON诊断身份也尚未保持。以下反例均来自固定源码推导，本审查没有新运行产品测试；已交实现者用原始入口复现并修正。
+2026-11-13复核固定TiDB `4ce93983a71da469d9070499d919374fd56e913c` / TiKV `0a5cda977bd9a6707b4a56971c23f0e77e7a7322`。[实现报告](https://github.com/YangKeao/tidb/blob/4ce93983a71da469d9070499d919374fd56e913c/rust/docs/shared-kernel/checkpoint-3.md)已列出剩余M1工作。结论：动态分支的结构和完整值汇合已贯通，**JSON错误的结构身份仍需补齐**。跨行错误先后虽有变化，但用户已明确放宽warning/error顺序，不以此单独要求恢复严格原生首错。以下行为来自固定源码推导，本审查没有新运行产品测试。
 
 ### 已确认的进展
 
@@ -132,25 +132,27 @@ native编译统一调用`RpnExpression::finish`，检查前向区域、受所属
 
 MD5的自身数字返回声明现在明确拒绝。JSON_LENGTH接入真正的字符串转JSON及长度内核；REGEXP_LIKE使用推迟准备的metadata，未选坏常量模式不再在编译时触发。这证明了当前受限输入的需求控制，尚不是完整错误兼容、缓存或性能证明。
 
-### 1. 首个致命错误被分支分组改变
+### 1. 跨行错误先后差异：不作为严格排序要求
+
+审查过程中先误将用户授权缩窄为只放宽warning，曾在Raft1372ccf8/c4375886及文档fb90494要求严格首错。重新读取人类原文`2979a576-99ec-4162-92fc-ff6a4cb656bb`后已撤回：原文是“不管 warning 和 error 的顺序”，task #3也已由人类完成确认。06e8cdf0已将更正同步实现者。下列源码差异保留供评估，不单独作为兼容阻塞，也不为其增加错误排序、记录器或回放机制。
 
 当前已经接纳以下签名和输入：
 
     IF(c, JSON_LENGTH('{'), REGEXP_LIKE('a', '['))
     c = [0, 1]，逻辑行选择 = [0, 1]
 
-原生入口先处理第0行，应报正则错误；共享循环却先执行全部then行，先报第1行JSON错误。依据为[原始evaluator](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/evaluator.rs#L436)逐行失败即返回，以及[原始IF](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/scalar_function.rs#L1820)只求本行所选分支。IF不属于已有numeric batch支持集合，打开向量开关也不会使它变成先then后else。候选[expr_eval.rs](https://github.com/YangKeao/tikv/blob/0a5cda977bd9a6707b4a56971c23f0e77e7a7322/components/tidb_query_expr/src/types/expr_eval.rs#L468)总从then_positions开始，直到整支成功才执行else；函数错误立即返回。
+原生入口先处理第0行，返回正则错误；共享循环先执行全部then行，返回第1行JSON错误。依据为[原始evaluator](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/evaluator.rs#L436)逐行失败即返回，以及[原始IF](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/scalar_function.rs#L1820)只求本行所选分支。IF不属于已有numeric batch支持集合，打开向量开关也不会使它变成先then后else。候选[expr_eval.rs](https://github.com/YangKeao/tikv/blob/0a5cda977bd9a6707b4a56971c23f0e77e7a7322/components/tidb_query_expr/src/types/expr_eval.rs#L468)总从then_positions开始，直到整支成功才执行else；函数错误立即返回。
 
-仅优先执行包含最早逻辑位置的分支仍不足以修正：
+整批条件也可能改变错误先后；交换分支顺序并不消除这类差异：
 
     IF(JSON_LENGTH(j), REGEXP_LIKE('a', '['), 7)
     j = ['[1]', '{']，逻辑行选择 = [0, 1]
 
-候选先计算整批条件，后续行的坏JSON仍会抢在第0行所选正则分支之前失败。首个错误的类别变了，不只是告警排列不同。将来加入状态后，排序错误结果也无法撤回已发生的状态变化、告警或失败之后不应执行的工作。
+候选先计算整批条件，后续行的坏JSON会先于第0行所选正则分支失败。这是同一批多个可达失败的先后区别，不能仅凭它违反用户已经放宽的顺序要求。错误类别的保留是指一个实际失败本身的类型与内容没有被改写；不能借此把来源顺序重新作为隐藏要求。
 
-修正采用设计第3节已有的显式执行合同：原本逐行回退的根，由**共享循环自己按逻辑行推进条件和所选分支**，同一次执行保留其栈、输入、上下文和状态；适配器只传调用语义与数据。既有numeric batch仍保留原有阶段顺序，不能笼统把所有可能失败的函数改成逐行，也不能由TiDB适配器逐行重新调用整个求值器。mask批量路径保留在有对应原始合同或已证明可重排的区域。按原始根/调用合同选择调度，不为每个来源复制一套解释器或创建profile。
+仍需保留短路需求、非诊断副作用及实际诊断内容/数量的既有合同。将来接入RAND/变量/BENCHMARK时，必须用其具体状态次数、状态顺序、跨批延续与停止行为约束调度；单纯把两个错误谁先返回作为否证不足以成立。现有mask可以保留，不把这两个纯错误反例作为增加有序路径的单独理由。
 
-验收须同时覆盖上述两个跨行首错反例、乱序/重复选择，以及失败前已发生告警和状态的内容/次数。仍只比较`is_err()`无法发现此问题。多根的ColumnMajor/RowMajor区别及Scalar与一行Vector区别继续保留，不用这次IF修正抹平。
+若状态或具体已执行诊断集合的反例证明需要有序执行，则由同一个共享循环推进所需范围，范围须包含条件，而非只改then/else顺序；不要由适配器逐行重跑整个求值器。原有numeric batch的阶段合同、多根ColumnMajor/RowMajor、Scalar与一行Vector仍各自明确，不笼统把所有可能失败的函数改成逐行。当前没有新的状态调用实测反例，状态支持继续作为原定M1工作推进。
 
 ### 2. JSON错误身份在共享边界丢失
 
@@ -188,4 +190,4 @@ MD5的自身数字返回声明现在明确拒绝。JSON_LENGTH接入真正的字
 
 原始SDK独立测试工作区当前HEAD确为548812e，唯一tracked修改为新增36行PB测试。日志终态与该测试相符；但这些日志没有完整命令、构建前后源码树身份和显式退出码，不能独立证明所有构建输入就是之后提交的固定源码。日志时间早于提交并不说明测试了错误源码，也不足以单独证明没有中间修改。后续记录命令、双仓库commit/tree或dirty摘要及退出状态即可，不为此重跑已经有证据的整套检查。
 
-本轮只读源码、Git统计及原始日志，没有新构建、产品测试、SQL或性能测量。下一步由ExpressionReuseEngineer先补共享有序调度与结构化诊断，再继续宽值实际运算、调用模式、RAND/变量/BENCHMARK及多根状态；完整M1、全范围体积和性能仍未验收。设计方向无须退回宿主协议。
+本轮只读源码、Git统计及原始日志，没有新构建、产品测试、SQL或性能测量。下一步由ExpressionReuseEngineer补结构化诊断，继续宽值实际运算、调用模式、RAND/变量/BENCHMARK及多根状态；只有具体需求或状态合同要求时才增加共享有序调度，纯错误排序不成为新前置条件；完整M1、全范围体积和性能仍未验收。设计方向无须退回宿主协议。
