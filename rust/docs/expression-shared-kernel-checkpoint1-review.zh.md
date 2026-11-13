@@ -248,3 +248,50 @@ JSON解析仍调用同一SDK解析器，专门的`parse_native_json`返回类型
 回归断言使用候选构建中的旧原生实现；相关expression/scalar_function/ops/JSON实现文件与原始364aef2的Git blob相同，依赖环境则仍属于候选。故这是未改原生实现的对照，不是单独重建原始依赖环境。日志仍缺完整构建输入及退出状态凭据，保留与上一轮相同的归属限制，不据此声称测试用了错误源码。
 
 本轮没有新产品构建或测试。宽值实际运算、RAND/变量/BENCHMARK、多根状态、完整诊断和性能仍未验收；新发现只要求修正实际需求边界，不恢复严格诊断顺序。
+
+
+## Checkpoint 5跟进
+
+2026-11-13复核固定TiDB `5a2f40623e6151a51cb46bd8e5372394f959f021` / TiKV `9293af18046b8447cae7bd9e1747bcd480403b3a`。[实现报告](https://github.com/YangKeao/tidb/blob/5a2f40623e6151a51cb46bd8e5372394f959f021/rust/docs/shared-kernel/checkpoint-5.md)已纠正上一轮的外层Vector断言。整根回退与非法UTF-8的1105修复成立，RAND/字符串变量/BENCHMARK已有受限范围的执行证据；**仍需将会话向量开关纳入投影调用选择，并保留或明确拒绝字符串变量携带的非默认信息。** 两项新发现来自固定源码审查，已交实现者，尚未由本审查执行新用例。
+
+### 已确认的修复和状态执行
+
+native编译现在为实际回退的整个根加一层OrderedRows，移除了每个IF的局部区域；当前接纳集合中只有纯signed plus/mul树走numeric Vector。完整outer及无IF的`NULL + JSON_LENGTH('{')`均增加了原始batch拒绝、原生NULL、共享NULL的对照；纯数值`NULL + MAX_INT*2`仍保留Scalar/Vector区别。不能把当前小集合的函数名判定直接推广到新增签名。
+
+非法UTF-8 JSON使用类型化Custom1105及原消息，空/坏UTF-8文档继续用3140，PB原cast未改。root-fallback-before日志记录真实1690失败，after15通过；json-utf8-before记录10000与1105不符，最终回归通过。这修正了行为及缺失的原始根对照，没有将错误预期机械改成通过。
+
+RAND节点在共享循环中执行，通过现有Columns能力取会话随机流；常量种子以冻结指令地址区分发生位置并延续状态，动态种子每次从现有SDK MySqlRng开始，NULL种子为0。原生也使用发生位置地址及相同常量/动态区别；本轮未发现接纳整数种子的序列差异。现有断言对照原生EvaluatorSuite的逐列RAND、两个常量种子的跨批次状态、另一个同时存活的新发生位置及重复动态种子。
+
+字符串变量节点求值和SDK的`eval_group`共同处理每行输出次序；NULL赋值不写入，后续getter看见原值。Repeat/RepeatEnd在同一循环中重设子段pc，实际重复执行函数副作用；NULL/负次数在类型检查前返回NULL，零次数先检查不支持的Vector体类型再跳过执行，正次数和嵌套重复有次数断言。guarded未选重复不发生随机取值。当前正常编译路径未发现新的Repeat栈或结束边界错误。
+
+实现仍以一个根一份RPN组成共享group入口，多输出遍历也在SDK；这不是另造表达式求值器，但不是设计中最终单个多根程序及统一scratch的全部实现。能力接口只接收名字、已求出的值和种子，没有回调宿主求子树。状态测试使用实现原生Columns能力的测试会话并对照旧原生求值器；没有运行真实SQL服务或证明所有会话生命周期。
+
+### 1. 共享投影没有读取会话的向量开关
+
+当前[SharedProjection](https://github.com/YangKeao/tidb/blob/5a2f40623e6151a51cb46bd8e5372394f959f021/rust/crates/tidb-expr/src/shared_kernel.rs#L644)接收原生Columns上下文，但仅按编译时variable-sensitive条件保存OutputOrder，未读取`enable_vectorized_expression()`。[SDK group入口](https://github.com/YangKeao/tikv/blob/9293af18046b8447cae7bd9e1747bcd480403b3a/components/tidb_query_expr/src/types/expr_eval.rs#L374)的Columns顺序总以Vector调用每个根。
+
+原始[EvaluatorSuite](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/evaluator.rs#L412)只有开关开启时才尝试numeric batch。现成原始测试`numeric_batch_does_not_suppress_nested_errors_on_null_rows`（同文件825–860行）明确要求：同一输入的`NULL列 + MAX_INT列*2`，关闭开关得到NULL，打开开关报溢出。新共享投影对于关闭开关的同一上下文仍报溢出。这是有效调用上下文中的需求差异，独立于错误先后放宽。
+
+修正须保留**输出组的遍历次序**与**根的调用方式**两层事实。关闭向量化时，原生仍可按列遍历根，只在每个根内部逐行；不能直接把OutputOrder改为Rows，否则会改变RAND等跨输出的取值次序。由上下文选择共享group内的调用方式，保留整根能力判定和原生特殊路径规则。已在Raft5e00ee95、9b7e9d8b发出完整开/关投影对照要求。
+
+### 2. 字符串变量读写丢失存储元信息
+
+当前声明为默认VarString的`SETVAR('copy', GETVAR_STRING('v'))`会接受会话v已存储的任意Datum::String或Datum::Bytes。[适配器](https://github.com/YangKeao/tidb/blob/5a2f40623e6151a51cb46bd8e5372394f959f021/rust/crates/tidb-expr/src/shared_kernel.rs#L710)读取时剥成Vec<u8>，写回时一律构造默认`Datum::new_string`。若v原有Latin1Bin排序规则，copy会变成默认排序规则；若v原是Bytes，copy会变成String。
+
+原生[uservar_as_kind](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/scalar_function.rs#L3056)对已有String/Bytes原样返回，SETVAR存储原Datum的clone；源码也明确讨论过编译时类型与运行时变量内容不同的接缝。这个反例不依赖未支持的数字变量转换；当前adapter确实接纳上述字符串值。现有测试只使用默认String并比较字节，不能发现该状态改变。
+
+增加完整会话存储Datum的断言，比较类型和排序规则。若本阶段只支持默认字符串，先在运行时接纳边界明确拒绝不支持的载体，不能静默归一化并报告兼容；完整支持时传递必要的类型化字符串信息，不用不透明句柄绕过值边界。已在Raft9b7e9d8b交实现者。这里证明的是共享API及会话值保真缺口，未运行后续SQL排序规则行为测试。
+
+### 体积与证据边界
+
+| 相对原始base的范围 | 新增 | 删除 | 总增删 |
+| --- | ---: | ---: | ---: |
+| Rust生产与测试 | 3619 | 52 | 3671 |
+| 构建/锁文件 | 1866 | 91 | 1957 |
+| 文档、清单和工具 | 8045 | 0 | 8045 |
+| 两个候选全部文件 | 13530 | 143 | 13673 |
+| 相对checkpoint4的全部文件 | 1232 | 41 | 1273 |
+
+独立核算与实现报告一致。原始日志确认最终native19、SDK34通过，限定库Clippy完成且有警告；lint到达预期末命令且没有记录错误。原生expression/scalar_function/evaluator/context/ops/JSON对照实现与原始Git blob一致，依赖环境仍为候选；日志未新增完整构建输入凭据，维持前轮归属限制。本审查没有运行新构建、产品测试或性能测量。
+
+整数种子、字符串变量及有限BENCHMARK证明了共享状态/重复机制的方向，不能扩展成全部变量类型、失败后状态、所有诊断或生命周期都已验证。M1仍需宽值实际算术、告警内容/次数及其余诊断适配；全函数兼容、完整项目预算、默认接入和性能继续待验收。纯错误先后不成为额外门槛。
