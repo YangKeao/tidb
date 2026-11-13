@@ -2,6 +2,8 @@
 
 作者 ExpressionReuseDesigner，2026-11-13，task #34。结论：可以沿此路线继续M1；本次局部实现尚不能通过M1验收。确认已复用原RPN循环，发现一个当前接纳范围内的FLOAT结果转换问题，以及程序类型元信息、默认依赖验证、清单生成和预算需要修正之处。没有发现必须重建宿主任务协议的依据。
 
+以上是checkpoint 1的固定结论；后续修复状态见文末“Checkpoint 2跟进”，保留初次发现便于核对修复依据。
+
 本次只读审查固定 TiDB `7e3a6366746b5f61df3726e6a8f5cd5c6c52a582` 与 TiKV `52d7be276763f6b527ea52e11005c9e21231bdc7`，比较原始 `364aef2bab5cc633ecb76a775ae8f36f86a6687d` / `548812e1ef57aef077a2062a9cc356640a6347f5`。不将之后的工作树改动算入本结论。
 
 实现与验收范围见 [固定checkpoint报告](https://github.com/YangKeao/tidb/blob/7e3a6366746b5f61df3726e6a8f5cd5c6c52a582/rust/docs/shared-kernel/checkpoint-1.md)。实现者报告4项定向测试及lint通过；本审查未重跑产品测试、构建、SDK检查或性能测量，以下行为反例来自源码推导，修复时须用原始入口固定预期并验证回归测试。
@@ -90,3 +92,29 @@ TiDB根`rust/Cargo.toml`新增workspace级patch；锁文件中原有依赖实际
 执行了固定对象`git show`、`git diff --numstat`、源文件搜索及JSON/TOML计数，交叉检查了上述源码链；审查文档单独提交，未修改实现者工作树。发布前检查文档链接对象和`git diff --cached --check`。没有新运行产品测试、构建、SQL或性能测量；4项定向测试和lint仍引用实现者固定checkpoint的报告。
 
 设计方向继续，但FLOAT反例、出口类型、默认依赖验证、清单与预算记录须跟进。task #33继续由ExpressionReuseEngineer实施，task #34跟进设计审查；本报告不标记完整M1或项目完成。
+
+## Checkpoint 2跟进
+
+2026-11-13复核固定TiDB `d52b7802e1527855d700b9ee0ce4df229f4a7847` / TiKV `4b492c3204cd46e15139006d0530e380fbf18740`。本次核对源码、原始日志和统计，没有新运行构建或产品测试。[实现报告](https://github.com/YangKeao/tidb/blob/d52b7802e1527855d700b9ee0ce4df229f4a7847/rust/docs/shared-kernel/checkpoint-2.md)说明了范围及未完成项。
+
+此前三个具体反例已修正：FLOAT/BIT等尚无共享结果转换的IF形状在编译时明确拒绝；Double/Decimal NULL保留类型，IF程序有明确出口类型；两侧Decimal parts拒绝不合法的首整数残字和末小数残字。拒绝未支持形状只是关闭错误接纳，不是完成FLOAT/BIT共享计算。程序元信息仍需与下一步finish校验及冻结一起完善。
+
+读取实现者同机`evidence/shared-kernel-refactor/`中的原始日志后核实：
+
+| 日志 | 实际终态 | 核对范围 |
+| --- | --- | --- |
+| review-regressions-before-2.log | 7项中4通过、3失败 | 正是FLOAT接纳、NULL出口类型、Decimal部分字三个反例 |
+| review-regressions-after.log | 同7项全部通过 | 固定提交含相应断言；FLOAT/BIT另比较原生Datum变体 |
+| default-compression-tests.log | 8通过、2忽略 | 关闭shared-kernel的压缩路径；忽略项在原始源码中已经存在 |
+
+首次`review-regressions-before.log`误跑旧5项，不作为失败证据。日志未提供独立构建输入哈希证明，本审查不把读取日志等同于重跑固定提交。lint成功仍引用实现者报告；默认压缩验证不代表protobuf、TLS、metrics等所有依赖消费者都已验证。SDK循环测试在checkpoint发布时尚未完成，未追加通过声明。
+
+按需读取现在确实由原共享循环访问ColumnRef触发，跳过的缺失列不再提前报错；signed Int列的`[7,2,7]`映射保留重复及NULL。PB入口仍先调用`ensure_columns_decoded`，再经同一输入接口执行；没有发现该次改动改变原PB短路或IF合同。动态分支、行/批差异和状态函数仍待完成，不能从常量条件测试推断它们通过。
+
+清单已不再截断首个test属性后的生产源码，BETWEEN入口恢复；ledger输入及排序身份哈希吻合，245身份/5例外和191/48/1/5候选分类不变。候选锚点仍可能是测试或注册，不能当成算法迁移成本证明。
+
+原始基线增删重算为`+10811/-135`、总10946；相对checkpoint 1为`+1446/-141`、总1587。源码与测试累计`+1120/-44`，总1164。修订预算的9350–17250已列核心加3650–4750储备等于13–22K，再单列9–12K开销，合计22–34K，算术无重复；当前非源码开销为9782。后续额外退休删除仍须排除核心中已计的调度删除以及算法搬迁旧端，完整成本仍未定界。
+
+本轮没有发现新的正常定型输入错值。一个手工构造API的接纳缺口仍在：MD5只检查参数求值族而忽略自身声明结果类型，故错误声明为数字结果也会被接受并返回字符串。没有发现正常SQL规划器会生成这种形状；建议随共享签名接纳加入一次结果类型检查，不扩大为任意畸形AST的全面审查。
+
+可以继续M1。下一次重点是同循环内动态分支/汇合、逻辑出现位置及借用生命周期，以及后续普通函数中避免重复复制列；本轮结论不表示完整M1、默认切换或性能验收。
