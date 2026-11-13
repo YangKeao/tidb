@@ -295,3 +295,58 @@ RAND节点在共享循环中执行，通过现有Columns能力取会话随机流
 独立核算与实现报告一致。原始日志确认最终native19、SDK34通过，限定库Clippy完成且有警告；lint到达预期末命令且没有记录错误。原生expression/scalar_function/evaluator/context/ops/JSON对照实现与原始Git blob一致，依赖环境仍为候选；日志未新增完整构建输入凭据，维持前轮归属限制。本审查没有运行新构建、产品测试或性能测量。
 
 整数种子、字符串变量及有限BENCHMARK证明了共享状态/重复机制的方向，不能扩展成全部变量类型、失败后状态、所有诊断或生命周期都已验证。M1仍需宽值实际算术、告警内容/次数及其余诊断适配；全函数兼容、完整项目预算、默认接入和性能继续待验收。纯错误先后不成为额外门槛。
+
+
+## Checkpoint 6跟进
+
+2026-11-13复核固定TiDB `975f35d7a341d1fc5abd915c46d030832465bf8a` / TiKV `8b59ab429a3e48662f8781b70d9727da9afdfd0a`。[实现报告](https://github.com/YangKeao/tidb/blob/975f35d7a341d1fc5abd915c46d030832465bf8a/rust/docs/shared-kernel/checkpoint-6.md)提交了最小M1验证集。**调用方式、REGEXP参数需求及可复核证据有进展，但Decimal乘法丢失隐藏精度、SETVAR常量载体检查仍有旁路，当前尚不接受最小M1完成。** 两项均来自固定源码推导，本审查没有自行运行新反例；已交实现者补原始入口对照和修复前失败记录。
+
+### 已核实的修复与范围
+
+SharedProjection将会话向量开关作为InvocationMode传给共享group，OutputOrder独立保留；关闭向量化不再把多个RAND根改为逐行交错。新增原生EvaluatorSuite对照覆盖开关两种设置。GETVAR拒绝Bytes及非默认排序规则String，默认String的SETVAR结果比较实际session Datum；这关闭了上一轮getter入口的错误接纳，但尚不是所有变量值来源的完整检查。
+
+Real和Decimal算术、字符串到Real转换均为同一RPN循环中的类型化指令；完整Real列在临时行选择时保留NaN等原始域。Real plus的Scalar调用即使左侧NULL仍执行右式，其他已接纳Scalar算术按实际签名跳过；Vector继续完整操作数阶段。日志保留了先由原始实现否证错误测试预期、再暴露候选错误、最后修复的过程，没有将错误预期当作原生合同。
+
+REGEXP逐参数检查NULL和UTF-8，停止后不执行后续SETVAR；语法检查仍在所有已需求参数之后，与原生入口一致。native模式的错误码/文本映射与PB明确区分，PB原builder继续使用原模式；429项SDK表达式测试包含原PB算术及正则用例。此次未发现额外的接纳路径控制错误，但没有把测试结果扩展为所有正则语义、缓存性能或所有SQL入口的证明。
+
+原生EvaluatorSuite在读取向量开关前还尝试专用Decimal路径。本轮接纳集合与该路径的交集是纯Decimal常量加减乘树；该路径失败后回退到开关控制路径，当前未由此推导额外的需求错误。不能因此省略真实Suite对照，下面的乘法问题也涉及这条优化路径的数值结果。
+
+### 1. Decimal算法提取遗漏了有可见语义的快路径
+
+[原始Decimal::mul_mysql](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-datatype/src/decimal/mod.rs#L887)先调用`try_mul_mysql_fast`。符合i128系数及结果小数位条件时，它按两侧storage_scale相加保留完整系数，不把隐藏位舍入到显示位数。新[共享mul_mysql](https://github.com/YangKeao/tikv/blob/8b59ab429a3e48662f8781b70d9727da9afdfd0a/components/tidb_query_expr/src/types/native_decimal.rs#L204)只提取了通用九字分支，末尾按result_scale舍入。两条路径不能作为纯性能差别互换。
+
+全部常量和签名均为NewDecimal，除法精度增量为默认4时：
+
+    ((8 / 7) * 1) / 100
+
+第一个除法在原生及共享中都产生coefficient `1142857142`、storage_scale 9、result_scale 4。原生乘1保留完整系数；共享乘法则舍入为`1142900000`，虽然这一时刻的显示小数都为`1.1429`，内部值已经不同。再除100后，源码推导原生显示`0.01142857`，共享显示`0.01142900`。这是正常已接纳的组合运算，不依赖Decimal列或未支持的混合转换，也与warning/error顺序无关。
+
+应先补完整中间载体和最终值的原始求值器对照，再保留或等价实现原快路径的数值规则。已有192组字边界乘法使用直接字面值，不能代替“隐藏精度来自前一个运算”的组合输入。算术迁移以整个可达算法合同为单位；不能因为名称为fast就删除其行为。已在Raft ed873ed6/64ec0dcb交实现者。
+
+### 2. SETVAR常量仍能绕过载体接纳检查
+
+[共享常量编译](https://github.com/YangKeao/tidb/blob/975f35d7a341d1fc5abd915c46d030832465bf8a/rust/crates/tidb-expr/src/shared_kernel.rs#L165)仍将Datum::Bytes和任意排序规则的Datum::String剥成字节；SETVAR只检查静态默认VarString声明。直接构造默认VarString声明的常量，其实际Datum为Bytes或非默认String，然后作为`SETVAR('copy', value)`的值参数，整个根仍会被接纳。当前顶层字符串字面值拒绝不作用于这个嵌套常量。
+
+原始Constant对字面值返回clone，原始[SETVAR](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/scalar_function.rs#L2014)保存实际Datum；共享setter一律构造默认String，因而仍会改变kind或排序规则。它没有经过本轮新增的GETVAR运行时检查。这里确认共享API可构造的接纳缺口，未证明正常SQL解析器一定生成这种静态/运行时组合。
+
+本阶段可继续明确拒绝这些载体，但检查必须在丢失信息之前覆盖所有到达SETVAR的值来源，包括嵌套SETVAR；仅检查session getter不足。当前字符串IF已被结果类型检查拒绝，保留组合拒绝断言即可，不把它列为已接纳的第三个反例，也不要求扩展支持。或者引入必要的类型化字符串信息贯通。测试应比较完整存储Datum，不能只比较字节；无须通用值句柄或宿主求子树协议。已在Raft b1d84e87/ed873ed6交实现者。
+
+### 独立计数和测试归属
+
+| 相对原始base的范围 | 新增 | 删除 | 总增删 |
+| --- | ---: | ---: | ---: |
+| Rust生产与测试 | 5636 | 62 | 5698 |
+| 构建/锁文件 | 1866 | 91 | 1957 |
+| 文档、清单和工具 | 8382 | 0 | 8382 |
+| 两个候选全部文件 | 15884 | 153 | 16037 |
+| 相对checkpoint5的全部文件 | 2436 | 92 | 2528 |
+
+按固定Git diff及各Rust文件终端测试模块独立分类，各项与实现报告一致。两个新算术模块共913行，已完整计入生产代码；原生旧副本仍服务默认路径和对照，未给未来删除记信用。构建与文档合计10339行，当前核心及测试5698行，都只是局部候选；不能据此承诺完整范围10K，或把暂定22–34K局部预算当作最终总量。
+
+从两个固定提交的Git blobs重建5525项后缀限定源文件集合，canonical SHA256与[validation manifest](https://github.com/YangKeao/tidb/blob/975f35d7a341d1fc5abd915c46d030832465bf8a/rust/docs/shared-kernel/checkpoint-6-validation.json)的`6a8b5f6ac419862238d5d408b7c87af140c903c45644bde51c9fc040753dd54f`精确一致；14份原始日志和2个留存测试二进制的hash也一致。最终日志确认native29通过、1323过滤；SDK表达式库429通过、0过滤；限定表达式/执行器库Clippy完成并有警告。这比上一轮仅有可变工作树与终态日志的归属证据更强。
+
+它仍不是完整构建闭包：集合不包含全部工具链、外部依赖、构建环境和生成物；二进制hash是在恢复后观察，不能独立证明每次命令实际使用哪个二进制。原生oracle算法与原始基线一致，仅scalar_function的既有诊断renderer改为pub(crate)，依赖仍是候选环境。本审查没有重新运行产品构建、测试或SQL性能测量。
+
+完整make clippy两次原始日志分别是direct Cargo无法派发`+1.92.0`而失败、修正调用后在deny准备期间Terminated；没有完整workspace/deny通过结果，具体终止信号不由日志确定。make lint留存日志到最后命令，实现者记录退出0；该日志无显式退出码且未进入manifest，保留这一区分。未完成门槛不阻止发布审查候选，也不能记为完成。
+
+本轮文档核验使用`git cat-file -e REV:PATH`检查固定链接对象、相对链接及`git diff --cached --check`。当前两项具体差异关闭前继续M1；完整函数覆盖、默认接入、旧路径删除和性能仍是后续里程碑。
