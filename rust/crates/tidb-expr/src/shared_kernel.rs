@@ -1970,6 +1970,278 @@ mod tests {
         }
     }
 
+    // Test-only demanded slot: no product parameter node or conversion admission.
+    struct ParameterProbe {
+        value: Option<Datum>,
+        reads: std::cell::Cell<usize>,
+        precision: u32,
+    }
+    impl ParameterProbe {
+        fn new(value: Option<Datum>, precision: u32) -> Self {
+            Self {
+                value,
+                reads: std::cell::Cell::new(0),
+                precision,
+            }
+        }
+    }
+    impl crate::context::Columns for ParameterProbe {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn param_value(&self, order: usize) -> Result<Datum, crate::EvalError> {
+            assert_eq!(order, 0);
+            self.reads.set(self.reads.get() + 1);
+            self.value
+                .clone()
+                .ok_or(crate::EvalError::Unsupported("unbound prepared parameter"))
+        }
+        fn div_precision_increment(&self) -> u32 {
+            self.precision
+        }
+    }
+    impl InputColumns for ParameterProbe {
+        fn div_precision_increment(&self) -> u32 {
+            self.precision
+        }
+        fn read<'a>(
+            &'a self,
+            schema: &'a [tipb::FieldType],
+            offset: usize,
+            rows: &'a [usize],
+            _: &mut EvalContext,
+        ) -> InputResult<'a> {
+            let value =
+                crate::context::Columns::param_value(self, offset).map_err(native_policy_error)?;
+            let value = match value {
+                Datum::Decimal(value) => Some(value),
+                Datum::Null => None,
+                _ => {
+                    return Err(tidb_query_expr::evaluation_error::EvaluateError::Other(
+                        "prototype slot accepts Decimal/NULL only".into(),
+                    )
+                    .into())
+                }
+            };
+            Ok(RpnStackNode::ExpressionVector {
+                value: ExpressionVector::Decimal(vec![value; rows.len()]),
+                field_type: &schema[offset],
+            })
+        }
+    }
+    fn parameter_probe_eval(
+        program: &SharedExpression,
+        input: &ParameterProbe,
+        rows: &[usize],
+        mode: InvocationMode,
+    ) -> Result<Vec<Datum>, SharedEvaluationError> {
+        // Match the native adapter boundary: the RPN engine requires a nonempty batch.
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let result = program
+            .program
+            .eval_input_mode(
+                &mut EvalContext::default(),
+                &program.schema,
+                input,
+                rows,
+                rows.len(),
+                mode,
+            )
+            .map_err(SharedEvaluationError::from)?;
+        native_output(result, rows.len()).map_err(SharedEvaluationError::from)
+    }
+
+    #[test]
+    fn shared_kernel_parameter_contract_native_forms_and_rejection() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::{Decimal, EvalType, FieldTypeCode};
+        let mut empty = Chunk::new_empty(&[]);
+        empty.set_num_virtual_rows(1);
+        let ty = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(3);
+        let mut marker = Constant::new(Datum::Decimal(Decimal::from_int(99)), ty.clone());
+        marker.param_marker = Some(ParamMarker { order: 0 });
+        let unbound = ParameterProbe::new(None, 4);
+        for deferred in [false, true] {
+            let mut constant = marker.clone();
+            if deferred {
+                // A deliberately unbound deferred expression must not run when a marker exists.
+                let mut other = marker.clone();
+                other.param_marker = Some(ParamMarker { order: 1 });
+                constant.deferred_expr = Some(Box::new(Expression::Constant(other)));
+            }
+            assert!(SharedExpression::compile(&Expression::Constant(constant.clone())).is_err());
+            assert_eq!(unbound.reads.get(), 0);
+            for value in [
+                Datum::Int(7),
+                Datum::Null,
+                Datum::new_string(b"2.5".to_vec()),
+            ] {
+                let ctx = ParameterProbe::new(Some(value.clone()), 4);
+                assert_eq!(
+                    constant.get_type(&ctx).unwrap().eval_type(),
+                    tidb_datatype::infer_param_type_from_datum(&value).eval_type()
+                );
+                let raw = constant.eval_in(&ctx).unwrap();
+                let typed = constant
+                    .eval_typed_as_on_row(&ctx, empty.get_row(0), EvalType::Decimal)
+                    .unwrap();
+                if value.is_null() {
+                    assert!(raw.is_null() && typed.is_null());
+                } else {
+                    let expected = if matches!(value, Datum::Int(_)) {
+                        "7"
+                    } else {
+                        "2.5"
+                    };
+                    assert_same_decimal(&typed, &Datum::Decimal(Decimal::from_literal(expected)));
+                    if deferred {
+                        assert!(matches!(raw, Datum::Decimal(_)));
+                    } else {
+                        assert_eq!(raw, value);
+                    }
+                }
+                assert_eq!(constant.value, Datum::Decimal(Decimal::from_int(99)));
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_parameter_contract_demanded_slot_and_missing_diagnostics() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let ty = FieldType::new(FieldTypeCode::NewDecimal)
+            .with_flen(65)
+            .with_decimal(-1);
+        let literal = |n| numeric_literal(Datum::Decimal(Decimal::from_int(n)), &ty);
+        let mut marker = Constant::new(Datum::Decimal(Decimal::from_int(99)), ty.clone());
+        marker.param_marker = Some(ParamMarker { order: 0 });
+        let parameter = Expression::Constant(marker);
+        let mut column = Column::new(1, ty.clone());
+        column.index = 0;
+        let slot = Expression::Column(column);
+        let arithmetic = |op, arg, right| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(op),
+                ty.clone(),
+                vec![arg, literal(right)],
+            ))
+        };
+        let choose = |condition, branch| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("if"),
+                ty.clone(),
+                vec![
+                    numeric_literal(
+                        Datum::Int(condition),
+                        &FieldType::new(FieldTypeCode::LongLong),
+                    ),
+                    branch,
+                    literal(9),
+                ],
+            ))
+        };
+        let unbound = ParameterProbe::new(None, 4);
+        let native = choose(1, arithmetic("div", parameter.clone(), 3));
+        assert!(SharedExpression::compile(&native).is_err());
+        let program =
+            SharedExpression::compile(&choose(1, arithmetic("div", slot.clone(), 3))).unwrap();
+        assert_eq!(unbound.reads.get(), 0);
+        let mut retained = Vec::new();
+        for precision in [4, 8] {
+            for value in [
+                Datum::Decimal(Decimal::from_int(1)),
+                Datum::Null,
+                Datum::Decimal(Decimal::from_scaled_i128(125, 2)),
+            ] {
+                let ctx = ParameterProbe::new(Some(value), precision);
+                let expected = crate::eval_expression_once(&native, &ctx).unwrap();
+                for (mode, rows) in [
+                    (InvocationMode::Scalar, vec![0]),
+                    (InvocationMode::Vector, vec![0]),
+                    (InvocationMode::Vector, vec![2, 0, 2]),
+                ] {
+                    let got = parameter_probe_eval(&program, &ctx, &rows, mode).unwrap();
+                    for value in &got {
+                        if expected.is_null() {
+                            assert!(value.is_null());
+                        } else {
+                            assert_same_decimal(value, &expected);
+                        }
+                    }
+                    retained.push((got, expected.clone()));
+                }
+            }
+        }
+        let dead_native = choose(0, arithmetic("div", parameter.clone(), 3));
+        let dead =
+            SharedExpression::compile(&choose(0, arithmetic("div", slot.clone(), 3))).unwrap();
+        assert_same_decimal(
+            &crate::eval_expression_once(&dead_native, &unbound).unwrap(),
+            &Datum::Decimal(Decimal::from_int(9)),
+        );
+        parameter_probe_eval(&dead, &unbound, &[0, 1], InvocationMode::Vector).unwrap();
+        assert!(
+            parameter_probe_eval(&program, &unbound, &[], InvocationMode::Vector)
+                .unwrap()
+                .is_empty()
+        );
+        parameter_probe_eval(&dead, &unbound, &[0], InvocationMode::Scalar).unwrap();
+        let mut empty = Chunk::new_empty(&[]);
+        let mut output = Chunk::new_empty(std::slice::from_ref(&ty));
+        crate::evaluator::EvaluatorSuite::new(vec![native.clone()], false)
+            .run(&unbound, &mut empty, &mut output)
+            .unwrap();
+        assert!(program
+            .evaluate_with_context(
+                &empty,
+                &[],
+                &mut EvalContext::default(),
+                &unbound,
+                InvocationMode::Vector
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(unbound.reads.get(), 0);
+        assert!(parameter_probe_eval(&program, &unbound, &[0], InvocationMode::Scalar).is_err());
+        let integer = ParameterProbe::new(Some(Datum::Int(7)), 4);
+        assert!(crate::eval_expression_once(&native, &integer).is_ok());
+        assert!(parameter_probe_eval(&program, &integer, &[0], InvocationMode::Scalar).is_err());
+        let overflow_native = arithmetic("mul", parameter, 10);
+        let overflow = SharedExpression::compile(&arithmetic("mul", slot, 10)).unwrap();
+        let huge = ParameterProbe::new(
+            Some(Datum::Decimal(Decimal::from_literal(&"9".repeat(81)))),
+            4,
+        );
+        let expected = crate::eval_expression_once(&overflow_native, &huge).unwrap_err();
+        let got = parameter_probe_eval(&overflow, &huge, &[0], InvocationMode::Scalar).unwrap_err();
+        let crate::EvalError::DataOutOfRange { expression, .. } = expected else {
+            panic!("expected overflow")
+        };
+        assert!(expression.contains(&"9".repeat(81)));
+        assert_eq!(got.code, Some(1690));
+        assert!(
+            !got.message.contains(&"9".repeat(81)),
+            "frozen slot text cannot report the current parameter"
+        );
+        let fresh = ParameterProbe::new(Some(Datum::Decimal(Decimal::from_int(2))), 8);
+        assert_same_decimal(
+            &parameter_probe_eval(&overflow, &fresh, &[0], InvocationMode::Scalar).unwrap()[0],
+            &Datum::Decimal(Decimal::from_int(20)),
+        );
+        assert!(parameter_probe_eval(&program, &fresh, &[0], InvocationMode::Scalar).is_ok());
+        for (values, expected) in retained {
+            for value in values {
+                if expected.is_null() {
+                    assert!(value.is_null());
+                } else {
+                    assert_same_decimal(&value, &expected);
+                }
+            }
+        }
+    }
+
     #[test]
     fn shared_kernel_decimal_column_metadata_and_error_recovery() {
         use tidb_datatype::{Decimal, FieldTypeCode};

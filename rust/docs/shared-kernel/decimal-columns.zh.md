@@ -14,7 +14,7 @@ SDK仍为`d822fbf9fbee8e0b635974a8d38e42f9e73f067a`，本轮没有SDK改动。
 ## 实现与接纳边界
 
 只修改`tidb-expr/src/shared_kernel.rs`的既有绑定和输入读取。
-绑定由`(index, EvalType)`改为`(index, 原FieldType)`；相同物理列若完整字段不同，
+绑定由`(index, EvalType)`改为`(index, 原FieldType)`；每个编译根内，同一物理列若完整字段不同，
 明确拒绝编译，不按求值类型合并。长度、小数位、64位标记、字符集／排序规则等
 保留在原类型中；RPN schema仍仅提供这里已接纳的类型分派。
 Decimal列接纳补齐schema和ExpressionVector::Decimal输入路径，旧Int／Real／Bytes
@@ -29,7 +29,7 @@ Decimal的节点中间值仍是同一个原Decimal对象，不经Chunk格式往�
 
 没有prepare预读、跨调用值缓存、宿主子树回调或第二个求值循环。
 每次调用提供新Chunk与上下文；只物化共享循环需求的物理行。
-同一物理列声明不同现在可能被拒绝，这是明确的候选接纳边界，不静默采用首次声明。
+同一编译根内的物理列声明冲突会被拒绝；不同根各自绑定，不是投影级统一拒绝。
 默认生产入口仍未切换到这份候选实现。
 
 ## 功能验证

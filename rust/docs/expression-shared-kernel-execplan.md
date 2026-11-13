@@ -300,3 +300,27 @@ slower than nativeVector6.59us for64 rows; sharedScalar31.56us also exceeds nati
 Scalar21.59us. This slice demonstrates input/reuse behavior, not performance
 acceptance. Full inputs, failed attempts, library hashes and total changes are
 preserved in shared-kernel/decimal-columns.zh.md and its receipt.
+
+
+## Task39 — bounded parameter rebinding contract
+
+
+Designer edc94a9c requests a short contract table and minimal native differential
+proof/prototype before any product parameter admission. First correct task38's
+metadata-conflict wording to per compiled root. Trace the actual prepared-plan
+owner, dynamic parameter type inference and rebuild decision. Distinguish generic
+parameter evaluation, typed evaluation and simultaneous ParamMarker/DeferredExpr.
+Use existing Decimal arithmetic/IF to demonstrate one frozen program with changed
+value/NULL/context, no prepare/dead-branch/empty-batch parameter reads, error
+recovery and old result survival. Check overflow diagnostics use the current value.
+If current interfaces cannot preserve this contract, retain product rejection and
+report the smallest counterexample and required interfaces; no broad binding
+framework or fallback to the old evaluator. Tests may use the existing RPN input
+interface as an explicitly test-only fixed-type slot prototype.
+
+### Progress
+
+- [x] Claim task39 and correct per-root metadata wording.
+- [x] Trace actual SELECT cache owner: asymmetric Decimal compatibility, separate NULL/type keys, per-execution parameter Arc and generation check.
+- [x] Run focused native forms and demanded-slot proof: two new tests pass; integer conversion and current-value overflow text remain concrete counterexamples. RPN empty batches require the existing adapter guard.
+- [ ] Publish contract, limits, evidence and complete change counts.
