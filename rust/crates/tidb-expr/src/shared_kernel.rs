@@ -1613,6 +1613,27 @@ mod tests {
             vec![numeric_literal(Datum::Int(7), &integer)],
         ));
         let projection = SharedProjection::compile(&[rand.clone(), rand.clone()]).unwrap();
+        // Two same-seed sites inside ONE RPN program need distinct local slots.
+        let sum = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            real.clone(),
+            vec![rand.clone(), rand.clone()],
+        ));
+        let sum = SharedExpression::compile(&sum).unwrap();
+        let effects = Session::default();
+        let mut execution = sum.start_execution(&effects);
+        let oracle = crate::MysqlRng::new_with_seed(7);
+        for mode in [InvocationMode::Scalar, InvocationMode::Vector] {
+            let mut input = Chunk::new_empty(&[]);
+            input.set_num_virtual_rows(1);
+            assert_eq!(
+                execution
+                    .evaluate(&input, &[0], &mut EvalContext::default(), mode)
+                    .unwrap(),
+                vec![Datum::Real(oracle.gen() * 2.0)]
+            );
+        }
+
         for scalar in [false, true] {
             let effects = Session {
                 vectorized_off: scalar,
