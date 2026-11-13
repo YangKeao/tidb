@@ -563,3 +563,40 @@ Pending implementation and regression evidence.
 ### Outcomes and limits
 
 Task45 preserves the original shared frame loop and isolates seeded state by execution/local instruction. The runtime before witness fails as expected; 47 shared, 8 parameter, 430 independent SDK, one real StmtContext integration and one actual PREPARE/EXECUTE check pass. The initial executor unit-test target is blocked by seven unchanged TableResolver fixtures missing clause_message; the dedicated integration target exercises the real owner without compiling those unrelated unit fixtures. New test import/admission corrections and all failed attempts are retained. State sizes are SDK64/expression88/projection48 bytes, excluding dynamic maps/root vectors; no performance improvement is claimed. See shared-kernel/execution-lifecycle.zh.md and its validation receipt for fixed sources, all counts and limitations. Default SQL and cross-EXECUTE caching remain outside this implementation.
+
+## Task46: typed DATE through the original value owner
+
+
+This plan follows PLANS.md and Designer b9f2f967. Native and protobuf DATE must share a pure algorithm in tidb-datatype while preserving their different zero-date and hidden-clock policies. Shared values carry the original Time; only Time/NULL constants, actual Chunk columns and IF results are initially admitted. No string/number/Duration/parameter conversion, default SQL integration, other time families or new performance matrix belongs here.
+
+### Progress
+
+
+- [x] Pin old native and PB expected behavior, including all-zero/partial-zero and hidden clock.
+- [x] Extract original-owner value policy, migrate old native/PB DATE and pin SDK Git owner.
+- [x] Add shared Time scalar/vector, input/IF/DATE/owned/direct output through the existing frame loop.
+- [ ] Verify policies, FSP/domain distinctions, demand/diagnostics, columns, error recovery and SDK regression; publish source correspondence and all counts.
+
+### Plan and validation
+
+
+Edit rust/crates/tidb-datatype/src/mysql_time.rs for a pure DATE operation returning no value when the explicit zero policy rejects input. Keep diagnostics in native time_fn/mod.rs and SDK impl_time.rs. Add narrowly named unchecked memory-bit accessors to SDK codec/mysql/time/mod.rs; expression code maps semantic TimeType/FSP and calendar bits, never storage packed/timezone conversion. Native Time/SDK Time metadata are not universally interchangeable: SDK nibble15 is Date, native nibble15 is Timestamp/FSP7. Preserve pre-clear zero checks and existing Chunk FSP validation. Extend shared carrier variants, checked RPN node, original loop and NativeInput/native_output; no second evaluator or host subtree callback. DATE policies run for every demanded row, even constant input, because native DATE is scalar fallback.
+
+Run cargo test -p tidb-expr --features shared-kernel --lib shared_kernel and targeted native DATE/SDK DATE tests before/after; full independent tidb_query_expr library regression, datatype and Chunk time selectors, scoped Clippy, rustfmt and root make lint complete validation. Use the existing declared toolchain and environment from the shared-kernel design. Fix only scoped failures; preserve every attempt under evidence/typed-date. If necessary interfaces force a general time framework, save the smallest fixed prototype and concrete counterexample instead of expanding scope.
+
+### Surprises & Discoveries
+
+
+Native DATE checks all-zero separately and always clears the clock. SDK DATE rejects zero month/day regardless of mode and its existing Date setter preserves hidden clock. Original Time/NULL argument casts are identity; other domains require policies outside this batch.
+
+The original checked constructor clamps FSP7 to6; it does not reject it. The expected-panic test failed and the Designer corrected the design (6e2c852f). Keep unchecked constant FSP7, original Chunk getter FSP6, and SDK nibble15 Date/FSP0 as three separate contracts. Full native Expression formatting of FSP7 already panics, so its typed DATE signature is the limited original oracle. New NULL-array rejection was tested failing before the guard and passing afterward.
+
+### Decision Log
+
+
+Keep frontend diagnostics and conversion admission; share only the original-owner pure value operation. Original Time carriers retain hidden fields, while Chunk retains its original precision normalization. Frozen programs and explicit execution objects remain task45's owners.
+
+### Outcomes & Retrospective
+
+
+Implementation is complete; final independent SDK regression and evidence publication are in progress. 53 shared, 34 original Time, 21 native time and one DATE source-row tests pass; scoped Clippy and root lint exit0. No acceptance or performance claim yet.

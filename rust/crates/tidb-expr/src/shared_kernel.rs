@@ -68,9 +68,15 @@ pub struct SharedExpression {
     program: RpnExpression,
     columns: Vec<(usize, tidb_datatype::FieldType)>,
     schema: Vec<tipb::FieldType>,
+    result_type: Option<tidb_datatype::FieldType>,
 }
 
 impl SharedExpression {
+    /// Exact native declaration; protobuf execution types do not replace it.
+    pub fn result_type(&self) -> Option<&tidb_datatype::FieldType> {
+        self.result_type.as_ref()
+    }
+
     /// Compile the admitted native expression subset without evaluating it.
     pub fn compile(expression: &Expression) -> Result<Self, String> {
         if matches!(expression, Expression::Constant(c) if matches!(c.literal_value(), Some(Datum::Bytes(_) | Datum::String(_))))
@@ -84,6 +90,7 @@ impl SharedExpression {
             Enter(&'a Expression),
             DecimalOperand(&'a Expression),
             Md5,
+            Date,
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
             Variable {
@@ -136,6 +143,25 @@ impl SharedExpression {
                     let datum = c
                         .literal_value()
                         .ok_or("shared kernel requires a literal constant")?;
+                    if matches!(datum, Datum::Time(_))
+                        || c.ret_type.as_ref().is_some_and(is_time_type)
+                    {
+                        let ty = c
+                            .ret_type
+                            .as_ref()
+                            .filter(|t| is_time_type(t) && !t.is_array())
+                            .ok_or("Time constant requires a time declaration")?;
+                        let value = match datum {
+                            Datum::Null => None,
+                            Datum::Time(value) => Some(*value),
+                            _ => return Err("time declaration does not match literal".into()),
+                        };
+                        nodes.push(RpnExpressionNode::ExpressionConstant {
+                            value: ExpressionScalar::Time(value),
+                            field_type: time_type(ty),
+                        });
+                        continue;
+                    }
                     let extended = match datum {
                         Datum::Null => match c.ret_type.as_ref().map(|t| t.eval_type()) {
                             Some(tidb_datatype::EvalType::Real) => {
@@ -195,7 +221,10 @@ impl SharedExpression {
                             if tp.collation_name() == admitted.collation_name() => {}
                         tidb_datatype::FieldTypeCode::Double if !tp.is_unsigned() => {}
                         tidb_datatype::FieldTypeCode::LongLong if !tp.is_unsigned() => {}
-                        tidb_datatype::FieldTypeCode::NewDecimal => {}
+                        tidb_datatype::FieldTypeCode::NewDecimal
+                        | tidb_datatype::FieldTypeCode::Date
+                        | tidb_datatype::FieldTypeCode::Datetime
+                        | tidb_datatype::FieldTypeCode::Timestamp => {}
                         _ => return Err("column type is outside shared input admission".into()),
                     };
                     if tp.is_array() {
@@ -215,6 +244,39 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::ColumnRef { offset });
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.func_name.lowercase() == "date" =>
+                {
+                    if f.args.len() != 1
+                        || f.ret_type.as_ref().is_none_or(|t| {
+                            t.code() != tidb_datatype::FieldTypeCode::Date || t.is_array()
+                        })
+                    {
+                        return Err("DATE requires one argument and a Date result".into());
+                    }
+                    if f.args[0].static_type().is_some_and(|t| t.is_array()) {
+                        return Err("DATE array conversion is outside shared admission".into());
+                    }
+                    work.push(Visit::Date);
+                    if matches!(&f.args[0], Expression::Constant(c) if matches!(c.literal_value(), Some(Datum::Null)))
+                    {
+                        nodes.push(RpnExpressionNode::ExpressionConstant {
+                            value: ExpressionScalar::Time(None),
+                            field_type: FieldTypeTp::DateTime.into(),
+                        });
+                    } else {
+                        if f.args[0]
+                            .static_type()
+                            .is_none_or(|t| !is_time_type(t) || t.is_array())
+                        {
+                            return Err("DATE time conversion is outside shared admission".into());
+                        }
+                        work.push(Visit::Enter(&f.args[0]));
+                    }
+                }
+                Visit::Date => nodes.push(RpnExpressionNode::NativeDate {
+                    field_type: FieldTypeTp::Date.into(),
+                }),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.func_name.lowercase() == "benchmark" =>
                 {
@@ -497,6 +559,9 @@ impl SharedExpression {
                         tidb_datatype::FieldTypeCode::LongLong
                             | tidb_datatype::FieldTypeCode::Double
                             | tidb_datatype::FieldTypeCode::NewDecimal
+                            | tidb_datatype::FieldTypeCode::Date
+                            | tidb_datatype::FieldTypeCode::Datetime
+                            | tidb_datatype::FieldTypeCode::Timestamp
                     ) || declared.is_unsigned()
                         || declared.is_array()
                     {
@@ -508,8 +573,10 @@ impl SharedExpression {
                         .ok_or("IF requires a return type")?
                         .eval_type();
                     if f.args[1..].iter().any(|arg| {
-                        arg.static_type()
-                            .is_none_or(|t| t.eval_type() != result_type)
+                        arg.static_type().is_none_or(|t| {
+                            t.eval_type() != result_type
+                                && !(is_time_type(t) && is_time_type(declared))
+                        })
                     }) {
                         return Err(
                             "IF currently requires branches explicitly cast to its result type"
@@ -675,6 +742,7 @@ impl SharedExpression {
                 tidb_datatype::FieldTypeCode::LongLong => FieldTypeTp::LongLong.into(),
                 tidb_datatype::FieldTypeCode::Double => FieldTypeTp::Double.into(),
                 tidb_datatype::FieldTypeCode::NewDecimal => FieldTypeTp::NewDecimal.into(),
+                _ if is_time_type(tp) => time_type(tp),
                 _ => bytes_type(),
             })
             .collect();
@@ -711,6 +779,7 @@ impl SharedExpression {
             program,
             columns,
             schema,
+            result_type: expression.static_type().cloned(),
         })
     }
 
@@ -897,7 +966,11 @@ impl SharedProjectionExecution<'_, '_> {
                 .tp()
             {
                 FieldTypeTp::NewDecimal => tidb_chunk::column::MY_DECIMAL_STRUCT_SIZE,
-                FieldTypeTp::Double | FieldTypeTp::LongLong => 8,
+                FieldTypeTp::Double
+                | FieldTypeTp::LongLong
+                | FieldTypeTp::Date
+                | FieldTypeTp::DateTime
+                | FieldTypeTp::Timestamp => 8,
                 _ => -1,
             };
             if output.column(col).type_size() != expected {
@@ -1038,6 +1111,10 @@ impl InputColumns for NativeInput<'_> {
     fn div_precision_increment(&self) -> u32 {
         self.effects.div_precision_increment()
     }
+    fn date_modes(&self) -> tidb_datatype::DateModes {
+        self.effects.date_modes()
+    }
+
     fn handle_truncate(&self, message: &str) -> tidb_query_expr::evaluation_error::Result<()> {
         self.effects
             .handle_truncate(message)
@@ -1120,6 +1197,16 @@ impl InputColumns for NativeInput<'_> {
             });
         }
         let column = self.chunk.column(index);
+        if eval_type == EvalType::DateTime {
+            return Ok(RpnStackNode::ExpressionVector {
+                value: ExpressionVector::Time(
+                    rows.iter()
+                        .map(|row| (!column.is_null(*row)).then(|| column.get_time(*row)))
+                        .collect(),
+                ),
+                field_type: &schema[offset],
+            });
+        }
         if eval_type == EvalType::Real {
             return Ok(RpnStackNode::ExpressionVector {
                 value: ExpressionVector::Real(
@@ -1217,8 +1304,28 @@ fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_e
     EvaluateError::Custom { code, msg }.into()
 }
 
+fn is_time_type(tp: &tidb_datatype::FieldType) -> bool {
+    use tidb_datatype::FieldTypeCode;
+    matches!(
+        tp.code(),
+        FieldTypeCode::Date | FieldTypeCode::Datetime | FieldTypeCode::Timestamp
+    )
+}
+fn time_type(tp: &tidb_datatype::FieldType) -> tipb::FieldType {
+    use tidb_datatype::FieldTypeCode;
+    match tp.code() {
+        FieldTypeCode::Date => FieldTypeTp::Date,
+        FieldTypeCode::Timestamp => FieldTypeTp::Timestamp,
+        _ => FieldTypeTp::DateTime,
+    }
+    .into()
+}
+
 fn control_type(f: &crate::scalar_function::ScalarFunction) -> Result<tipb::FieldType, String> {
     use tidb_datatype::EvalType as NativeType;
+    if let Some(tp) = f.ret_type.as_ref().filter(|tp| is_time_type(tp)) {
+        return Ok(time_type(tp));
+    }
     Ok(match f
         .ret_type
         .as_ref()
@@ -1238,6 +1345,10 @@ fn native_output(result: RpnStackNode<'_>, rows: usize) -> Result<Vec<Datum>, St
     let convert = |v: Option<&[u8]>| v.map_or(Datum::Null, |v| Datum::new_string(v.to_vec()));
     match result {
         RpnStackNode::ExpressionVector { value, .. } => match value {
+            ExpressionVector::Time(values) => Ok(values
+                .into_iter()
+                .map(|v| v.map_or(Datum::Null, Datum::Time))
+                .collect()),
             ExpressionVector::Real(values) => Ok(values
                 .into_iter()
                 .map(|v| v.map_or(Datum::Null, Datum::Real))
@@ -1249,6 +1360,7 @@ fn native_output(result: RpnStackNode<'_>, rows: usize) -> Result<Vec<Datum>, St
         },
         RpnStackNode::ExpressionScalar { value, .. } => {
             let datum = match value.as_ref() {
+                ExpressionScalar::Time(v) => v.map_or(Datum::Null, Datum::Time),
                 ExpressionScalar::Real(v) => v.map_or(Datum::Null, Datum::Real),
                 ExpressionScalar::Decimal(v) => v
                     .clone()
@@ -1304,6 +1416,542 @@ mod tests {
             native_type(),
             vec![arg],
         ))
+    }
+
+    struct DateEffects {
+        modes: tidb_datatype::DateModes,
+        session: Session,
+        ignore: bool,
+    }
+    impl crate::Columns for DateEffects {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn date_modes(&self) -> tidb_datatype::DateModes {
+            self.modes
+        }
+        fn rand_next(&self) -> Option<f64> {
+            self.session.rand_next()
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            if self.ignore {
+                crate::ErrorLevel::Ignore
+            } else {
+                self.session.truncate_level()
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.session.append_warning(code, message);
+        }
+        fn enable_vectorized_expression(&self) -> bool {
+            !self.session.vectorized_off
+        }
+    }
+
+    #[test]
+    fn shared_kernel_date_original_native_policy() {
+        use tidb_datatype::{CoreTime, DateModes, FieldTypeCode, Time, TimeType};
+        let ty = FieldType::new(FieldTypeCode::Date);
+        let mut input = Chunk::new_empty(&[]);
+        input.set_num_virtual_rows(1);
+        for no_zero_date in [false, true] {
+            for no_zero_in_date in [false, true] {
+                let effects = DateEffects {
+                    modes: DateModes {
+                        no_zero_date,
+                        no_zero_in_date,
+                        ..DateModes::TIDB_DEFAULT_SQL_MODE
+                    },
+                    session: Session::default(),
+                    ignore: false,
+                };
+                for (y, m, d, h, tag) in [
+                    (0, 0, 0, 0, 0),
+                    (0, 0, 0, 1, 0),
+                    (2024, 0, 3, 0, 0),
+                    (2024, 2, 3, 12, 14),
+                    (2024, 2, 3, 12, 15),
+                ] {
+                    let core = CoreTime::from_date(y, m, d, h, 0, 0, 0);
+                    let time = Time::from_go_raw_like_go(core.raw() | tag);
+                    let expr = Expression::ScalarFunction(ScalarFunction::new(
+                        CiString::new("date"),
+                        ty.clone(),
+                        vec![Expression::Constant(Constant::new(
+                            Datum::Time(time),
+                            FieldType::new(FieldTypeCode::Datetime),
+                        ))],
+                    ));
+                    let actual = if tag == 15 {
+                        crate::time_fn::date(&[Datum::Time(time)], &effects).unwrap()
+                    } else {
+                        expr.eval(&effects, input.physical_row(0)).unwrap()
+                    };
+                    let rejected = if time.is_zero() {
+                        no_zero_date
+                    } else {
+                        time.invalid_zero() && no_zero_in_date
+                    };
+                    let expected = if rejected {
+                        Datum::Null
+                    } else {
+                        Datum::Time(
+                            Time::new(CoreTime::from_date(y, m, d, 0, 0, 0, 0), TimeType::Date, 0)
+                                .unwrap(),
+                        )
+                    };
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    fn date_call(arg: Expression) -> Expression {
+        Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("date"),
+            FieldType::new(tidb_datatype::FieldTypeCode::Date),
+            vec![arg],
+        ))
+    }
+    fn time_column(index: i32, ty: &FieldType) -> Expression {
+        let mut column = Column::new(i64::from(index), ty.clone());
+        column.index = i64::from(index);
+        Expression::Column(column)
+    }
+
+    #[test]
+    fn shared_kernel_date_constants_modes_and_diagnostics() {
+        use tidb_datatype::{CoreTime, DateModes, FieldTypeCode, Time, TimeType};
+        let source = FieldType::new(FieldTypeCode::Datetime).with_decimal(3);
+        let result = FieldType::new(FieldTypeCode::Date);
+        let mut input = Chunk::new_empty(&[]);
+        input.set_num_virtual_rows(3);
+        for scalar in [false, true] {
+            for strict in [false, true] {
+                for ignore in [false, true] {
+                    for no_zero_date in [false, true] {
+                        for no_zero_in_date in [false, true] {
+                            for (y, m, d, h, tag) in [
+                                (0, 0, 0, 0, 0),
+                                (0, 0, 0, 1, 0),
+                                (2024, 0, 3, 0, 0),
+                                (2024, 2, 31, 12, 0),
+                                (2024, 2, 3, 12, 6),
+                                (2024, 2, 3, 12, 13),
+                                (2024, 2, 3, 12, 14),
+                                (2024, 2, 3, 12, 15),
+                            ] {
+                                let time = Time::from_go_raw_like_go(
+                                    CoreTime::from_date(y, m, d, h, 4, 5, 123456).raw() | tag,
+                                );
+                                // Include a genuinely all-zero value separately from zero calendar with clock.
+                                for value in [
+                                    time,
+                                    Time::new(CoreTime::default(), TimeType::DateTime, 0).unwrap(),
+                                ] {
+                                    let expr =
+                                        date_call(numeric_literal(Datum::Time(value), &source));
+                                    let effects = DateEffects {
+                                        modes: DateModes {
+                                            no_zero_date,
+                                            no_zero_in_date,
+                                            ..DateModes::TIDB_DEFAULT_SQL_MODE
+                                        },
+                                        session: Session {
+                                            strict,
+                                            vectorized_off: scalar,
+                                            ..Session::default()
+                                        },
+                                        ignore,
+                                    };
+                                    let rejected = if value.is_zero() {
+                                        no_zero_date
+                                    } else {
+                                        value.invalid_zero() && no_zero_in_date
+                                    };
+                                    let expected = if rejected {
+                                        Datum::Null
+                                    } else {
+                                        Datum::Time(
+                                            Time::new(
+                                                CoreTime::from_date(
+                                                    value.core_time().year() as u16,
+                                                    value.core_time().month(),
+                                                    value.core_time().day(),
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                ),
+                                                TimeType::Date,
+                                                0,
+                                            )
+                                            .unwrap(),
+                                        )
+                                    };
+                                    let projection = SharedProjection::compile(&[expr]).unwrap();
+                                    for direct in [false, true] {
+                                        effects.session.warnings.borrow_mut().clear();
+                                        let mut execution = projection.start_execution(&effects);
+                                        let mut output =
+                                            Chunk::new(std::slice::from_ref(&result), 1, 3);
+                                        output.append_null(0);
+                                        let actual = if direct {
+                                            execution
+                                                .evaluate_into_chunk(
+                                                    &input,
+                                                    &[2, 0, 2],
+                                                    &mut EvalContext::default(),
+                                                    &mut output,
+                                                )
+                                                .map(|_| {
+                                                    vec![(0..3)
+                                                        .map(|i| {
+                                                            output
+                                                                .physical_row(i)
+                                                                .get_datum(0, &result)
+                                                        })
+                                                        .collect::<Vec<_>>()]
+                                                })
+                                        } else {
+                                            execution.evaluate(
+                                                &input,
+                                                &[2, 0, 2],
+                                                &mut EvalContext::default(),
+                                            )
+                                        };
+                                        if rejected && strict && !ignore {
+                                            assert_eq!(actual.unwrap_err().code, Some(1292));
+                                            assert_eq!(output.num_rows(), 1);
+                                        } else {
+                                            assert_eq!(
+                                                actual.unwrap(),
+                                                vec![vec![expected.clone(); 3]]
+                                            );
+                                        }
+                                        let warnings = effects.session.warnings.borrow();
+                                        assert_eq!(
+                                            warnings.len(),
+                                            if rejected && !strict && !ignore { 3 } else { 0 }
+                                        );
+                                        if !warnings.is_empty() {
+                                            assert_eq!(
+                                                warnings[0],
+                                                (
+                                                    1292,
+                                                    format!("Incorrect datetime value: '{value}'")
+                                                )
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_time_columns_if_and_outputs() {
+        use tidb_datatype::{CoreTime, FieldTypeCode, Time, TimeType};
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let datetime = FieldType::new(FieldTypeCode::Datetime).with_decimal(3);
+        let timestamp = FieldType::new(FieldTypeCode::Timestamp).with_decimal(6);
+        let date = FieldType::new(FieldTypeCode::Date);
+        let types = vec![integer.clone(), datetime.clone(), timestamp.clone()];
+        let choose = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            datetime.clone(),
+            vec![
+                time_column(0, &integer),
+                time_column(1, &datetime),
+                time_column(2, &timestamp),
+            ],
+        ));
+        let dead = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            date.clone(),
+            vec![
+                numeric_literal(Datum::Int(0), &integer),
+                date_call(time_column(99, &datetime)),
+                numeric_literal(Datum::Null, &date),
+            ],
+        ));
+        let roots = vec![
+            time_column(1, &datetime),
+            choose.clone(),
+            date_call(choose),
+            dead,
+        ];
+        let out_types = [
+            datetime.clone(),
+            datetime.clone(),
+            date.clone(),
+            date.clone(),
+        ];
+        let projection = SharedProjection::compile(&roots).unwrap();
+        assert_eq!(projection.expressions[0].result_type(), Some(&datetime));
+        for scalar in [false, true] {
+            let effects = Session {
+                vectorized_off: scalar,
+                ..Session::default()
+            };
+            let mut execution = projection.start_execution(&effects);
+            for day in [3, 4] {
+                let mut input = Chunk::new(&types, 3, 3);
+                for i in 0..3 {
+                    input.append_int64(0, if i == 0 { 0 } else { 1 });
+                    input.append_datum(
+                        1,
+                        &if i == 1 {
+                            Datum::Null
+                        } else {
+                            Datum::Time(Time::from_go_raw_like_go(
+                                CoreTime::from_date(2024, 2, day, 12, 34, 56, 123456).raw() | 14,
+                            ))
+                        },
+                    );
+                    input.append_datum(
+                        2,
+                        &Datum::Time(
+                            Time::new(
+                                CoreTime::from_date(2024, 2, day, 5, 6, 7, 123456),
+                                TimeType::Timestamp,
+                                6,
+                            )
+                            .unwrap(),
+                        ),
+                    );
+                }
+                for rows in [vec![2, 0, 2], vec![1], vec![]] {
+                    let expected: Vec<Vec<_>> = roots
+                        .iter()
+                        .map(|expr| {
+                            rows.iter()
+                                .map(|r| expr.eval(&effects, input.physical_row(*r)).unwrap())
+                                .collect()
+                        })
+                        .collect();
+                    assert_eq!(
+                        execution
+                            .evaluate(&input, &rows, &mut EvalContext::default())
+                            .unwrap(),
+                        expected
+                    );
+                    let mut output = Chunk::new(&out_types, 1, 3);
+                    execution
+                        .evaluate_into_chunk(
+                            &input,
+                            &rows,
+                            &mut EvalContext::default(),
+                            &mut output,
+                        )
+                        .unwrap();
+                    for (c, ty) in out_types.iter().enumerate() {
+                        assert_eq!(
+                            (0..rows.len())
+                                .map(|i| output.physical_row(i).get_datum(c, ty))
+                                .collect::<Vec<_>>(),
+                            expected[c]
+                        );
+                    }
+                }
+            }
+            assert!(effects.warnings.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn shared_kernel_date_error_keeps_output_effects_and_execution() {
+        use tidb_datatype::{CoreTime, DateModes, FieldTypeCode, Time, TimeType};
+        let source = FieldType::new(FieldTypeCode::Datetime);
+        let date = FieldType::new(FieldTypeCode::Date);
+        let real = FieldType::new(FieldTypeCode::Double);
+        let rand = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("rand"),
+            real.clone(),
+            vec![],
+        ));
+        let projection =
+            SharedProjection::compile(&[rand, date_call(time_column(0, &source))]).unwrap();
+        for scalar in [false, true] {
+            let effects = DateEffects {
+                modes: DateModes::TIDB_DEFAULT_SQL_MODE,
+                session: Session {
+                    strict: true,
+                    vectorized_off: scalar,
+                    ..Session::default()
+                },
+                ignore: false,
+            };
+            let mut execution = projection.start_execution(&effects);
+            let mut bad = Chunk::new(std::slice::from_ref(&source), 1, 1);
+            bad.append_time(
+                0,
+                Time::new(CoreTime::default(), TimeType::DateTime, 0).unwrap(),
+            );
+            let mut output = Chunk::new(&[real.clone(), date.clone()], 1, 1);
+            output.append_float64(0, 99.0);
+            output.append_null(1);
+            let error = execution
+                .evaluate_into_chunk(&bad, &[0], &mut EvalContext::default(), &mut output)
+                .unwrap_err();
+            assert_eq!(error.code, Some(1292));
+            assert_eq!(effects.session.draws.get(), 1);
+            assert_eq!(output.column(0).get_float64(0), 99.0);
+            assert!(output.column(1).is_null(0));
+            let mut good = Chunk::new(std::slice::from_ref(&source), 1, 1);
+            good.append_time(
+                0,
+                Time::new(
+                    CoreTime::from_date(2024, 2, 3, 4, 5, 6, 0),
+                    TimeType::DateTime,
+                    0,
+                )
+                .unwrap(),
+            );
+            execution
+                .evaluate_into_chunk(&good, &[0], &mut EvalContext::default(), &mut output)
+                .unwrap();
+            assert_eq!(effects.session.draws.get(), 2);
+            assert_eq!(output.column(0).get_float64(0), 0.25);
+            assert_eq!(output.column(1).get_time(0).core_time().hour(), 0);
+        }
+    }
+
+    #[test]
+    fn shared_kernel_time_admission_and_chunk_limit() {
+        use tidb_datatype::{CoreTime, FieldTypeCode, Time};
+        let time = FieldType::new(FieldTypeCode::Datetime);
+        for datum in [
+            Datum::Int(1),
+            Datum::Real(1.0),
+            Datum::new_string(b"2024-02-03".to_vec()),
+        ] {
+            assert!(SharedExpression::compile(&date_call(numeric_literal(datum, &time))).is_err());
+        }
+        for ty in [
+            FieldType::new(FieldTypeCode::LongLong),
+            FieldType::new(FieldTypeCode::Duration),
+            native_type(),
+        ] {
+            assert!(SharedExpression::compile(&date_call(time_column(0, &ty))).is_err());
+        }
+        let raw = Time::from_go_raw_like_go(
+            CoreTime::from_date(2024, 2, 3, 12, 34, 56, 123456).raw() | 15,
+        );
+        let expr = numeric_literal(Datum::Time(raw), &time);
+        let mut input = Chunk::new_empty(&[]);
+        input.set_num_virtual_rows(1);
+        assert_eq!(
+            SharedExpression::compile(&expr)
+                .unwrap()
+                .evaluate(&input, &[0], &mut EvalContext::default())
+                .unwrap(),
+            vec![Datum::Time(raw)]
+        );
+        let mut chunk = Chunk::new(std::slice::from_ref(&time), 1, 1);
+        chunk.append_time(0, raw);
+        assert_eq!(raw.fsp(), 7);
+        let decoded = chunk.column(0).get_time(0);
+        assert_eq!(decoded.fsp(), 6);
+        assert_eq!(decoded.kind(), raw.kind());
+        assert_eq!(decoded.core_time(), raw.core_time());
+        let column = time_column(0, &time);
+        assert_eq!(
+            SharedExpression::compile(&column)
+                .unwrap()
+                .evaluate(&chunk, &[0], &mut EvalContext::default())
+                .unwrap(),
+            vec![Datum::Time(decoded)]
+        );
+        let projection = SharedProjection::compile(&[column]).unwrap();
+        let mut output = Chunk::new(std::slice::from_ref(&time), 1, 1);
+        projection
+            .start_execution(&crate::NoColumns)
+            .evaluate_into_chunk(&chunk, &[0], &mut EvalContext::default(), &mut output)
+            .unwrap();
+        assert_eq!(output.column(0).get_time(0).fsp(), 6);
+
+        assert!(SharedExpression::compile(&date_call(numeric_literal(
+            Datum::Null,
+            &FieldType::new(FieldTypeCode::Null)
+        )))
+        .is_ok());
+    }
+
+    #[test]
+    fn shared_kernel_date_metadata_and_lazy_admission() {
+        use tidb_datatype::{CoreTime, FieldTypeCode, Time, TimeType};
+        let ty = FieldType::new(FieldTypeCode::Datetime)
+            .with_raw_flags(1u64 << 52)
+            .with_flen(128)
+            .with_decimal(3);
+        let value = Datum::Time(
+            Time::new(
+                CoreTime::from_date(2024, 2, 3, 12, 34, 56, 123456),
+                TimeType::Timestamp,
+                6,
+            )
+            .unwrap(),
+        );
+        let compiled = SharedExpression::compile(&numeric_literal(value.clone(), &ty)).unwrap();
+        assert_eq!(compiled.result_type(), Some(&ty));
+        let column = SharedExpression::compile(&time_column(0, &ty)).unwrap();
+        assert_eq!(column.columns[0].1, ty);
+        let mut marker = Constant::new(value.clone(), ty.clone());
+        marker.param_marker = Some(crate::constant::ParamMarker { order: 0 });
+        assert!(SharedExpression::compile(&date_call(Expression::Constant(marker))).is_err());
+        let mut deferred = Constant::new(value, ty.clone());
+        deferred.deferred_expr = Some(Box::new(time_column(99, &ty)));
+        assert!(SharedExpression::compile(&date_call(Expression::Constant(deferred))).is_err());
+        let array = ty.clone().with_array(true);
+        assert!(SharedExpression::compile(&date_call(time_column(0, &array))).is_err());
+        assert!(
+            SharedExpression::compile(&date_call(numeric_literal(Datum::Null, &array))).is_err()
+        );
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let choose = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            ty.clone(),
+            vec![
+                numeric_literal(Datum::Int(0), &integer),
+                time_column(0, &ty),
+                time_column(0, &ty.clone().with_decimal(6)),
+            ],
+        ));
+        assert!(SharedExpression::compile(&choose).is_err());
+        let invalid = date_call(numeric_literal(
+            Datum::Time(Time::new(CoreTime::default(), TimeType::DateTime, 0).unwrap()),
+            &ty,
+        ));
+        let date = FieldType::new(FieldTypeCode::Date);
+        let dead = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            date.clone(),
+            vec![
+                numeric_literal(Datum::Int(0), &integer),
+                invalid,
+                numeric_literal(Datum::Null, &date),
+            ],
+        ));
+        let session = Session {
+            strict: true,
+            ..Session::default()
+        };
+        let mut input = Chunk::new_empty(&[]);
+        input.set_num_virtual_rows(2);
+        assert_eq!(
+            SharedProjection::compile(&[dead])
+                .unwrap()
+                .start_execution(&session)
+                .evaluate(&input, &[1, 0], &mut EvalContext::default())
+                .unwrap(),
+            vec![vec![Datum::Null; 2]]
+        );
+        assert!(session.warnings.borrow().is_empty());
     }
 
     #[test]
