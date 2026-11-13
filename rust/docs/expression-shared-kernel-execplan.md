@@ -231,8 +231,8 @@ SDK default-toolchain incompatibility remains a separate known limit.
 
 - [x] Claim task37 and identify native vector-switch measurement boundary.
 - [x] Build unwrapped/instrumented harness and isolate fixed-pair costs.
-- [ ] Apply only justified minimum correction and validate complete values.
-- [ ] Recompute comparisons, complete counts and publish reviewable fixed pair.
+- [x] Apply only justified minimum correction and validate complete values.
+- [x] Recompute comparisons and prepare complete counts for fixed-pair review.
 
 Preliminary unwrapped measurements reproduce small_mul64 regression (11.3 to
 16.0 microseconds); separate Chunk writing stays near2.1 microseconds. Independent
@@ -241,5 +241,12 @@ The five-line trial in that existing owner uses the standard integer formatter
 only above24 inline digits; shorter coefficients retain the existing loop.
 No RPN validation, invocation, native vector path or Chunk conversion changes.
 89 datatype Decimal tests,31 native shared probes,429 SDK tests, scopedClippy and
-rootlint pass. Final three-version four-round full-entry comparison is running,
+rootlint pass. Final three-version four-round full-entry comparison completed,
 including24/25-digit products and explicit shared/native Scalar controls.
+
+Final1440 timing cells and360 separate allocation cells pass. small_mul64 shared
+Vector falls15.49→9.61us, below the old copy in all four rounds;25-digit spill also
+improves.24-digit inline Vector remains19.9–21.0% above the old copy; hidden-chain
+64-row Vector is0.7–1.6% above the immediate baseline. Retain the bounded correction
+and report these remaining costs; no universal-performance acceptance. Evidence,
+source/test identity and complete counts are in shared-kernel/decimal-regression.zh.md.

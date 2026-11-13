@@ -1,10 +1,11 @@
 # Counts all tracked changes, including the standalone benchmark as test code.
-# Usage: python3 count-datatype-reuse.py /path/containing/tidb-and-tikv
+# Usage: python3 count-datatype-reuse.py /path/containing/tidb-and-tikv [tidb_previous tikv_previous]
 import subprocess,json,re,sys
 from pathlib import Path
 root=Path(sys.argv[1])
 res={}
 for repo,base,previous in [('tidb','364aef2bab5cc633ecb76a775ae8f36f86a6687d','72fedb911c2079ca821b66dae276095f3caaf84d'),('tikv','548812e1ef57aef077a2062a9cc356640a6347f5','3ad4dc75eec6af91b77f2c36f3d10ee61073b942')]:
+ if len(sys.argv) == 4: previous = sys.argv[2 if repo == "tidb" else 3]
  res[repo]={}
  for title,ref in [('original',base),('incremental',previous)]:
   counts={k:[0,0] for k in ['production','tests','build','documents']}
