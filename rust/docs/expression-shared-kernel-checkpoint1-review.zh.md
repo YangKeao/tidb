@@ -158,7 +158,7 @@ MD5的自身数字返回声明现在明确拒绝。JSON_LENGTH接入真正的字
 
 `JSON_LENGTH('')`属于当前默认UTF-8字符串接纳范围。[原始JSON参数解析](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/builtin_ext/json/value.rs#L382)生成`JsonError::EmptyText`；[context.rs](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/context.rs#L351)给出码3140及空文档消息。非空坏文本`'{'`是不同的InvalidText，仍为3140。
 
-共享lowering调用SDK `cast_string_as_json`，其[JSON解析](https://github.com/YangKeao/tikv/blob/0a5cda977bd9a6707b4a56971c23f0e77e7a7322/components/tidb_query_datatype/src/codec/mysql/json/serde.rs#L186)返回InvalidDataType，SDK码为1105；[native共享边界](https://github.com/YangKeao/tidb/blob/4ce93983a71da469d9070499d919374fd56e913c/rust/crates/tidb-expr/src/shared_kernel.rs#L343)又将错误转成String，进一步丢失结构身份。现有坏分支测试只比较`is_err()`，因此通过不代表诊断相等。这是当前可选候选入口的兼容缺口，未宣称默认产品路径已经回归。
+共享lowering调用SDK `cast_string_as_json`，其[JSON解析](https://github.com/YangKeao/tikv/blob/0a5cda977bd9a6707b4a56971c23f0e77e7a7322/components/tidb_query_datatype/src/codec/mysql/json/serde.rs#L186)返回InvalidDataType（codec错误的固有码1105，转换成公共EvaluateError::Other后为10000）；[native共享边界](https://github.com/YangKeao/tidb/blob/4ce93983a71da469d9070499d919374fd56e913c/rust/crates/tidb-expr/src/shared_kernel.rs#L343)又将错误转成String，进一步丢失结构身份。现有坏分支测试只比较`is_err()`，因此通过不代表诊断相等。这是当前可选候选入口的兼容缺口，未宣称默认产品路径已经回归。
 
 共享内核应保留类型化失败，在输出边界按明确的native/PB错误合同映射，不解析Display字符串猜测错误类别。补空JSON、非空坏JSON的直接调用及活/死IF分支，对比错误类别、码和必要消息。PB原有诊断不能因为修native而全局改变。REGEXP的错误表示也需同样贯通；本审查没有猜测未追踪到最终执行器映射的正则SQL码。
 
@@ -191,3 +191,60 @@ MD5的自身数字返回声明现在明确拒绝。JSON_LENGTH接入真正的字
 原始SDK独立测试工作区当前HEAD确为548812e，唯一tracked修改为新增36行PB测试。日志终态与该测试相符；但这些日志没有完整命令、构建前后源码树身份和显式退出码，不能独立证明所有构建输入就是之后提交的固定源码。日志时间早于提交并不说明测试了错误源码，也不足以单独证明没有中间修改。后续记录命令、双仓库commit/tree或dirty摘要及退出状态即可，不为此重跑已经有证据的整套检查。
 
 本轮只读源码、Git统计及原始日志，没有新构建、产品测试、SQL或性能测量。下一步由ExpressionReuseEngineer补结构化诊断，继续宽值实际运算、调用模式、RAND/变量/BENCHMARK及多根状态；只有具体需求或状态合同要求时才增加共享有序调度，纯错误排序不成为新前置条件；完整M1、全范围体积和性能仍未验收。设计方向无须退回宿主协议。
+
+
+## Checkpoint 4跟进
+
+2026-11-13复核固定TiDB `b21d5a9b2a214c5b1653b8bc2b04771e145469a0` / TiKV `038b1aa3ed86a1ff50fc8fa7f9f6eb443b5d62bf`。[实现报告](https://github.com/YangKeao/tidb/blob/b21d5a9b2a214c5b1653b8bc2b04771e145469a0/rust/docs/shared-kernel/checkpoint-4.md)已固定。JSON的空/坏文档错误身份及IF内部NULL需求都有修复前失败、修复后通过记录；但**行调用边界选得过小：原生整个根退出numeric batch时，只将IF子树设为行区域仍不保持需求语义。** 这是本轮主要待修项，继续M1，不代表完整验收。
+
+### 已修正的边界
+
+共享循环显式区分Scalar与Vector；宽度一不会自动成为Scalar。整数plus/mul复用既有SDK类型化算法，Scalar的NULL左参数通过NullGuard跳过右子段。`NULL + MAX_INT*2`的原生Scalar返回NULL，而原生numeric batch报溢出；新增测试实际对比了两种路径。
+
+IF区域目前使用同一循环中的OrderedRows帧，对每次逻辑出现调用Scalar需求，最后合并值；没有在TiDB适配器逐行调用完整求值器。`IF(1, NULL + MAX_INT*2, 0)`的NULL结果说明这里确有参数应否执行的区别，行合同不是为了恢复严格错误顺序。现有新测试也允许两个可达错误任意一个先返回，继续遵守人类2979a576。
+
+JSON解析仍调用同一SDK解析器，专门的`parse_native_json`返回类型化Custom3140，分别保留空文档和坏文档消息；PB原有cast不变。native适配器结构匹配Evaluate错误并保留code/message，不通过Display字符串猜类别。这关闭了checkpoint3所报四个UTF-8文本用例的错误身份缺口；其余诊断没有据此取得全量兼容信用。
+
+### 整个回退根不能只包一个IF区域
+
+固定测试`shared_kernel_if_children_keep_scalar_null_demand`构造了：
+
+    plus(IF(1, NULL + MAX_INT*2, 0), MAX_INT*2)
+
+其中仅对内层IF比较原生实现，对完整outer则只断言候选Vector报错。该断言不能作为原始行为依据。
+
+[原始numeric_batch_supported](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/scalar_function.rs#L3889)递归检查所有子表达式，IF不属于支持集合；[try_eval_numeric_batch](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/scalar_function.rs#L4209)因此拒绝整个outer。[EvaluatorSuite](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/evaluator.rs#L436)随即对整个根使用行求值；左式NULL应跳过外层右式并返回NULL。候选只给IF添加OrderedRows，退出后恢复Vector，外层NullGuard不生效，于是右式溢出。
+
+更小的同类输入是：
+
+    NULL[Int] + JSON_LENGTH('{')[Int]
+
+即使没有IF，JSON_LENGTH也使原生整个numeric batch根不再适用，行求值应跳过右式。候选默认Vector目前直接执行它。两者都是NULL成功结果与错误的区别，不能由错误排序放宽消除。
+
+以上是固定源码推导，本审查未执行新反例；已在Raft a4ccede1/c87f48dc要求实现者补完整根的原始对照及修复前记录，实现者87aeeb48确认边界并正在修正。下一版必须同时保留纯数值根的Vector阶段行为、混合根实际回退的Scalar需求，以及乱序/重复选择，不能只改变测试预期使其通过。
+
+实现边界应服从**实际入口对整个表达式根的能力判断**。可在编译/入口选择时复用原有无副作用的能力判定，或从共享签名事实合成同等结果；不能通过先调用旧求值器探测，也不要另造宿主调度协议。行区域从真实回退范围开始，条件与所有被需求子段由同一循环负责。以后接入原生向量开关、Decimal专用路径和多输出分组时，逐个固定入口合同；局部函数名字与请求的Vector模式本身不能证明原生整树存在该批量路径。
+
+当前所有native IF都进入Scalar行区域，因此新的动态IF测试虽继续覆盖结果与重复选择，已不再执行SDK混合mask的两支帧路径；不能沿用上一轮说法当作该路径的新验证。`finish`对每个OrderedRows扫描全部指令，准备工作量为区域数×指令数；512层通过不等于已测准备性能。本轮未发现正常编译路径新的栈/区域边界错误，这两点分别作为覆盖限制和后续准备性能观测项，不扩大为当前新阻塞。
+
+### 较窄的剩余JSON诊断分支
+
+默认字符串载体含非法UTF-8字节（如`[0xff]`）仍被当前编译器接纳。[原生json_sql_string](https://github.com/YangKeao/tidb/blob/364aef2bab5cc633ecb76a775ae8f36f86a6687d/rust/crates/tidb-expr/src/builtin_ext/json/value.rs#L111)返回Unsupported，原生执行器将其映射为1105。新`parse_native_json`却构造EvaluateError::Other，公共[error.rs](https://github.com/YangKeao/tikv/blob/038b1aa3ed86a1ff50fc8fa7f9f6eb443b5d62bf/components/tidb_query_common/src/error.rs#L27)给出10000，新边界会导出Some(10000)。若保留这个输入接纳，应对照原生映射；这是共享API接纳的数据错误分支，本审查未证明正常SQL写入会生成该载体，优先级低于上述正常定型整根需求问题。
+
+同时精确化checkpoint3的码描述：底层codec InvalidDataType固有码1105，但经过公共错误转换后为Other/10000；当时native边界最后仅返回String，并没有对外返回1105。上一节已更正这一中间路径，核心的错误身份丢失结论不变。
+
+### 计数和原始证据
+
+| 相对原始base的范围 | 新增 | 删除 | 总增删 |
+| --- | ---: | ---: | ---: |
+| Rust生产与测试 | 2517 | 49 | 2566 |
+| 构建/锁文件 | 1866 | 91 | 1957 |
+| 文档、清单和工具 | 7953 | 0 | 7953 |
+| 两个候选全部文件 | 12336 | 140 | 12476 |
+| 相对checkpoint3的全部文件 | 668 | 22 | 690 |
+
+独立计数全部吻合，构建/文档9910仍在暂定9–12K范围；未计为全项目体积达标。读取原始日志确认：JSON before有1个实际消息比较失败，after14通过；IF需求before有1个1690溢出失败，after15通过；最终native15、SDK34均通过。限定表达式/执行器库Clippy完成并有警告；lint日志到达预期末命令且无记录错误，未捕获显式退出码。完整make clippy仍不因此视为通过。
+
+回归断言使用候选构建中的旧原生实现；相关expression/scalar_function/ops/JSON实现文件与原始364aef2的Git blob相同，依赖环境则仍属于候选。故这是未改原生实现的对照，不是单独重建原始依赖环境。日志仍缺完整构建输入及退出状态凭据，保留与上一轮相同的归属限制，不据此声称测试用了错误源码。
+
+本轮没有新产品构建或测试。宽值实际运算、RAND/变量/BENCHMARK、多根状态、完整诊断和性能仍未验收；新发现只要求修正实际需求边界，不恢复严格诊断顺序。
