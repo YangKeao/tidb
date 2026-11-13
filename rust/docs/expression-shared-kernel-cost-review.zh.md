@@ -1,6 +1,6 @@
 # 成本复审与底层算法复用：下一步设计
 
-当前结论是：**保留一个共享表达式执行循环及现有底层算法所有者；真实Decimal列输入与跨Chunk复用已通过限定复审，下一批先验证参数重绑定的实际合同。** 下文保留成本复审和限定试验的过程证据；末节记录c08c8164列输入复核、剩余差距和最新执行范围。
+当前结论是：**保留一个共享表达式执行循环及现有底层算法所有者；参数合同的有限验证已通过复审，下一批在现有显式入口接入Decimal类型化参数。** 下文保留成本复审和限定试验的过程证据；末节记录bfde2f35参数合同复核、最小转换／诊断接口和执行所有权决定。
 
 这是设计与固定源码审查，不是替代实现的验收。完整245族、默认入口、旧执行器退役和性能目标均未完成。人类要求的10K数量级仍是目标；本轮没有证明它可达，也没有证明它不可能。
 
@@ -218,3 +218,36 @@ ExpressionReuseEngineer继续在当前候选推进一个限定切片：**同一�
 在接纳产品参数前，必须确定实际执行owner怎样保持签名或在表达式产生副作用前完成兼容重编译；普通同签名重绑定不重新编译。不能全局提前读取缺失参数、冻结规划快照、在已执行SETVAR／RAND后才报“不支持类型”或退回旧求值器。若实际owner尚无所需合同，有限交付应是最小反例、必要接口差异和明确的后续实现决定，参数接纳保持关闭；不为解决不明合同引入新registry、类型描述系统、HostTask或值句柄。该验证完成后重新确定接入，不将未证明的任意类型同程序复用写成承诺。
 
 优先复用constant.rs和shared_kernel.rs的既有测试与数据。按第8节运行实际改动所需的定向回归；若有产品改动，运行受影响库及make lint，保留失败到通过证据、固定提交和全部增删。无需再展开常量性能研究来替代这个合同决定；既有向量成本、默认构建及RAND生命周期缺口继续明确保留。本轮设计文档本身只做链接、ExecPlan格式和diff检查，未运行产品验证。
+
+
+## 参数合同复审：有限反例有效，产品接纳仍未改变
+
+本轮固定TiDB测试源码`3034ea26f3780299b6931fb241bed6cd7cbc9874`、[合同报告bfde2f35](https://github.com/YangKeao/tidb/blob/bfde2f35cf3fb98cdb16ce9461dbb0702bf5c3b5/rust/docs/shared-kernel/parameter-contract.zh.md)，SDK仍为`d822fbf9fbee8e0b635974a8d38e42f9e73f067a`；本批起点为c08c8164及同一SDK。仅新增测试和文档；共享编译器继续拒绝参数，原型没有进入产品路径。独立复核未发现合同、证据或计数矛盾，接受这次有限交付，task #39的顺序条件结束。Designer未另运行产品构建、测试或性能。
+
+[测试原型](https://github.com/YangKeao/tidb/blob/3034ea26f3780299b6931fb241bed6cd7cbc9874/rust/crates/tidb-expr/src/shared_kernel.rs#L1973)将上下文接到测试专用Decimal槽，复用同一个IF／除法RPN，18次调用对照完整Decimal及NULL；不同上下文销毁后旧输出仍有效。死分支、空批次、未绑定错误1105及错误后复用有明确断言。原生Int参数可转换为Decimal，而槽拒绝；溢出1690虽一致，原生文本含当前81位值、槽文本只有编译时列名。这两个反例有效说明：类型化取值／转换和诊断操作数缺接口，不能把参数直接当已定型列。原型IF使整个根使用逐行回退，原生期望值也是Scalar；三种共享调用方式通过，仍不证明纯算术Vector每批转换告警次数已兼容。
+
+实际SELECT缓存依据当前参数类型选择计划，Decimal精度和尺度只允许既有计划覆盖更窄值；NULL、整数和其他类别分别匹配，也可能命中另一个旧项，不能一律描述为每次重编译。命中后原物理树重绑值并清算术缓存；本次参数由PreparedSelectExecution的Arc切片持有，StmtContext读取。该路径尚未持有共享RPN，不覆盖所有prepared语句。报告关于绑定失败的结论应理解为“淘汰失败缓存项，保护后续新EXECUTE”：既有[CachedSelectPlan::bind](https://github.com/YangKeao/tidb/blob/3034ea26f3780299b6931fb241bed6cd7cbc9874/rust/crates/tidb-executor/src/driver/planner_bridge.rs#L3348)只在成功时递增generation，不能据此证明此前已发出的全部执行引用都被撤销。这是既有生命周期限制，本批没有修改它；下一步不以generation作为跨执行共享RPN缓存的唯一凭据。
+
+5525项最终Git输入摘要独立重建为`75da1f299d6aac7d248e0de52d25d6fb2a1bbd179c6a5c68accd94bf5e19d485`，13份原始记录哈希吻合。早期f30d2377摘要亦核对；最终仅补精确未绑定错误断言，35项共享原生和8项prepared有不同的最终日志及明确CHECK_EXIT=0。真实session缓存定向测试有1通过的终态；lint日志有命令记录，退出0、rustfmt和diff检查由receipt报告，未提供单独原始退出尾行。零项筛选、两处测试API编译错误、底层RPN非空断言失败均保留，未算作成功。没有新增SDK429、完整clippy或性能通过结论，也不是独立可复现构建证明。
+
+本批生产／构建／SDK均零改动；测试`+279/−0`，文档与核验`+222/−2`，全部`+501/−2`，增删503、净增499。相对原始基线，源码测试`+6164/−62`、增删**6226**；全部`+23299/−162`、增删**23461**。统计包含反例与审计材料，仍非完整功能或10K可达性证明。此前列元信息冲突的表述已改为每个编译根内部。
+
+## 下一批：Decimal类型化参数的最小产品边界
+
+依据Designer消息cda358b9-f0e8-4a2b-8788-a3534e5e60ac，下一批从上述固定版本实施，Designer负责范围，固定实现复审后结束；独立构建修复可并行。现在已有足够证据实施一个限定入口，不再要求先设计完整参数框架。共享范围及原生函数所有者保持，下一步不改默认执行入口、不新增跨EXECUTE共享程序缓存。
+
+**编译边界。** 在native shared_kernel.rs的迭代编译器中，给已经解析为有符号Decimal算术的操作数传递“请求Decimal入口”的信息；只在该位置接纳无DeferredExpr的ParamMarker，并保留原静态签名接纳条件。新增一个明确的共享参数叶子，例如`ParameterDecimal { order, field_type }`，这里是拟新增名字。该节点的输出始终是Decimal／NULL，`finish`验证它的声明输出；原参数当前值的类型不必等于该输出类型。原IF可以包住这样的算术，但裸参数结果、IF直接返回参数、其他请求域和DeferredExpr继续整根编译拒绝。不把这些拒绝误称为全参数支持，也不读取保存的规划值来决定运行结果。
+
+**取值与转换。** 在已有InputColumns能力上增加按需取原生owned Datum的方法，例如`parameter_value(order)`；NativeInput只委托本次上下文的数据读取。一次求值中的参数绑定不可变，由真实执行拥有的参数切片提供；不保存跨调用借用。共享RPN执行参数叶子后，以当前Datum推导原生字段并调用值转换primitive。把Constant::eval_typed_as_on_row中仅处理Decimal转换／补尺度的值级逻辑放到已有tidb-datatype所有者，由原Constant和共享叶子共同调用；复用既有to_decimal_with_context、错误类型和ConversionContext，适配层只提供flags、位置及typed warning sink。不能依赖整个tidb-expr、回调Constant::eval、复制算法、统一改成ConvertTo(声明列形状)，或将真实原生转换错误改成新“不支持类型”错误。
+
+这允许Int、String等当前值按原类型化Decimal合同转换，无需凭当前值重新定RPN出口；NULL、转换错误及补尺度行为也遵守同一原生合同。读取／转换由原有调度发生：纯算术Vector的常量参数每次节点激活转换一次后广播，Scalar及原生整根回退按原调用粒度转换；IF、NULL guard和空批次边界照旧。参数绑定跨调用可以改变，但调用期间不允许变成另一份参数。共享程序只承担已解析签名，不借此声明任意raw输出域复用。
+
+**动态溢出文本。** 将NativeArithmetic的固定overflow字符串扩为小型文本片段／参数位置模板，沿用原静态列名、字面量、嵌套算术及括号形式。不支持原生详细格式的子树（例如IF）仍整体采用原生通用错误文本，不递归执行该子树。只在该算术实际溢出时读取当前参数原始Datum并按原值格式化；native numeric_expression_text本来也会在错误路径读取marker。利用一次调用绑定不可变的合同，无需为诊断另建跨行值缓存或生命周期协议。这里不重新转换参数，也不提前读取死分支；String原文本不能替换成转换后的Decimal。诊断取值失败或格式化不能表示该值时沿用原生通用文本，仍返回本次算术1690，不让诊断读取错误替代它。输入方法是只读数据访问，测试上下文也须遵守调用期间绑定不变；带副作用或每次返回不同值的读取器不满足这个合同。若实现选择保留已经需求的raw值，必须限定到本次调用并证明行／重复求值间无旧值；它不是必需的新框架。
+
+**所有权与接入。** 本批只扩展现有显式SharedProjection／SharedExpression入口。由一次执行从已绑定、已解析签名的表达式快照编译程序，随后跨该执行的Chunk使用；下一次EXECUTE先重新构造，暂不把RPN塞进既有计划缓存。未来实际挂接点可以是物理ProjectionExec创建EvaluatorProgram的位置，但当前默认workers共享Arc程序，而RPN内有非Sync的`Box<dyn Any + Send>`；本批不为参数叶子扩大并发容器或默认后端改造，也不能通过unsafe补Sync。已有计划选择／generation路径只作为来源合同，不作为本轮完整缓存生命周期已完成的证据。
+
+验收沿用现有shared_kernel／prepared测试，先保留Int转换和当前值文本修正前失败，再验证类型化参数的真实成功。至少覆盖Decimal／Int／NULL、会产生截断告警的String、strict／warning两种上下文、补尺度及完整Decimal字段；纯算术用真正native EvaluatorSuite Vector对照，共享Scalar、单行Vector和多行Vector分开验证，IF逐行回退另列。检查转换告警内容／数量、raw与converted不同的溢出文本、嵌套算术、死分支／空批次、未绑定错误、错误后复用及旧输出独立。原型之外的声明接纳拒绝也须保留。warning与error顺序仍按人类要求放宽，不新增排序机制。
+
+产品变更后运行现有35项共享原生、8项prepared、受影响datatype定向回归及SDK表达式库回归，并执行make lint、格式和diff检查；用报告中已有cargo包装器与rust/工作目录，精确命令及退出结果随固定提交交付。若转换primitive移动改变原Constant路径，以原测试／独立预期确认未改变其语义，不能用两边同时改后的相同结果作为唯一依据。只按变化补必要测量，不新开广泛常量性能研究，也不从参数接入成功推断向量成本已解决。完整原始增删、实际接纳边界、默认SDK／完整clippy／RAND生命周期／245族余项继续报告。
+
+本轮仅更新设计文档，固定Git链接对象、相对链接、ExecPlan格式及`git diff --check`、`git diff --cached --check`验证后提交；未对产品另跑lint或测试。
