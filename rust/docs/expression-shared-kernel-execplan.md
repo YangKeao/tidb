@@ -575,7 +575,7 @@ This plan follows PLANS.md and Designer b9f2f967. Native and protobuf DATE must 
 - [x] Pin old native and PB expected behavior, including all-zero/partial-zero and hidden clock.
 - [x] Extract original-owner value policy, migrate old native/PB DATE and pin SDK Git owner.
 - [x] Add shared Time scalar/vector, input/IF/DATE/owned/direct output through the existing frame loop.
-- [ ] Verify policies, FSP/domain distinctions, demand/diagnostics, columns, error recovery and SDK regression; publish source correspondence and all counts.
+- [x] Verify policies, FSP/domain distinctions, demand/diagnostics, columns, error recovery and SDK regression; publish source correspondence and all counts.
 
 ### Plan and validation
 
@@ -599,4 +599,4 @@ Keep frontend diagnostics and conversion admission; share only the original-owne
 ### Outcomes & Retrospective
 
 
-Implementation is complete; final independent SDK regression and evidence publication are in progress. 53 shared, 34 original Time, 21 native time and one DATE source-row tests pass; scoped Clippy and root lint exit0. No acceptance or performance claim yet.
+Implementation and validation are complete: 53 shared, 34 original Time, 21 native time, one DATE source-row, one SDK memory-bit and 432 independent SDK expression tests pass; scoped Clippy and root lint exit0. Both graphs have one identity per original owner and all 172 owner files/1421 SDK inputs match. See shared-kernel/typed-date.zh.md and its receipt for exact sources, failures and full counts. No human acceptance, default SQL integration or performance claim.
