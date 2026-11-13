@@ -735,16 +735,39 @@ impl SharedExpression {
         ctx: &mut EvalContext,
         mode: InvocationMode,
     ) -> Result<Vec<Datum>, SharedEvaluationError> {
-        self.evaluate_with_context(input, rows, ctx, &crate::context::NoColumns, mode)
+        self.start_execution(&crate::context::NoColumns)
+            .evaluate(input, rows, ctx, mode)
     }
 
-    /// Execute with concrete native session capabilities.
-    pub fn evaluate_with_context(
-        &self,
+    /// Start an independent execution bound to one effects context.
+    pub fn start_execution<'p, 'e>(
+        &'p self,
+        effects: &'e dyn crate::context::Columns,
+    ) -> SharedExpressionExecution<'p, 'e> {
+        SharedExpressionExecution {
+            expression: self,
+            execution: tidb_query_expr::RpnExecution::new(
+                &self.program,
+                effects.supports_seeded_rand(),
+            ),
+            effects,
+        }
+    }
+}
+
+/// Mutable execution state, separate from the frozen expression.
+pub struct SharedExpressionExecution<'p, 'e> {
+    expression: &'p SharedExpression,
+    execution: tidb_query_expr::RpnExecution<'p>,
+    effects: &'e dyn crate::context::Columns,
+}
+impl SharedExpressionExecution<'_, '_> {
+    /// Evaluate another batch in this execution, retaining seeded state.
+    pub fn evaluate(
+        &mut self,
         input: &Chunk,
         rows: &[usize],
         ctx: &mut EvalContext,
-        columns: &dyn crate::context::Columns,
         mode: InvocationMode,
     ) -> Result<Vec<Datum>, SharedEvaluationError> {
         if mode == InvocationMode::Scalar && rows.len() != 1 {
@@ -761,12 +784,19 @@ impl SharedExpression {
         }
         let columns = NativeInput {
             chunk: input,
-            columns: &self.columns,
-            effects: columns,
+            columns: &self.expression.columns,
+            effects: self.effects,
         };
         let result = self
-            .program
-            .eval_input_mode(ctx, &self.schema, &columns, rows, rows.len(), mode)
+            .execution
+            .eval_input_mode(
+                ctx,
+                &self.expression.schema,
+                &columns,
+                rows,
+                rows.len(),
+                mode,
+            )
             .map_err(SharedEvaluationError::from)?;
         native_output(result, rows.len()).map_err(SharedEvaluationError::from)
     }
@@ -779,10 +809,8 @@ pub struct SharedProjection {
     order: OutputOrder,
 }
 impl SharedProjection {
-    /// Compile a bound, resolved expression snapshot for one execution.
-    /// Reuse across that execution's chunks; bindings must remain immutable during
-    /// each evaluation. The caller owns lifetime and recompilation, not this adapter.
-    /// No cross-EXECUTE cache or default executor integration is installed.
+    /// Compile a frozen bound expression snapshot. Execute through an explicit
+    /// execution object; no cross-EXECUTE cache or default integration is installed.
     pub fn compile(expressions: &[Expression]) -> Result<Self, String> {
         Ok(Self {
             expressions: expressions
@@ -796,17 +824,42 @@ impl SharedProjection {
             },
         })
     }
+    /// Bind one execution to a fixed effects context; reuse it across chunks.
+    pub fn start_execution<'p, 'e>(
+        &'p self,
+        effects: &'e dyn crate::context::Columns,
+    ) -> SharedProjectionExecution<'p, 'e> {
+        let supports_seeded_rand = effects.supports_seeded_rand();
+        SharedProjectionExecution {
+            projection: self,
+            executions: self
+                .expressions
+                .iter()
+                .map(|e| tidb_query_expr::RpnExecution::new(&e.program, supports_seeded_rand))
+                .collect(),
+            effects,
+        }
+    }
+}
+
+/// One projection execution. New objects start independent seeded streams.
+pub struct SharedProjectionExecution<'p, 'e> {
+    projection: &'p SharedProjection,
+    executions: Vec<tidb_query_expr::RpnExecution<'p>>,
+    effects: &'e dyn crate::context::Columns,
+}
+impl SharedProjectionExecution<'_, '_> {
     /// Return one typed native column per root.
     pub fn evaluate(
-        &self,
+        &mut self,
         input: &Chunk,
         rows: &[usize],
         ctx: &mut EvalContext,
-        effects: &dyn crate::context::Columns,
     ) -> Result<Vec<Vec<Datum>>, SharedEvaluationError> {
-        self.with_results(input, rows, ctx, effects, |results| {
+        let roots = self.projection.expressions.len();
+        self.with_results(input, rows, ctx, |results| {
             if rows.is_empty() {
-                return Ok(self.expressions.iter().map(|_| Vec::new()).collect());
+                return Ok((0..roots).map(|_| Vec::new()).collect());
             }
             results
                 .into_iter()
@@ -820,14 +873,13 @@ impl SharedProjection {
     /// Detectable input/output and output/output aliases are rejected before
     /// effects. Evaluation/validation errors preserve output; effects remain.
     pub fn evaluate_into_chunk(
-        &self,
+        &mut self,
         input: &Chunk,
         rows: &[usize],
         ctx: &mut EvalContext,
-        effects: &dyn crate::context::Columns,
         output: &mut Chunk,
     ) -> Result<(), SharedEvaluationError> {
-        if output.num_cols() != self.expressions.len() {
+        if output.num_cols() != self.projection.expressions.len() {
             return Err("output column count differs from projection".into());
         }
         for col in 0..output.num_cols() {
@@ -837,7 +889,7 @@ impl SharedProjection {
                 return Err("direct output requires independent columns".into());
             }
         }
-        for (col, expression) in self.expressions.iter().enumerate() {
+        for (col, expression) in self.projection.expressions.iter().enumerate() {
             let expected = match expression
                 .program
                 .ret_field_type(&expression.schema)
@@ -852,7 +904,7 @@ impl SharedProjection {
                 return Err("output column storage type mismatch".into());
             }
         }
-        self.with_results(input, rows, ctx, effects, |results| {
+        self.with_results(input, rows, ctx, |results| {
             enum Root {
                 Decimal(Vec<Option<tidb_datatype::DecimalArithmeticValue>>),
                 Datum(Vec<Datum>),
@@ -910,11 +962,10 @@ impl SharedProjection {
     }
 
     fn with_results<T>(
-        &self,
+        &mut self,
         input: &Chunk,
         rows: &[usize],
         ctx: &mut EvalContext,
-        effects: &dyn crate::context::Columns,
         consume: impl FnOnce(Vec<RpnStackNode<'_>>) -> Result<T, SharedEvaluationError>,
     ) -> Result<T, SharedEvaluationError> {
         if rows.iter().any(|r| *r >= input.physical_rows())
@@ -926,26 +977,28 @@ impl SharedProjection {
             return consume(Vec::new());
         }
         let inputs: Vec<_> = self
+            .projection
             .expressions
             .iter()
             .map(|e| NativeInput {
                 chunk: input,
                 columns: &e.columns,
-                effects,
+                effects: self.effects,
             })
             .collect();
-        let programs: Vec<_> = self
-            .expressions
-            .iter()
+        let mut programs: Vec<_> = self
+            .executions
+            .iter_mut()
+            .zip(&self.projection.expressions)
             .zip(&inputs)
-            .map(|(e, i)| (&e.program, e.schema.as_slice(), i as &dyn InputColumns))
+            .map(|((execution, e), i)| (execution, e.schema.as_slice(), i as &dyn InputColumns))
             .collect();
-        let results = RpnExpression::eval_group(
-            &programs,
+        let results = tidb_query_expr::RpnExecution::eval_group(
+            &mut programs,
             ctx,
             rows,
-            self.order,
-            if effects.enable_vectorized_expression() {
+            self.projection.order,
+            if self.effects.enable_vectorized_expression() {
                 InvocationMode::Vector
             } else {
                 InvocationMode::Scalar
@@ -1025,9 +1078,6 @@ impl InputColumns for NativeInput<'_> {
 
     fn rand_next(&self) -> Option<f64> {
         self.effects.rand_next()
-    }
-    fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
-        self.effects.rand_seeded_next(key, seed)
     }
 
     fn read<'a>(
@@ -1341,6 +1391,9 @@ mod tests {
             self.draws.set(self.draws.get() + 1);
             Some(f64::from(self.draws.get()) / 8.0)
         }
+        fn supports_seeded_rand(&self) -> bool {
+            true
+        }
         fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
             Some(
                 self.seeds
@@ -1397,11 +1450,11 @@ mod tests {
             assert_eq!(baseline.draws.get(), draws);
             let actual = SharedExpression::compile(&expression)
                 .unwrap()
-                .evaluate_with_context(
+                .start_execution(&session)
+                .evaluate(
                     &input,
                     &[1, 0, 1],
                     &mut EvalContext::default(),
-                    &session,
                     InvocationMode::Vector,
                 )
                 .unwrap();
@@ -1416,11 +1469,11 @@ mod tests {
         assert_eq!(
             SharedExpression::compile(&expression)
                 .unwrap()
-                .evaluate_with_context(
+                .start_execution(&session)
+                .evaluate(
                     &input,
                     &[1, 0],
                     &mut EvalContext::default(),
-                    &session,
                     InvocationMode::Vector
                 )
                 .unwrap(),
@@ -1470,11 +1523,11 @@ mod tests {
         assert_eq!(
             SharedExpression::compile(&guarded)
                 .unwrap()
-                .evaluate_with_context(
+                .start_execution(&session)
+                .evaluate(
                     &input,
                     &[1, 0, 1],
                     &mut EvalContext::default(),
-                    &session,
                     InvocationMode::Vector
                 )
                 .unwrap(),
@@ -1504,6 +1557,266 @@ mod tests {
                 .code,
             Some(3140)
         );
+    }
+
+    #[test]
+    fn shared_kernel_independent_executions_reset_seeded_state() {
+        let real = FieldType::new(tidb_datatype::FieldTypeCode::Double);
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("rand"),
+            real,
+            vec![numeric_literal(Datum::Int(7), &integer)],
+        ));
+        let program = SharedExpression::compile(&expression).unwrap();
+        let effects = Session::default();
+        let mut input = Chunk::new(&[], 2, 2);
+        input.set_num_virtual_rows(2);
+        // A new execution on the same frozen program/effects resets the seed;
+        // replacing EvalContext alone did not do so before explicit ownership.
+        let first = program
+            .start_execution(&effects)
+            .evaluate(
+                &input,
+                &[0, 1],
+                &mut EvalContext::default(),
+                InvocationMode::Vector,
+            )
+            .unwrap();
+        let second = program
+            .start_execution(&effects)
+            .evaluate(
+                &input,
+                &[0, 1],
+                &mut EvalContext::default(),
+                InvocationMode::Vector,
+            )
+            .unwrap();
+        eprintln!("independent execution witness: first={first:?}, second={second:?}");
+        assert_eq!(first, second, "new execution must restart a constant seed");
+    }
+
+    #[test]
+    fn shared_kernel_execution_interleaves_batches_and_outputs() {
+        eprintln!(
+            "execution sizes: SDK={}, expression={}, projection={}",
+            std::mem::size_of::<tidb_query_expr::RpnExecution>(),
+            std::mem::size_of::<SharedExpressionExecution>(),
+            std::mem::size_of::<SharedProjectionExecution>()
+        );
+        use tidb_datatype::FieldTypeCode;
+        let real = FieldType::new(FieldTypeCode::Double);
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let rand = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("rand"),
+            real.clone(),
+            vec![numeric_literal(Datum::Int(7), &integer)],
+        ));
+        let projection = SharedProjection::compile(&[rand.clone(), rand.clone()]).unwrap();
+        for scalar in [false, true] {
+            let effects = Session {
+                vectorized_off: scalar,
+                ..Session::default()
+            };
+            let mut a = projection.start_execution(&effects);
+            let mut b = projection.start_execution(&effects);
+            let oracle = crate::MysqlRng::new_with_seed(7);
+            let mut first = Vec::new();
+            for (batch, rows) in [&[0, 1][..], &[2, 0, 2][..]].into_iter().enumerate() {
+                // Each iteration really replaces the input allocation.
+                let mut input = Chunk::new_empty(&[]);
+                input.set_num_virtual_rows(3);
+                let expected: Vec<_> = rows.iter().map(|_| Datum::Real(oracle.gen())).collect();
+                if batch == 0 {
+                    first = expected.clone();
+                }
+                assert_eq!(
+                    a.evaluate(&input, &[], &mut EvalContext::default())
+                        .unwrap(),
+                    vec![vec![], vec![]]
+                );
+                assert_eq!(
+                    a.evaluate(&input, rows, &mut EvalContext::default())
+                        .unwrap(),
+                    vec![expected.clone(), expected.clone()]
+                );
+                let mut output = Chunk::new(&[real.clone(), real.clone()], 3, 3);
+                b.evaluate_into_chunk(&input, rows, &mut EvalContext::default(), &mut output)
+                    .unwrap();
+                for col in 0..2 {
+                    for (row, value) in expected.iter().enumerate() {
+                        assert_eq!(output.physical_row(row).get_datum(col, &real), *value);
+                    }
+                }
+            }
+            let mut input = Chunk::new_empty(&[]);
+            input.set_num_virtual_rows(2);
+            assert_eq!(
+                projection
+                    .start_execution(&effects)
+                    .evaluate(&input, &[0, 1], &mut EvalContext::default())
+                    .unwrap(),
+                vec![first.clone(), first]
+            );
+            assert_eq!(effects.draws.get(), 0, "capability must not probe RAND()");
+            assert!(
+                effects.seeds.borrow().is_empty(),
+                "shared state stays out of native map"
+            );
+            assert_eq!(
+                SharedExpression::compile(&rand)
+                    .unwrap()
+                    .evaluate(&input, &[0, 1], &mut EvalContext::default())
+                    .unwrap(),
+                vec![Datum::Real(crate::MysqlRng::new_with_seed(7).gen()); 2]
+            );
+        }
+    }
+
+    #[test]
+    fn shared_kernel_execution_dynamic_null_and_dead_seed_demand() {
+        use tidb_datatype::FieldTypeCode;
+        let real = FieldType::new(FieldTypeCode::Double);
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let mut seed = Column::new(1, integer.clone());
+        seed.index = 0;
+        let mut condition = Column::new(2, integer.clone());
+        condition.index = 1;
+        let rand = |seed| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("rand"),
+                real.clone(),
+                vec![seed],
+            ))
+        };
+        let dynamic = rand(Expression::Column(seed));
+        let guarded = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            real.clone(),
+            vec![
+                Expression::Column(condition),
+                rand(numeric_literal(Datum::Null, &integer)),
+                numeric_literal(Datum::Real(-1.0), &real),
+            ],
+        ));
+        let projection = SharedProjection::compile(&[dynamic, guarded]).unwrap();
+        for scalar in [false, true] {
+            let session = Session {
+                vectorized_off: scalar,
+                ..Session::default()
+            };
+            let mut execution = projection.start_execution(&session);
+            let seeded = crate::MysqlRng::new_with_seed(0);
+            for _ in 0..2 {
+                let mut input = Chunk::new(&[integer.clone(), integer.clone()], 3, 3);
+                for (seed, condition) in [(Datum::Null, 0), (Datum::Int(7), 1), (Datum::Int(9), 1)]
+                {
+                    input.append_datum(0, &seed);
+                    input.append_int64(1, condition);
+                }
+                let result = execution
+                    .evaluate(&input, &[0, 2, 1, 1], &mut EvalContext::default())
+                    .unwrap();
+                assert_eq!(
+                    result[0],
+                    [0, 9, 7, 7]
+                        .map(|seed| Datum::Real(crate::MysqlRng::new_with_seed(seed).gen()))
+                );
+                assert_eq!(
+                    result[1],
+                    vec![
+                        Datum::Real(-1.0),
+                        Datum::Real(seeded.gen()),
+                        Datum::Real(seeded.gen()),
+                        Datum::Real(seeded.gen())
+                    ]
+                );
+            }
+            assert_eq!(session.draws.get(), 0);
+        }
+    }
+
+    #[test]
+    fn shared_kernel_execution_retains_error_effects_and_recovers() {
+        use tidb_datatype::FieldTypeCode;
+        let real = FieldType::new(FieldTypeCode::Double);
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let text = native_type();
+        let rand = |args| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("rand"),
+                real.clone(),
+                args,
+            ))
+        };
+        let mut col = Column::new(1, text.clone());
+        col.index = 0;
+        let json = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("json_length"),
+            integer.clone(),
+            vec![Expression::Column(col)],
+        ));
+        let projection = SharedProjection::compile(&[
+            rand(vec![numeric_literal(Datum::Int(7), &integer)]),
+            rand(vec![]),
+            json,
+        ])
+        .unwrap();
+        for scalar in [false, true] {
+            for direct in [false, true] {
+                let effects = Session {
+                    vectorized_off: scalar,
+                    ..Session::default()
+                };
+                let mut execution = projection.start_execution(&effects);
+                let mut bad = Chunk::new(std::slice::from_ref(&text), 1, 1);
+                bad.append_datum(0, &Datum::new_string(b"{".to_vec()));
+                let mut output = Chunk::new(&[real.clone(), real.clone(), integer.clone()], 1, 1);
+                output.append_datum(0, &Datum::Real(99.0));
+                output.append_datum(1, &Datum::Real(98.0));
+                output.append_datum(2, &Datum::Int(97));
+                let error = if direct {
+                    execution
+                        .evaluate_into_chunk(&bad, &[0], &mut EvalContext::default(), &mut output)
+                        .unwrap_err()
+                } else {
+                    execution
+                        .evaluate(&bad, &[0], &mut EvalContext::default())
+                        .unwrap_err()
+                };
+                assert_eq!(error.code, Some(3140));
+                assert_eq!(effects.draws.get(), 1);
+                assert_eq!(
+                    output.physical_row(0).get_datum(0, &real),
+                    Datum::Real(99.0)
+                );
+                let mut good = Chunk::new(std::slice::from_ref(&text), 1, 1);
+                good.append_datum(0, &Datum::new_string(b"[]".to_vec()));
+                let oracle = crate::MysqlRng::new_with_seed(7);
+                oracle.gen();
+                let expected = vec![
+                    vec![Datum::Real(oracle.gen())],
+                    vec![Datum::Real(0.25)],
+                    vec![Datum::Int(0)],
+                ];
+                if direct {
+                    execution
+                        .evaluate_into_chunk(&good, &[0], &mut EvalContext::default(), &mut output)
+                        .unwrap();
+                    for (col, ty) in [&real, &real, &integer].into_iter().enumerate() {
+                        assert_eq!(output.physical_row(0).get_datum(col, ty), expected[col][0]);
+                    }
+                } else {
+                    assert_eq!(
+                        execution
+                            .evaluate(&good, &[0], &mut EvalContext::default())
+                            .unwrap(),
+                        expected
+                    );
+                }
+                assert_eq!(effects.draws.get(), 2);
+            }
+        }
     }
 
     #[test]
@@ -1537,12 +1850,8 @@ mod tests {
         let projection = SharedProjection::compile(&roots).unwrap();
         assert_eq!(
             projection
-                .evaluate(
-                    &input,
-                    &[0, 1],
-                    &mut EvalContext::default(),
-                    &Session::default()
-                )
+                .start_execution(&Session::default())
+                .evaluate(&input, &[0, 1], &mut EvalContext::default())
                 .unwrap(),
             expected
         );
@@ -1553,37 +1862,44 @@ mod tests {
         let shared_b = SharedExpression::compile(&b).unwrap();
         let baseline = Session::default();
         let session = Session::default();
-        for (source, compiled, rows) in [
-            (&a, &shared_a, &[1, 0][..]),
-            (&b, &shared_b, &[0][..]),
-            (&a, &shared_a, &[1, 1][..]),
+        let mut execution_a = shared_a.start_execution(&session);
+        let mut execution_b = shared_b.start_execution(&session);
+        for (source, which, rows) in [
+            (&a, 0, &[1, 0][..]),
+            (&b, 1, &[0][..]),
+            (&a, 0, &[1, 1][..]),
         ] {
+            let execution = if which == 0 {
+                &mut execution_a
+            } else {
+                &mut execution_b
+            };
             let values: Vec<_> = rows
                 .iter()
                 .map(|r| source.eval(&baseline, input.physical_row(*r)).unwrap())
                 .collect();
             assert_eq!(
-                compiled
-                    .evaluate_with_context(
+                execution
+                    .evaluate(
                         &input,
                         rows,
                         &mut EvalContext::default(),
-                        &session,
                         InvocationMode::Vector
                     )
                     .unwrap(),
                 values
             );
         }
-        assert_eq!(session.seeds.borrow().len(), 2);
+        assert!(session.seeds.borrow().is_empty());
+        assert_eq!(baseline.seeds.borrow().len(), 2);
         let fresh = SharedExpression::compile(&rand(vec![seed()])).unwrap();
         assert_eq!(
             fresh
-                .evaluate_with_context(
+                .start_execution(&session)
+                .evaluate(
                     &input,
                     &[0],
                     &mut EvalContext::default(),
-                    &session,
                     InvocationMode::Scalar
                 )
                 .unwrap(),
@@ -1598,11 +1914,11 @@ mod tests {
         let dynamic_session = Session::default();
         let values = SharedExpression::compile(&dynamic)
             .unwrap()
-            .evaluate_with_context(
+            .start_execution(&dynamic_session)
+            .evaluate(
                 &input,
                 &[1, 0, 1],
                 &mut EvalContext::default(),
-                &dynamic_session,
                 InvocationMode::Vector,
             )
             .unwrap();
@@ -1688,11 +2004,11 @@ mod tests {
             assert_eq!(original.get_uservar("v"), None);
             let actual = SharedExpression::compile(&expression)
                 .unwrap()
-                .evaluate_with_context(
+                .start_execution(&session)
+                .evaluate(
                     &input,
                     &[0],
                     &mut EvalContext::default(),
-                    &session,
                     InvocationMode::Vector,
                 );
             assert_eq!(session.get_uservar("v"), None);
@@ -1811,7 +2127,8 @@ mod tests {
                 .run(&original, &mut input, &mut output)
                 .unwrap_err();
             let actual = shared
-                .evaluate(&input, &[0, 1], &mut EvalContext::default(), &session)
+                .start_execution(&session)
+                .evaluate(&input, &[0, 1], &mut EvalContext::default())
                 .unwrap_err();
             let crate::evaluator::EvaluatorError::Eval(expected) = expected else {
                 panic!("expected evaluation failure");
@@ -1829,7 +2146,8 @@ mod tests {
         let session = Session::default();
         assert_eq!(
             shared
-                .evaluate(&input, &[7, 2, 7], &mut EvalContext::default(), &session)
+                .start_execution(&session)
+                .evaluate(&input, &[7, 2, 7], &mut EvalContext::default())
                 .unwrap(),
             vec![vec![Datum::Real(3.0), Datum::Real(4.0), Datum::Real(3.0)]]
         );
@@ -1901,13 +2219,8 @@ mod tests {
             for mode in [InvocationMode::Scalar, InvocationMode::Vector] {
                 let actual = SharedExpression::compile(&expression)
                     .unwrap()
-                    .evaluate_with_context(
-                        &input,
-                        &[0],
-                        &mut EvalContext::default(),
-                        &Session::default(),
-                        mode,
-                    )
+                    .start_execution(&Session::default())
+                    .evaluate(&input, &[0], &mut EvalContext::default(), mode)
                     .unwrap()
                     .remove(0);
                 let parts = |value: &Datum| {
@@ -1977,11 +2290,11 @@ mod tests {
                 let expected = expression.eval(&baseline, input.physical_row(0));
                 let actual = SharedExpression::compile(&expression)
                     .unwrap()
-                    .evaluate_with_context(
+                    .start_execution(&context)
+                    .evaluate(
                         &input,
                         &[2, 0, 2],
                         &mut EvalContext::default(),
-                        &context,
                         InvocationMode::Vector,
                     );
                 match expected {
@@ -2046,11 +2359,11 @@ mod tests {
                 let expected = expr.eval(&baseline, input.physical_row(0));
                 let actual = SharedExpression::compile(&expr)
                     .unwrap()
-                    .evaluate_with_context(
+                    .start_execution(&context)
+                    .evaluate(
                         &input,
                         &[0],
                         &mut EvalContext::default(),
-                        &context,
                         InvocationMode::Vector,
                     );
                 match expected {
@@ -2133,17 +2446,16 @@ mod tests {
                         vectorized_off,
                         ..Session::default()
                     };
+                    let mut execution = projection.start_execution(&session);
                     let rows = [4, 1, 0, 2, 3, 6, 5, 1, 0];
-                    let actual = projection
-                        .evaluate(&input, &rows, &mut ctx, &session)
-                        .unwrap();
+                    let actual = execution.evaluate(&input, &rows, &mut ctx).unwrap();
                     let mut direct = Chunk::new(
                         &vec![decimal.clone(); expressions.len()],
                         rows.len(),
                         rows.len(),
                     );
-                    projection
-                        .evaluate_into_chunk(&input, &rows, &mut ctx, &session, &mut direct)
+                    execution
+                        .evaluate_into_chunk(&input, &rows, &mut ctx, &mut direct)
                         .unwrap();
                     for (root, expression) in expressions.iter().enumerate() {
                         let mut expected_chunk =
@@ -2178,41 +2490,31 @@ mod tests {
                             }
                         }
                     }
-                    let one = projection
-                        .evaluate(&input, &[0], &mut ctx, &session)
-                        .unwrap();
+                    let one = execution.evaluate(&input, &[0], &mut ctx).unwrap();
                     for root in 0..expressions.len() {
                         assert_same_decimal(&one[root][0], &actual[root][2]);
                     }
                     assert_eq!(*session.warnings.borrow(), *original.warnings.borrow());
                     assert_eq!(
-                        projection
-                            .evaluate(&input, &[], &mut ctx, &session)
-                            .unwrap(),
+                        execution.evaluate(&input, &[], &mut ctx).unwrap(),
                         vec![Vec::<Datum>::new(); 3]
                     );
-                    projection
-                        .evaluate_into_chunk(&input, &[], &mut ctx, &session, &mut direct)
+                    execution
+                        .evaluate_into_chunk(&input, &[], &mut ctx, &mut direct)
                         .unwrap();
                     assert_eq!(direct.num_rows(), 0);
-                    assert!(projection
-                        .evaluate(&input, &[7], &mut ctx, &session)
+                    assert!(execution.evaluate(&input, &[7], &mut ctx).is_err());
+                    assert!(execution
+                        .evaluate(&Chunk::new(&[], 0, 0), &[0], &mut ctx)
                         .is_err());
-                    assert!(projection
-                        .evaluate(&Chunk::new(&[], 0, 0), &[0], &mut ctx, &session)
-                        .is_err());
-                    assert_eq!(
-                        projection
-                            .evaluate(&input, &rows, &mut ctx, &session)
-                            .unwrap(),
-                        actual
-                    );
+                    assert_eq!(execution.evaluate(&input, &rows, &mut ctx).unwrap(), actual);
                 }
                 let expected = expressions[0]
                     .eval(&Session::default(), input.physical_row(0))
                     .unwrap();
                 let retained = projection
-                    .evaluate(&input, &[0], &mut ctx, &Session::default())
+                    .start_execution(&Session::default())
+                    .evaluate(&input, &[0], &mut ctx)
                     .unwrap();
                 drop(input);
                 assert_same_decimal(&retained[0][0], &expected);
@@ -2267,7 +2569,8 @@ mod tests {
                     ParameterProbe::new(Some(Datum::new_string(b"2.5junk".to_vec())), 4);
                 current.session.vectorized_off = scalar;
                 shared
-                    .evaluate(&input, &[0, 1, 2], &mut EvalContext::default(), &current)
+                    .start_execution(&current)
+                    .evaluate(&input, &[0, 1, 2], &mut EvalContext::default())
                     .unwrap();
                 eprintln!("static VarString scalar={scalar}: native warnings={:?}, shared warnings={:?}, shared reads={}", native.session.warnings.borrow(), current.session.warnings.borrow(), current.reads.get());
             }
@@ -2327,7 +2630,8 @@ mod tests {
             };
             assert_eq!(expected, crate::EvalError::DecimalOverflow);
             let actual = shared
-                .evaluate(&input, &[0], &mut EvalContext::default(), &current)
+                .start_execution(&current)
+                .evaluate(&input, &[0], &mut EvalContext::default())
                 .unwrap_err();
             eprintln!("hidden diagnostic: native={expected:?}, shared={actual:?}");
             assert_eq!(actual.code, Some(1690));
@@ -2388,11 +2692,10 @@ mod tests {
                         input.set_num_virtual_rows(rows);
                         let mut output = Chunk::new_empty(std::slice::from_ref(&ty));
                         let expected = suite.run(&expected_ctx, &mut input, &mut output);
-                        let actual = shared.evaluate(
+                        let actual = shared.start_execution(&actual_ctx).evaluate(
                             &input,
                             &(0..rows).collect::<Vec<_>>(),
                             &mut EvalContext::default(),
-                            &actual_ctx,
                         );
                         if strict && matches!(value, Datum::String(_)) {
                             let crate::evaluator::EvaluatorError::Eval(
@@ -2515,18 +2818,21 @@ mod tests {
         assert_eq!(unbound.reads.get(), 0);
         let empty = Chunk::new_empty(std::slice::from_ref(&ty));
         assert!(plain
-            .evaluate(&empty, &[], &mut EvalContext::default(), &unbound)
+            .start_execution(&unbound)
+            .evaluate(&empty, &[], &mut EvalContext::default())
             .unwrap()[0]
             .is_empty());
         let mut input = Chunk::new_empty(std::slice::from_ref(&ty));
         for _ in 0..3 {
             input.append_datum(0, &Datum::Decimal(Decimal::from_int(100)));
         }
-        dead.evaluate(&input, &[2, 0, 2], &mut EvalContext::default(), &unbound)
+        dead.start_execution(&unbound)
+            .evaluate(&input, &[2, 0, 2], &mut EvalContext::default())
             .unwrap();
         assert_eq!(unbound.reads.get(), 0);
         let error = plain
-            .evaluate(&input, &[0], &mut EvalContext::default(), &unbound)
+            .start_execution(&unbound)
+            .evaluate(&input, &[0], &mut EvalContext::default())
             .unwrap_err();
         assert_eq!(error.code, Some(1105));
         assert_eq!(error.message, "unbound prepared parameter");
@@ -2546,7 +2852,8 @@ mod tests {
                     panic!("expected numeric error")
                 };
                 let got = shared
-                    .evaluate(&input, &[0, 1, 2], &mut EvalContext::default(), &current)
+                    .start_execution(&current)
+                    .evaluate(&input, &[0, 1, 2], &mut EvalContext::default())
                     .unwrap_err();
                 if detailed {
                     assert_native_error(got, expected);
@@ -2562,12 +2869,14 @@ mod tests {
             }
             let mut current = ParameterProbe::new(Some(Datum::Int(2)), 8);
             let old = shared
-                .evaluate(&input, &[2, 0, 2], &mut EvalContext::default(), &current)
+                .start_execution(&current)
+                .evaluate(&input, &[2, 0, 2], &mut EvalContext::default())
                 .unwrap();
             // Both contexts and physical input can change; returned values own their data.
             current.value = Some(Datum::Null);
             let nulls = shared
-                .evaluate(&input, &[0], &mut EvalContext::default(), &current)
+                .start_execution(&current)
+                .evaluate(&input, &[0], &mut EvalContext::default())
                 .unwrap();
             assert!(nulls[0][0].is_null());
             drop(current);
@@ -2633,11 +2942,10 @@ mod tests {
                 let native = ParameterProbe::new(Some(value.clone()), 4);
                 let shared = ParameterProbe::new(Some(value.clone()), 4);
                 let expected = expression.eval(&native, input.get_row(0));
-                let actual = program.evaluate_with_context(
+                let actual = program.start_execution(&shared).evaluate(
                     &input,
                     &[0],
                     &mut EvalContext::default(),
-                    &shared,
                     mode,
                 );
                 match expected {
@@ -2894,11 +3202,11 @@ mod tests {
             .run(&unbound, &mut empty, &mut output)
             .unwrap();
         assert!(program
-            .evaluate_with_context(
+            .start_execution(&unbound)
+            .evaluate(
                 &empty,
                 &[],
                 &mut EvalContext::default(),
-                &unbound,
                 InvocationMode::Vector
             )
             .unwrap()
@@ -3096,7 +3404,9 @@ mod tests {
                     .iter()
                     .map(|r| expression.eval(&original, input.physical_row(*r)))
                     .collect::<Result<Vec<_>, _>>();
-                let actual = shared.evaluate(&input, &rows, &mut ctx, &policy);
+                let actual = shared
+                    .start_execution(&policy)
+                    .evaluate(&input, &rows, &mut ctx);
                 match expected {
                     Err(crate::EvalError::DivisionByZero) => {
                         let error = actual.unwrap_err();
@@ -3258,11 +3568,10 @@ mod tests {
                         &[7, 2, 7][..]
                     };
                     let baseline = expression.eval(&original, input.physical_row(7));
-                    let actual = program.evaluate_with_context(
+                    let actual = program.start_execution(&session).evaluate(
                         &input,
                         rows,
                         &mut EvalContext::default(),
-                        &session,
                         mode,
                     );
                     match baseline {
@@ -3332,7 +3641,8 @@ mod tests {
             }
             let actual = SharedProjection::compile(&[expression.clone()])
                 .unwrap()
-                .evaluate(&input, &[0, 1], &mut EvalContext::default(), &context);
+                .start_execution(&context)
+                .evaluate(&input, &[0, 1], &mut EvalContext::default());
             assert_eq!(actual.is_ok(), vectorized_off, "{actual:?}");
             if vectorized_off {
                 assert_eq!(actual.unwrap(), vec![vec![Datum::Null; 2]]);
@@ -3349,15 +3659,11 @@ mod tests {
         assert_eq!(
             SharedProjection::compile(&[rand.clone(), rand])
                 .unwrap()
-                .evaluate(
-                    &input,
-                    &[0, 1],
-                    &mut EvalContext::default(),
-                    &Session {
-                        vectorized_off: true,
-                        ..Session::default()
-                    }
-                )
+                .start_execution(&Session {
+                    vectorized_off: true,
+                    ..Session::default()
+                })
+                .evaluate(&input, &[0, 1], &mut EvalContext::default())
                 .unwrap(),
             vec![
                 vec![Datum::Real(0.125), Datum::Real(0.25)],
@@ -3401,7 +3707,11 @@ mod tests {
             assert_eq!(baseline.get_uservar("copy"), Some(value.clone()));
             let session = Session::default();
             session.set_uservar("v", value.clone());
-            let result = shared.evaluate(&input, &[0], &mut EvalContext::default(), &session);
+            let result = shared.start_execution(&session).evaluate(
+                &input,
+                &[0],
+                &mut EvalContext::default(),
+            );
             if value == Datum::new_string(b"abc") {
                 result.unwrap();
                 assert_eq!(session.get_uservar("copy"), Some(value));
@@ -3476,7 +3786,8 @@ mod tests {
                     let session = Session::default();
                     compiled
                         .unwrap()
-                        .evaluate(&input, &[0], &mut EvalContext::default(), &session)
+                        .start_execution(&session)
+                        .evaluate(&input, &[0], &mut EvalContext::default())
                         .unwrap();
                     assert_eq!(session.get_uservar("copy"), expected);
                     if nested {
@@ -3550,12 +3861,8 @@ mod tests {
         let shared = SharedProjection::compile(&roots).unwrap();
         assert_eq!(
             shared
-                .evaluate(
-                    &input,
-                    &[0, 1, 2],
-                    &mut EvalContext::default(),
-                    &Session::default()
-                )
+                .start_execution(&Session::default())
+                .evaluate(&input, &[0, 1, 2], &mut EvalContext::default())
                 .unwrap(),
             expected
         );
@@ -3569,12 +3876,8 @@ mod tests {
         ];
         assert_eq!(
             shared
-                .evaluate(
-                    &input,
-                    &[2, 0, 2],
-                    &mut EvalContext::default(),
-                    &Session::default()
-                )
+                .start_execution(&Session::default())
+                .evaluate(&input, &[2, 0, 2], &mut EvalContext::default())
                 .unwrap(),
             expected
         );
@@ -4556,13 +4859,8 @@ mod tests {
         output.append_datum(1, &Datum::Decimal(Decimal::from_int(88)));
         let session = Session::default();
         let error = projection
-            .evaluate_into_chunk(
-                &input,
-                &[0, 1],
-                &mut EvalContext::default(),
-                &session,
-                &mut output,
-            )
+            .start_execution(&session)
+            .evaluate_into_chunk(&input, &[0, 1], &mut EvalContext::default(), &mut output)
             .unwrap_err();
         assert_eq!(error.code, Some(1690));
         assert!(session.draws.get() > 0);
@@ -4584,38 +4882,23 @@ mod tests {
         output.make_ref_to(0, &mut input, 0).unwrap();
         let session = Session::default();
         assert!(projection
-            .evaluate_into_chunk(
-                &input,
-                &[0],
-                &mut EvalContext::default(),
-                &session,
-                &mut output
-            )
+            .start_execution(&session)
+            .evaluate_into_chunk(&input, &[0], &mut EvalContext::default(), &mut output)
             .is_err());
         assert_eq!(session.draws.get(), 0);
         assert_eq!(input.column(0).get_float64(0), 5.0);
         let mut output = Chunk::new(&[real.clone(), real.clone()], 1, 1);
         output.make_ref(0, 1);
         assert!(projection
-            .evaluate_into_chunk(
-                &input,
-                &[0],
-                &mut EvalContext::default(),
-                &session,
-                &mut output
-            )
+            .start_execution(&session)
+            .evaluate_into_chunk(&input, &[0], &mut EvalContext::default(), &mut output)
             .is_err());
         assert_eq!(session.draws.get(), 0);
 
         let mut wrong = Chunk::new(&[decimal.clone(), decimal.clone()], 1, 1);
         assert!(projection
-            .evaluate_into_chunk(
-                &input,
-                &[0],
-                &mut EvalContext::default(),
-                &session,
-                &mut wrong
-            )
+            .start_execution(&session)
+            .evaluate_into_chunk(&input, &[0], &mut EvalContext::default(), &mut wrong)
             .is_err());
         assert_eq!(session.draws.get(), 0);
 
@@ -4629,17 +4912,13 @@ mod tests {
                 ..Session::default()
             };
             let expected = projection
-                .evaluate(&input, &[0, 0], &mut EvalContext::default(), &original)
+                .start_execution(&original)
+                .evaluate(&input, &[0, 0], &mut EvalContext::default())
                 .unwrap();
             let mut output = Chunk::new(&[real.clone(), real.clone()], 2, 2);
             projection
-                .evaluate_into_chunk(
-                    &input,
-                    &[0, 0],
-                    &mut EvalContext::default(),
-                    &direct,
-                    &mut output,
-                )
+                .start_execution(&direct)
+                .evaluate_into_chunk(&input, &[0, 0], &mut EvalContext::default(), &mut output)
                 .unwrap();
             for col in 0..2 {
                 for row in 0..2 {
@@ -4674,19 +4953,15 @@ mod tests {
             input.set_num_virtual_rows(1);
             let mut output = Chunk::new(std::slice::from_ref(&ty), 1, 1);
             let owned = projection
-                .evaluate(&input, &[0], &mut EvalContext::default(), &crate::NoColumns)
+                .start_execution(&crate::NoColumns)
+                .evaluate(&input, &[0], &mut EvalContext::default())
                 .unwrap();
             let mut expected = Chunk::new(std::slice::from_ref(&ty), 1, 1);
             expected.append_datum(0, &owned[0][0]);
             expected.set_num_virtual_rows(1);
             projection
-                .evaluate_into_chunk(
-                    &input,
-                    &[0],
-                    &mut EvalContext::default(),
-                    &crate::NoColumns,
-                    &mut output,
-                )
+                .start_execution(&crate::NoColumns)
+                .evaluate_into_chunk(&input, &[0], &mut EvalContext::default(), &mut output)
                 .unwrap();
             assert_eq!(output, expected);
         }

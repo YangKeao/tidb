@@ -10,6 +10,9 @@ description = "TiDB executor: the wired execution engine spine (Executor trait +
 autotests = false
 build = "../../scripts/aggregate-tests.rs"
 
+[features]
+shared-kernel = ["tidb-expr/shared-kernel"]
+
 [dependencies]
 prometheus = { version = "0.14", default-features = false }
 base64 = { workspace = true }
@@ -81,3 +84,8 @@ harness = false
 [[bench]]
 name = "adaptive_limit"
 harness = false
+
+[[test]]
+name = "shared_execution"
+path = "tests/shared_execution.rs"
+required-features = ["shared-kernel"]

@@ -972,6 +972,11 @@ pub trait Columns {
         None
     }
 
+    /// Whether shared executions may maintain a constant seeded RAND stream.
+    fn supports_seeded_rand(&self) -> bool {
+        false
+    }
+
     /// Advances one statement-scoped constant `RAND(N)` occurrence.
     fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
         let _ = (key, seed);

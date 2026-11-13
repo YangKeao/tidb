@@ -227,7 +227,10 @@ fn column_bench(iterations: usize) {
         .map(|r| output.physical_row(r).get_datum(0, &ty))
         .collect::<Vec<_>>();
     for effects in [&NoColumns as &dyn tidb_expr::Columns, &ScalarOnly] {
-        let actual = shared.evaluate(&input, &rows, &mut ctx, effects).unwrap();
+        let actual = shared
+            .start_execution(effects)
+            .evaluate(&input, &rows, &mut ctx)
+            .unwrap();
         assert_eq!(parts(&actual[0]), parts(&expected));
         output.reset();
         for v in &actual[0] {
@@ -283,9 +286,10 @@ fn column_bench(iterations: usize) {
         ("shared", &NoColumns as &dyn tidb_expr::Columns),
         ("shared_scalar", &ScalarOnly),
     ] {
+        let mut execution = shared.start_execution(effects);
         measure("column_mul", width, "reuse", route, iterations, || {
             output.reset();
-            let values = shared.evaluate(&input, &rows, &mut ctx, effects).unwrap();
+            let values = execution.evaluate(&input, &rows, &mut ctx).unwrap();
             for v in &values[0] {
                 output.append_datum(0, v);
             }
@@ -294,8 +298,9 @@ fn column_bench(iterations: usize) {
     }
     #[cfg(direct_chunk)]
     {
-        shared
-            .evaluate_into_chunk(&input, &rows, &mut ctx, &NoColumns, &mut output)
+        let mut execution = shared.start_execution(&NoColumns);
+        execution
+            .evaluate_into_chunk(&input, &rows, &mut ctx, &mut output)
             .unwrap();
         let actual = (0..width)
             .map(|r| output.physical_row(r).get_datum(0, &ty))
@@ -308,8 +313,8 @@ fn column_bench(iterations: usize) {
             "direct_chunk",
             iterations,
             || {
-                shared
-                    .evaluate_into_chunk(&input, &rows, &mut ctx, &NoColumns, &mut output)
+                execution
+                    .evaluate_into_chunk(&input, &rows, &mut ctx, &mut output)
                     .unwrap();
                 black_box(&output);
             },
@@ -368,17 +373,14 @@ fn column_bench(iterations: usize) {
             iterations,
             arithmetic,
         );
+        let mut execution = shared.start_execution(&NoColumns);
         measure(
             "column_mul",
             width,
             "evaluate",
             "shared",
             iterations,
-            || {
-                shared
-                    .evaluate(&input, &rows, &mut ctx, &NoColumns)
-                    .unwrap()
-            },
+            || execution.evaluate(&input, &rows, &mut ctx).unwrap(),
         );
         measure("column_mul", width, "write", "shared", iterations, || {
             output.reset();
@@ -525,6 +527,8 @@ fn main() {
         });
         let shared = SharedProjection::compile(std::slice::from_ref(&expression)).unwrap();
         let native = EvaluatorSuite::new(vec![expression.clone()], false);
+        let mut vector_execution = shared.start_execution(&NoColumns);
+        let mut scalar_execution = shared.start_execution(&ScalarOnly);
         for width in [1, 64] {
             let mut chunk = Chunk::new(&[], width, width);
             chunk.set_num_virtual_rows(width);
@@ -537,12 +541,12 @@ fn main() {
                 parts(&[Datum::Decimal(arithmetic())]),
                 parts(&expected[..1])
             );
-            let actual = shared
-                .evaluate(&chunk, &rows, &mut context, &NoColumns)
+            let actual = vector_execution
+                .evaluate(&chunk, &rows, &mut context)
                 .unwrap();
             assert_eq!(parts(&actual[0]), parts(&expected));
-            let scalar_actual = shared
-                .evaluate(&chunk, &rows, &mut context, &ScalarOnly)
+            let scalar_actual = scalar_execution
+                .evaluate(&chunk, &rows, &mut context)
                 .unwrap();
             assert_eq!(parts(&scalar_actual[0]), parts(&expected));
             if name == "inline_mul" || name == "spill_mul" {
@@ -612,15 +616,15 @@ fn main() {
             });
             measure(name, width, "evaluate", "shared", iterations, || {
                 black_box(
-                    shared
-                        .evaluate(&chunk, &rows, &mut context, &NoColumns)
+                    vector_execution
+                        .evaluate(&chunk, &rows, &mut context)
                         .unwrap(),
                 );
             });
             measure(name, width, "reuse", "shared_scalar", iterations, || {
                 output.reset();
-                let values = shared
-                    .evaluate(&chunk, &rows, &mut context, &ScalarOnly)
+                let values = scalar_execution
+                    .evaluate(&chunk, &rows, &mut context)
                     .unwrap();
                 for value in &values[0] {
                     output.append_datum(0, value);
@@ -629,8 +633,8 @@ fn main() {
             });
             measure(name, width, "evaluate", "shared_scalar", iterations, || {
                 black_box(
-                    shared
-                        .evaluate(&chunk, &rows, &mut context, &ScalarOnly)
+                    scalar_execution
+                        .evaluate(&chunk, &rows, &mut context)
                         .unwrap(),
                 );
             });
@@ -655,8 +659,8 @@ fn main() {
             });
             measure(name, width, "reuse", "shared", iterations, || {
                 output.reset();
-                let values = shared
-                    .evaluate(&chunk, &rows, &mut context, &NoColumns)
+                let values = vector_execution
+                    .evaluate(&chunk, &rows, &mut context)
                     .unwrap();
                 for value in &values[0] {
                     output.append_datum(0, value);

@@ -1046,3 +1046,22 @@ fn json_cast_source_types_match_go_through_sql() {
         }
     }
 }
+
+#[test]
+fn prepared_rand_restarts_seeded_and_preserves_session_stream() {
+    let mut session = Session::new();
+    session.run("SET rand_seed1 = 10000000").unwrap();
+    session.run("SET rand_seed2 = 1000000").unwrap();
+    session
+        .run("PREPARE random_stmt FROM 'SELECT RAND(5), RAND()'")
+        .unwrap();
+    assert_eq!(
+        row_text(session.run("EXECUTE random_stmt")),
+        [["0.40613597483014313", "0.028870999839968048"]]
+    );
+    assert_eq!(
+        row_text(session.run("EXECUTE random_stmt")),
+        [["0.40613597483014313", "0.11641535266900002"]]
+    );
+    session.run("DEALLOCATE PREPARE random_stmt").unwrap();
+}

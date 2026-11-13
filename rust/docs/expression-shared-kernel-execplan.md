@@ -530,3 +530,36 @@ One layout trial only; a negative result is a complete bounded deliverable. Same
 
 
 The fixed result is in shared-kernel/carrier-layout.zh.md with 40 timing and 10 allocation cells. Carrier/Option/ExpressionScalar shrink from112 to80 bytes; RpnExpressionNode240 to208, RpnStackNode160 unchanged. Owned Vector and direct each request8064 fewer bytes per call, with unchanged allocation counts. Direct paired timing ranges−2.33% to+1.88%; no stable speedup claim. All original regressions and scoped checks pass; full SDK Clippy remains the inherited19-advisory failure, not rerun. End this Decimal single-case window; broader lifecycle and migration budgets remain open. Final report, receipt and publication are tracked by task44 review handoff.
+
+
+## Task45: execution owns seeded state
+
+
+Keep each compiled SharedProjection and RPN program frozen. Add an explicit execution object borrowing that program and one fixed native effects context. It owns SDK seeded RAND slots indexed by the original program's local node ordinal. Reuse the object across chunks; creating another object starts a fresh seeded stream. The existing eval_group and frame loop still compute all demand and effects. Native old-path address keys stay untouched; shared-path address keys are removed. A declarative capability defaults false for context-free first-sample behavior and is true for real StmtContext and supporting tests. Unseeded RAND, variables, parameters and warnings still use actual statement/session capabilities.
+
+### Progress
+
+
+- [x] Preserve a deterministic before witness on the same program and effects; do not label this a default SQL bug.
+- [x] Implement frozen-program executions and migrate all experimental context callers without per-batch recreation.
+- [x] Verify independent executions, continuation, dynamic seeds, branch/selection/repeat demand and recovery after errors; inspect real EXECUTE context ownership.
+- [x] Run targeted native/SDK regressions, scoped lint and source correspondence; publish full counts and fixed results for review.
+
+### Plan and acceptance
+
+
+Edit SDK components/tidb_query_expr/src/types/expr_eval.rs for owned stream slots and pass them through the existing loop. In TiDB rust/crates/tidb-expr/src/shared_kernel.rs expose start_execution with a fixed effects borrow, preserving no-context convenience semantics. Add the capability in expr context.rs and real executor StmtContext implementation. Migrate tests and the opt-in benchmark to hold executions across repeated evaluations. First run cargo test -p tidb-expr --features shared-kernel --lib shared_kernel_independent_executions_reset_seeded_state --locked --offline -- --nocapture and retain its expected before failure; then run the shared suite and SDK expression library regressions, plus actual session EXECUTE seeded/unseeded checks, make lint and formatting. All failures stay in evidence/execution-lifecycle. No default SQL integration or cross-EXECUTE cache is introduced; existing EXECUTE creates a new StmtContext and must retain that behavior. Do not clear session state, use global IDs, leases, or another evaluator. No Decimal algorithm or measurement expansion. The Designer owns the full migration budget update; this batch reports actual changes only.
+
+### Decision Log
+
+
+Designer7db0fd17 authorizes one complete lifecycle task through fixed implementation review. A fresh EvalContext on the same program/effects is a deterministic old-API isolation witness, not evidence that the default SQL EXECUTE already leaks. Known full SDK advisory gate is inherited; no unrelated dependency upgrade or repeated advisory run.
+
+### Outcomes & Retrospective
+
+
+Pending implementation and regression evidence.
+
+### Outcomes and limits
+
+Task45 preserves the original shared frame loop and isolates seeded state by execution/local instruction. The runtime before witness fails as expected; 47 shared, 8 parameter, 430 independent SDK, one real StmtContext integration and one actual PREPARE/EXECUTE check pass. The initial executor unit-test target is blocked by seven unchanged TableResolver fixtures missing clause_message; the dedicated integration target exercises the real owner without compiling those unrelated unit fixtures. New test import/admission corrections and all failed attempts are retained. State sizes are SDK64/expression88/projection48 bytes, excluding dynamic maps/root vectors; no performance improvement is claimed. See shared-kernel/execution-lifecycle.zh.md and its validation receipt for fixed sources, all counts and limitations. Default SQL and cross-EXECUTE caching remain outside this implementation.

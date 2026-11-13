@@ -4265,6 +4265,10 @@ impl Columns for StmtContext {
         self.rand_session.as_ref().map(|rng| rng.gen())
     }
 
+    fn supports_seeded_rand(&self) -> bool {
+        true
+    }
+
     fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
         Some(
             self.rand_seeded
