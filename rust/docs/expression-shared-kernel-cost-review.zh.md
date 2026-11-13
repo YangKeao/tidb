@@ -329,3 +329,48 @@ SDK固定引用原TiDB的`8abb688c80bd48de688bfc792bc735682404e4dd`，没有算�
 下一步依据Designer消息5caea732-21bd-4178-bada-bfde751ba924和227514d5-18e3-48d0-9ae5-4e5dfd2f34c2，在task #41内修正两处接线；范围由Designer负责，到修正固定版本复审结束。保留最小失败到成功证据、lint／格式／diff和完整计数。若编译输入及依赖声明未变，已有429／41／8结果按对应版本复用，明确说明未重跑；不把这一配置补丁扩成新函数、默认SQL入口或性能工作。后续完整M1、生命周期、真实列向量成本和245族体积仍未完成。
 
 Designer本轮只独立检查固定源码、记录与统计，另用本地临时Git子模块复现初始化行为；未重跑产品构建、测试或性能。设计文档检查固定链接、相对链接、ExecPlan格式与diff后发布。
+
+
+## 独立SDK构建修正版复审：两处入口缺口关闭
+
+固定TiDB修正源码`98a1535fce668c1920685663988bb1ba568dd64b`、[报告8f62b406](https://github.com/YangKeao/tidb/blob/8f62b406e32f1edfdd1f40c6bb40e5094602bf54/rust/docs/shared-kernel/independent-sdk-build.zh.md)，SDK为`780ab3e776f47d634ac8963437baf8477a7b2df7`。两处配置修正通过限定复审；5caea732／227514d5的修正顺序条件结束。这里接受的是独立表达式库构建及原入口配置，未扩大到全部SDK、企业版产品构建或默认SQL后端。
+
+TiDB现有init-submodule只增加显式`--checkout`，普通Cargo仍遵守`.gitmodules`的默认跳过。新增55行回归脚本从实际Makefile提取配方，用真实子模块名／路径、默认none和本地临时仓库执行make。旧配方退出0但缺少文件，要求checkout的断言退出1；修正配方取出预期文件与gitlink，重复调用成功。SDK仅增加指定仓库URL的allow-git，unknown-git、unknown-registry与原allow-org不变。cargo-deny0.18.9实际sources检查从五个原TiDB包的source-not-allowed、退出8，变为零错误／警告、退出0；首次来源拒绝日志、结果及驱动脚本误写诊断名字的更正说明单列保留；原错误脚本／traceback未单独留存，不将这部分说明当作已重建的失败执行。
+
+复审收据的22份记录哈希吻合，5525项固定记录摘要重建为`8a5a8877cfcf510c2bd98413bd9108ee9a6cc5171505d39935b7ae580f73c6aa`。相比首版仅SDK deny.toml这一策略文件改变，其余5524项、产品Rust、依赖声明及锁文件相同；Makefile不在该后缀清单内，另以固定补丁和回归日志核对。因此沿用原SDK429、native41／8产品结果有明确依据，本次没有重跑这些测试。根lint退出0由提交收据报告，原始日志没有独立退出尾行；sources通过不代表advisories／licenses／bans、完整Clippy或其他SDK包通过。初版缓存／日志来源的限定继续保留，Designer也未另运行产品构建、测试或性能。
+
+本次修正构建`+2/−1`、文档与核验`+227/−3`，全部`+229/−4`、增删233；task #41完整批次构建`+16/−4`、文档证据`+588/−1`，全部`+604/−5`、增删609。生产Rust与产品测试逻辑零变动；本地Git回归脚本计入文档核验而未从总量排除。相对原始基线，源码测试仍**7030**；全部`+25087/−222`、增删**25309**。统计独立从固定Git对象重算。
+
+
+## 下一批：限定真实列完整调用的成本归因与一次优化
+
+依据Designer消息963621fa-39e5-4af5-a731-b43af945267f，从上述修正版启动独立任务。范围由Designer负责，到固定结果复审结束；先解释已有`column_mul/64`的完整调用差距，再决定一处有测量依据的优化。历史2.43–2.87倍差距来自旧固定版本，不直接当作新版本测量；不承诺本批消除整个差距，也不把默认SQL、全函数迁移或生命周期改造并入。
+
+复用`rust/docs/shared-kernel/decimal-shared-bench.rs`的`DECIMAL_BENCH_COLUMNS=1`入口及已有构建／运行脚本。它比较同一真实Decimal Chunk、64个位置、NULL和四条完整调用路径：native Scalar、native Vector、shared Scalar、shared Vector；编译程序不计入重复求值计时，输出仍写回Chunk。保留所有完整数值及输出对照，不删除输入解码或输出写回以美化结果。先在当前固定源码生成无分配包装的基线计时程序与独立分配计数程序；运行器仍用同一场景、四轮交替前后版本。分配程序的计时不参与速度结论。
+
+在固定TiDB的rust/目录中，把bench_out设为本任务证据目录的绝对路径，运行以下现有命令；候选版本改用after-time／after-alloc输出目录。rustup which返回仓库声明工具链的实际程序路径，避免构建器对符号链接执行resolve后错误指向rustup代理。记录所选版本及task #41的系统构建前提，不恢复个人包装器。这里是独立优化测量程序：opt-level 3、LTO关闭、16个codegen units，不冒充产品thin-LTO构建。
+
+    bench_cargo=$(rustup which cargo)
+    bench_rustc=$(rustup which rustc)
+    python3 docs/shared-kernel/build-decimal-bench.py --repo .. --cargo "$bench_cargo" --rustc "$bench_rustc" --output "$bench_out/before-time"
+    python3 docs/shared-kernel/build-decimal-bench.py --repo .. --cargo "$bench_cargo" --rustc "$bench_rustc" --output "$bench_out/before-alloc" --allocations
+
+随后从固定TiDB根目录运行，两个版本使用同一测量程序源码；运行器记录CPU绑定并交替前后版本，二进制内部四条路径顺序仍固定。清除继承的DECIMAL_BENCH_ONLY筛选，完整结果必须包含四条路径。分配程序另计100次调用，其计数不由计时iterations决定。尚无候选时可把after也指向before程序取得基线重复结果，明确没有优化后版本。
+
+    unset DECIMAL_BENCH_ONLY
+    python3 rust/docs/shared-kernel/run-decimal-bench.py --columns --before "$bench_out/before-time/decimal-bench" --after "$bench_out/after-time/decimal-bench" --output "$bench_out/timing" --iterations 20000 --rounds 4
+    python3 rust/docs/shared-kernel/run-decimal-bench.py --columns --before "$bench_out/before-alloc/decimal-bench" --after "$bench_out/after-alloc/decimal-bench" --output "$bench_out/allocations" --allocations --iterations 1 --rounds 1
+
+原生Vector使用紧凑i128表示处理支持的算术树，并直接写出MyDecimal；共享路径会读取原Decimal、运行RPN并物化结果。源码没有证明此原生路径使用SIMD。下一步先用一个精确过滤的调用做采样，或在采样不可用时做最少的阶段测量，分别定位输入读取／物化、原datatype算术、RPN调度和输出写回。配置、固定库产物及符号可见性随证据记录；阶段成本仅作归因，不能把分别测出的微操作相加替代完整调用速度。
+
+定向采样只用无包装基线程序，在同一CPU上分别设置DECIMAL_BENCH_COLUMNS=1、DECIMAL_BENCH_ONLY=column_mul/64/reuse/shared或column_mul/64/reuse/native_vector、DECIMAL_BENCH_ITERATIONS=200000。它仍执行一次准备及值断言；采样所得时间不用于验收。若权限或优化符号妨碍归因，允许对同一场景作一次测量程序内的求值／写出分段；若仍未定位安全改动，本批以归因未决及有预算的下一步决策结束，明确未接受性能优化，不继续扩大采样范围。
+
+可先检验一个已有线索：该场景58个非NULL乘积需要30位系数，超出Decimal的24字节内联存储；历史shared／native分配调用相差58，可能与结果字符串物化及堆存储有关。这是待验证假设，不是耗时原因已证实。不要仅凭Vec、循环或动态接口出现在源码里便新增scratch池、公共缓存或整套新值表示。
+
+若测量定位到可用小改动解决的成本，在既有原datatype所有者或共享RPN／边界内只实施一项优化，再保留修正前后完整调用结果及分配差异。不能复制`DecimalValue`／算术、回调旧递归表达式求值、扩大编译接纳，或丢弃隐藏精度／storage_scale／result_scale／声明类型。若主要差距来自原生紧凑整树表示且没有合理小改动，有限交付是具体归因及有源码位置、接口和增删预算的原所有者primitive复用方案；停止本批编码，不将未验证方案算作优化完成。
+
+如修改原tidb-datatype源码，需先固定该原所有者版本，将SDK Git revision和锁文件同步到同一版本，再核对独立SDK图与本地patch图各自唯一datatype及源码对应；不能让独立SDK仍测8abb旧实现而本地已测新算法。仅改共享RPN或native输入／输出适配时，不无故改datatype依赖。保留本轮刚闭合的普通Cargo声明，不恢复未提交的cargo-tidb包装器。
+
+验收保持原场景及完整调用：无包装计时比较实际的before／after源码与库产物，展示各轮和剩余native差距；分配程序另列调用次数与字节数。Scalar／Vector不得合并，选择顺序／重复位置、NULL、Decimal隐藏精度和类型形状、诊断内容／数量及旧输出独立性仍由现有测试保护。若更改产品路径，运行受影响41项shared、8项prepared、429项SDK与涉及的datatype定向测试，以及make lint、格式和diff；只按确切语义变更补回归，不新造大测试矩阵。若只有测量／设计交付，核对测量断言、固定输入／二进制及相关脚本即可，既有产品测试按版本沿用。全部源码、测试、构建、数据及报告均纳入本批和原始基线计数。
+
+只有无插桩完整调用中shared Vector中位数下降、配对轮次方向一致且超过所观察的波动，其他三条路径也无可重复退化，才称为本场景的性能改善。分配下降本身不够；噪声内结果如实记为未决，剩余原生差距单列，不宣称整体性能目标完成。
