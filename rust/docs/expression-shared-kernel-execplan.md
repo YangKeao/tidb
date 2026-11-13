@@ -472,8 +472,8 @@ the Engineer workspace. Never overwrite earlier measurements or protected trees.
 - [x] Claimed task43; inspected primitive, native callers, original Decimal paths,
   shared typed values, column conversion and Chunk alias interfaces.
 - [x] First implementation compiles in the TiDB patched graph.
-- [ ] Complete boundary tests, independent SDK pin and build, fixed measurements.
-- [ ] Self-review, full counts, signed commits and review handoff.
+- [x] Complete boundary tests, independent SDK pin and build, fixed measurements.
+- [x] Self-review and fixed signed product checkpoints; final report/counts prepared for review.
 
 ### Surprises & Discoveries
 
@@ -492,4 +492,14 @@ This changes the output boundary without adding execution dispatch. (2026-11-13)
 ### Outcomes & Retrospective
 
 
-Implementation and validation are in progress; no performance conclusion yet.
+Fixed product source005b431ce6 and SDK5582f06 complete this finite prototype.
+43 shared, 8 prepared, 90 datatype, 10 Chunk, 1 native vector and 429 independent
+SDK checks pass. The original owned Vector call improves46.40–47.24% in the fixed
+single column scene; direct output is a separate API, still22.18–30.95% above
+native Vector. Allocation bytes increase. Initial810-line estimate was exceeded
+by the first complete1045-line version before final evidence. See
+`shared-kernel/compact-output.zh.md` for all counts and failures. Full SDK Clippy
+fails19 dependency advisories, also reproduced on baseline; no full-gate claim.
+An initial timing/allocation library mismatch is retained; final measurement uses
+identical explicit libraries within each product version and all rounds rerun.
+Default SQL, broader semantics and lifecycle remain outside this task.

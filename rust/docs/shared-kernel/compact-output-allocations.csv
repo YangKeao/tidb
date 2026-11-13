@@ -1,0 +1,10 @@
+round,version,case,width,phase,route,iterations,nanos,alloc_calls,allocated_bytes,alloc_iterations
+1,before,column_mul,64,reuse,native_vector,100,824451,1200,1497600,100
+1,before,column_mul,64,reuse,native_scalar,100,2783613,5800,174000,100
+1,before,column_mul,64,reuse,shared,100,2483342,7000,2379600,100
+1,before,column_mul,64,reuse,shared_scalar,100,3715783,37100,9659600,100
+1,after,column_mul,64,reuse,native_vector,100,778781,1200,1497600,100
+1,after,column_mul,64,reuse,native_scalar,100,2735202,5800,174000,100
+1,after,column_mul,64,reuse,shared,100,1231161,7100,3654000,100
+1,after,column_mul,64,reuse,shared_scalar,100,2514472,31400,11580400,100
+1,after,column_mul,64,reuse,direct_chunk,100,1009391,1200,2961600,100
