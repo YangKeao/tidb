@@ -1,6 +1,6 @@
 # 成本复审与底层算法复用：下一步设计
 
-当前结论是：**保留一个共享表达式执行循环及现有底层算法所有者；参数合同的有限验证已通过复审，下一批在现有显式入口接入Decimal类型化参数。** 下文保留成本复审和限定试验的过程证据；末节记录bfde2f35参数合同复核、最小转换／诊断接口和执行所有权决定。
+当前结论是：**保留一个共享表达式执行循环和原底层算法所有者；已接纳表达式的显式执行状态改造通过限定复审，下一批验证DATE的类型化完整调用链。** 下文按固定版本保留历史审查和当时范围，已结束的阶段不构成新的等待条件；当前结论、证据边界与下一批接口在末两节。完整范围、默认SQL、性能和10K目标尚未证明。
 
 这是设计与固定源码审查，不是替代实现的验收。完整245族、默认入口、旧执行器退役和性能目标均未完成。人类要求的10K数量级仍是目标；本轮没有证明它可达，也没有证明它不可能。
 
@@ -502,7 +502,7 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 ## 完整预算前提更新：保留原所有者，未完成部分仍需定价
 
 
-以下是Designer本次完成的固定源码判断。输入为TiDB854d47d6／SDK2781f677；沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。当前实际源码测试8039／全部28736行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
+以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45复审后用babdd5c9／c2ef52b8更新input_lifecycle行和当前端点，其余行无新增覆盖结论。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。当前实际源码测试8620／全部29914行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
 
 | 原组ID | 当前状态／改变的前提 | 已付事实与未闭合部分 | 本行唯一成本归属 |
 | --- | --- | --- | --- |
@@ -521,7 +521,7 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 | cast | 精确primitive复用已证，全部类型未闭合 | String→Real、类型化Decimal参数转换／完整数值载体已付；time／JSON／enum等仍有源签名策略 | 共用值转换／载体，一次计入供各组引用 |
 | convert_charset | 原假设保留，未重估 | 旧表本来就保留字符集／collation表；不能再把“不复制表”算新节省 | CONVERT／binary政策及编码适配 |
 | exceptions | 原五项保留，未重估 | codec／parser／password库仍原所有者；schema尚含Expression求值和懒外部引用 | 五项具体服务能力／错误桥接，不搬服务本体 |
-| input_lifecycle | 列／参数部分已付，生命周期进行中 | 真实Decimal列、按需typed参数已付；执行owner、克隆销毁、缓存状态和correlation未闭合 | 跨族绑定／状态寿命；由当前生命周期实作结算 |
+| input_lifecycle | 列／typed参数／已接纳有种子执行状态已付 | 显式owner跨批延续／新执行重建已证；完整缓存寿命、correlation和默认集成未闭合 | 跨族绑定／状态寿命；task45实际端点已计，不重复估价 |
 | integration | 显式输入输出已付，默认与退役未付 | owned/direct根输出已付；eval_expression_once仍进入原eval，默认AST/PB／Unistore等未切换 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
 | engine | 单RPN及分发依赖已付，剩余范围未定价 | 共用循环、独立表达式包固定Git构建已证；完整签名映射、嵌套PB退役与全workspace检查未完成 | 共享程序／验证／构建余项，不重复计各组算法 |
 
@@ -539,3 +539,68 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 **生命周期固定结果复审后的单一建议：验证DATE完整调用链。** 只取原Time载体、DATE的类型化参数转换／零日期政策、同一共享循环和原生／PB入口差异，给出一个共同值算法owner及真实增删；不同时启动JSON_SET、全57时间族或新通用context框架。这能检验最大旧成本项的“原算法保留＋入口政策”边界是否成立，当前仍是有源码依据的下一切片建议，不是本轮产品实施授权。
 
 Engineer后续固定交付只需在这18行中更新实际触及的owner、兼容证据和原始基线diff；Designer负责维护前提与跨组归属。无需另开一轮清单任务，也不等待这份表才继续已授权的生命周期实现。
+
+## 执行状态复审：新执行隔离成立，默认SQL仍是独立边界
+
+固定TiDB产品`853e0cceaa4ca8910623f642ea8676990a97ee5a`、最终测试`ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c`、[交付报告babdd5c9](https://github.com/YangKeao/tidb/blob/babdd5c90a98bd164b499b420d3301e23e6af7a8/rust/docs/shared-kernel/execution-lifecycle.zh.md)，SDK`c2ef52b8eb2edba0447eaf605d4d29e218b0671d`；原datatype来源仍为88e183218a。固定源码与证据审查未发现已接纳路径的具体回归，接受task #45限定实现；Designer消息7db0fd17的本批范围结束。此次只读源码、留存记录和Git端点，不重新运行产品构建、测试或性能测量。
+
+[SharedExpression／Projection执行对象](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-expr/src/shared_kernel.rs#L743)固定借用程序和effects，批次方法不能替换所借用的effects；SDK EvalContext仍由每次调用传入；[SDK RpnExecution](https://github.com/YangKeao/tikv/blob/c2ef52b8eb2edba0447eaf605d4d29e218b0671d/components/tidb_query_expr/src/types/expr_eval.rs#L317)私有持有借用程序和懒初始化HashMap，以本根指令序号为键。这里采用HashMap而非此前建议的dense槽：保持节点／根／执行隔离且无全局身份机制，限定范围可接受；不能宣称没有容器开销。旧eval_group移入该对象，原帧循环只接收状态参数。共享裸地址回调已移除，原生旧求值器仍使用原map；NoColumns和PB原有行为保持。原函数元数据仍不承诺Sync，手工拼造的native／PB混合嵌套程序也不由这次评审覆盖。
+
+跨批、两根及同根两个同种子节点、交错执行、动态／NULL种子、空／死分支、重复选择和BENCHMARK的源码与通过记录相符。错误保留已发生效果，下一批可继续；direct仍在所有根及可失败转换完成后才reset目标。现有实验调用和Decimal测量器均在重复调用外保存执行对象；纯投影也会创建每根64字节的Vec元素，SDK／单表达式／投影对象实测64／88／48字节不含动态分配。三次iterations=1的测量器调用只证明API及完整值校验，不把以前的计时／分配结果归给新接口。
+
+旧运行时见证确实是基线加测试并运行到断言失败：同程序／effects换EvalContext仍继续旧流；改后两个显式新执行均回到首组。它证明新API的执行隔离合同，不能称为默认SQL的既有错误。尤其要区分两项实际证据：[executor集成测试](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-executor/tests/shared_execution.rs#L29)使用真实StmtContext、参数42／变量／会话RNG，跨两批后在**同一个上下文**上新建执行对象；[实际PREPARE／EXECUTE测试](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-session/src/tests_core/numeric_domain.rs#L1051)仍走native SQL，单独证明新语句的有种子重建及无种子会话流延续。两者不能拼成共享默认SQL或跨EXECUTE缓存已经贯通的结论。
+
+独立复算102份留存记录、5527项选定输入（SHA256 `3f18a36b79cb03db493c4122cfcc19ff70d62dd3ad0317b7366e4d2e0ee6b7b9`）、最终测量程序及12份直接库一致；双依赖图各只有原五包的一份身份，172份owner资源和1421项SDK输入吻合。源码清单／直接库并非完整构建闭包。47项shared、8项prepared、430项独立SDK、真实上下文及实际SQL各1项的终态和来源吻合；三个库限定Clippy及根lint退出0，有警告。最终ae8a20aa仅强化同一RPN两个同种子节点的测试，随后完整47项通过，不能说所有旧命令都在该提交上重跑。
+
+失败保留且不以新目标掩盖：连续流测试误建新执行、SDK测试导入及集成用例的私有导入／超范围参数都已有修正记录；executor原lib目标仍有7个未改构造器缺clause_message，声明和夹具与批前字节一致，独立集成目标成功不关闭这项失败。首次metadata成功但漏feature而没有SDK包，最终图修正；没有独立验证器异常栈留存，不能称Cargo失败。完整SDK Clippy未重跑，仍保留task43的exit2／19项公告及未完成workspace结论，公告库未钉revision。外部取消注入、完整函数缓存寿命、完整executor／session、默认共享SQL及性能均未由这批证明。
+
+| 固定端点范围 | 生产新增／删除 | 测试测量新增／删除 | 构建新增／删除 | 文档核验新增／删除 | 全部新增／删除 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 本批task45 | 262／117 | 608／172 | 8／0 | 589／0 | **1467／289** |
+| 原始两仓至固定版 | 3636／291 | 4689／4 | 1990／103 | 19201／0 | **29516／398** |
+
+本批全部增删**1756**；原始源码测试**8620**、全部**29914**。按固定端点重算而非历史相加。18组表的input_lifecycle行现改为“已接纳有种子状态所有权已付，其他缓存／correlation及默认集成未闭合”；engine、integration等未覆盖部分无新增完成信用。全245族、真正旧运行时退役和全范围10K数量级仍无证明。
+
+## 下一批：原Time所有者上的类型化DATE完整调用链
+
+本批依据Designer消息b9f2f967-5ee1-4009-9b02-85747ecd133d，由ExpressionReuseEngineer实施，Designer承担范围，到固定实现复审结束。连续完成值算法提取、两端接线及验证，不为内部步骤增加审批链。目标是让已定型Time／NULL的DATE、真实时间列及其IF组合，经现有共享程序／执行对象得到完整结果，并使native旧DATE及SDK原PB DATE调用同一份值算法。它是单函数的机制原型，不是57个时间族或某个完整Go包已经迁移；完整时间转换、JSON、默认SQL、跨EXECUTE缓存和新性能矩阵不在本批。
+
+### 已核实的差异决定接口
+
+[native DATE](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-expr/src/time_fn/mod.rs#L174)在原值上检查`is_zero && no_zero_date`或`!is_zero && invalid_zero && no_zero_in_date`，拒绝时走原handle_truncate；成功总清除时钟并设Date/FSP0。原[cast_arg_as_datetime](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-expr/src/cast.rs#L1415)对Time／NULL确为恒等转换，所以这一明确子域不需要迁移复杂时间parser。
+
+[SDK PB DATE](https://github.com/YangKeao/tikv/blob/c2ef52b8eb2edba0447eaf605d4d29e218b0671d/components/tidb_query_expr/src/impl_time.rs#L61)拒绝全部invalid_zero，诊断经过SDK EvalContext；其[set_time_type](https://github.com/YangKeao/tikv/blob/c2ef52b8eb2edba0447eaf605d4d29e218b0671d/components/tidb_query_datatype/src/codec/mysql/time/mod.rs#L1980)仅在原类型不是Date时清时钟，已有Date带隐藏时钟时保持。不能用一个来源名称开关掩盖差异，也不能简单让PB调native包装器；用具体的零值／时钟政策描述它们。
+
+原Time的[unchecked Go位解码](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-datatype/src/mysql_time.rs#L293)将低四位15解释为Timestamp/FSP7；SDK内存同位被get_time_type解释为Date。两边日历位排列相同，不等于整个raw值语义相同。SDK`from_packed_u64/to_packed_u64`是另一种存储编码，Timestamp还会按时区转换；不用于这次桥接。日期字段、FSP、种类和隐藏时钟都必须按各自原合同保留，不能经Display或UTC存储往返。
+
+### 一份纯值算法，两个既有诊断入口
+
+在原`tidb-datatype/src/mysql_time.rs`增加小型纯值操作，拟定形态为`Time::date_value(self, DateValuePolicy) -> Option<Time>`。`DateValuePolicy`明确包含`reject_zero_date`、`reject_zero_in_date`和`clock: ClearAlways | PreserveAlreadyDate`，不含来源owner、表达式、会话或回调。None仅表示上述零日期政策拒绝；该函数不写诊断、不作时区转换、不验证额外日历范围。先按**未清时钟的原值**判断全零和部分零，再按政策决定清时钟，最后设Date/FSP0。现有Time/CoreTime完成位操作，不新建时间载体或另一份parser。
+
+native旧time_fn::date和SDK共享native DATE从原DateModes取两个拒绝位，选ClearAlways；拒绝时用原输入Time的Display构造原消息；旧native包装器继续调用`Columns::handle_truncate`，共享native节点经已有`InputColumns::handle_truncate`转发，返回NULL或错误。只需给InputColumns补`date_modes()`，由NativeInput转发固定effects；无上下文默认保持原TIDB_DEFAULT_SQL_MODE，不从SDK flags猜native规则。原handle_truncate已保留Ignore/Warn/Error以及1292身份，不新增host DATE回调。`allow_invalid_dates`不新增DATE校验；原算法此处没有拒绝所有非法日历。
+
+SDK原PB DATE选两个拒绝位均true及PreserveAlreadyDate，拒绝继续走原`handle_invalid_time_error(Error::incorrect_datetime_value(original_sdk_value))`。SDK datatype保持独立：可增加有清晰合同的`Time::to_raw_bits/from_raw_bits`安全内存位读写方法，明确它们不是packed存储API，也不是普遍等价的Go编码。只在已依赖原datatype的SDK表达式层桥接：从SDK语义kind/FSP及`CoreTime::from_raw(bits & !0xf)`构造原Time（SDK非Date的FSP已在0..6，Date用0），成功DATE结果以`core.raw() | 14`回SDK内存值。这样raw15先按SDK语义映射成Date，输出按原set_tt规范为14；原Date隐藏时钟保留。不能直接把SDK raw15送进native unchecked解码器。窄接口必须有原始位／策略见证，不能隐式扩大为所有时间函数的通用互换承诺。
+
+### 贯通现有程序和完整载体
+
+SDK`types/expr.rs`的ExpressionScalar／ExpressionVector新增直接承载原`tidb_datatype::Time`的Time变体；native常量和输入读取用它，所有中间节点保留完整core/kind/FSP。类型枚举、finish验证、is_null、IF／OrderedRows合并及根输出一起补齐。共享native DATE在同一帧循环使用这一变体和纯值操作；generic FnCall仍拒绝不支持的完整native载体，不把Time伪装成Bytes或SDK值句柄，也不回调旧Expression。
+
+native`shared_kernel.rs`只接纳非array的Date／Datetime／Timestamp常量、实际列及已证Time／NULL组合；常量的实际Datum与声明必须一致，不能仅凭声明把字符串当Time。DATE只接一参、Date结果；字面NULL可在此归一为Time-NULL，参数／deferred来源及字符串、数字、YEAR、Duration到Time的转换继续整根明确拒绝。未知类型元信息不能截断。列继续保存完整FieldType并保留相同物理序号的完整声明一致性检查，schema映射真实时间类别；NativeInput只解码被需求的逻辑行，复用原Column::get_time／Row::get_datum，不根据声明FSP或时区重写存储值。
+
+原生IF允许三个时间声明归一到同一求值族，并原样返回选中值；因此编译器的IF接纳、control_type、schema和SDK merge_selected_values要同时更新。保留Int条件，Time分支可有不同kind/FSP，不根据IF结果声明重新stamp选中值。保留原非算术row_fallback：原native DATE没有专门时间向量路径，每个被需求的行都执行政策及诊断。Time常量可广播，**DATE(constant)的诊断不能只算一次再广播**。Scalar与width1 Vector仍是独立调用合同。
+
+owned结果恢复原Datum::Time；direct的目标布局检查为三种时间声明添加原8字节存储尺寸，继续已有Root::Datum暂存和append_datum。所有根求值及可失败转换成功前不reset目标，失败保留旧目标／已发生效果，无新事务或scratch协议。原Chunk读写合同保留：append_time写go_raw，get_time用checked from_go_raw，后者拒绝FSP7；故unchecked FSP7通过常量／中间DATE测试，不冒称它原本能被Chunk成功读回。直接输出按原写入合同，不能为了新的载体悄悄改变存储验证边界。
+
+### 能判别设计是否成立的验收
+
+先在未修改的native／SDK原入口记录各自预期，保留固定源和结果，避免提取后两个入口共用同一错误实现还互相证明。类型化DATE原先未被实验编译器接纳可明确记录，但不能只以缺新API的编译错误代替语义反例。以下使用独立完整值／诊断断言并扩展现有套件，不新建全时间测试框架：
+
+- 全零Time且仅no_zero_in_date=true：native成功返回零Date且无诊断；PB仍按自身政策拒绝。`0000-00-00 01:00:00`不是原is_zero：仅no_zero_date=true时native成功，反过来仅no_zero_in_date=true时拒绝；这直接捕捉先清时钟再判零的错误。
+- 普通Date／Datetime／Timestamp、非零时钟／micro、FSP0/3/6、NULL、部分零、非法非零日历、已有Date隐藏时钟及原unchecked FSP7常量。比较完整core/kind/FSP，PB raw15和hidden-clock必须保留独立预期；任何新桥不触发时区、日历normalize或额外诊断。
+- 真实Chunk含NULL和混合时间值，声明与存储kind/FSP不同仍按原getter；两份Chunk、重复乱序`[2,0,2]`及空选择、裸时间列、`DATE(IF(...))`和`IF(...,DATE(...),time_null)`，两种会话模式及owned/direct分别对照。声明冲突／array／非Time实际常量等在执行前拒绝。
+- Ignore/Warn/Error分别比对诊断内容、1292身份／SDK既有身份和实际次数。多行DATE常量拒绝必须按原生逐行需求计数；死分支不读缺列、不触发DATE诊断，PB原eager／短路规则不改。warning/error相对顺序继续按人类放宽。
+- 先发生已接纳RAND或变量效果，再发生DATE错误：direct原目标不变、效果保留；同一task45执行对象的下一合法批次继续。把调用点及原算法删改列清，保留原存储公共API，不以搬文件代替共享证明。
+
+验证在既有声明工具链／依赖环境下执行：TiDB的`rust`目录运行`cargo test -p tidb-expr --features shared-kernel --lib shared_kernel --locked -- --nocapture`及新增纯Time操作的datatype定向测试；原native DATE受影响用例也要跑。独立SDK根运行`cargo test -p tidb_query_expr --lib --locked`，并对SDK Time新增内存接口做datatype定向测试。保持既有根`make lint`、fmt、diff及受影响库Clippy；不以已知全SDK公告失败的重复运行替代本批检查，也不顺便修未改executor夹具。若修改原owner，提交后同步SDK固定Git／锁，并验证本地patch及独立SDK双图、唯一类型身份和实际资源来源。具体测试名、命令／失败终态均入固定收据；设计者审查不冒充这些测试已经运行。
+
+本批不预先承诺行数或提速。首个可编译版本给出实际生产／测试／构建和材料预算差异，最终用本批及原始两仓固定端点新增+删除收束；只更新18组中的temporal、cast、control和实际触及的integration／engine成本，不给未退役运行时删除信用。若保真必须扩大为通用时间context／parser迁移或第二执行机制，停在可审查原型并给最小反例和具体接口差异；这不要求反复等待内部步骤批准。完成这一调用链只能检验“原值所有者＋共享调度＋入口政策”的实际代价，不能由此推出全部时间、245族或10K目标可达。
