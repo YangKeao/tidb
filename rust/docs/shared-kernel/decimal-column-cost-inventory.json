@@ -1,0 +1,37 @@
+[
+  {
+    "repo": "tidb",
+    "path": "rust/crates/tidb-expr/src/scalar_function.rs",
+    "first_line": 3395,
+    "last_line": 3480,
+    "lines": 86
+  },
+  {
+    "repo": "tidb",
+    "path": "rust/crates/tidb-expr/src/shared_kernel.rs",
+    "first_line": 943,
+    "last_line": 959,
+    "lines": 17
+  },
+  {
+    "repo": "tidb",
+    "path": "rust/crates/tidb-datatype/src/decimal/mod.rs",
+    "first_line": 1034,
+    "last_line": 1056,
+    "lines": 23
+  },
+  {
+    "repo": "tidb",
+    "path": "rust/crates/tidb-datatype/src/mydecimal.rs",
+    "first_line": 1717,
+    "last_line": 1767,
+    "lines": 51
+  },
+  {
+    "repo": "tikv",
+    "path": "components/tidb_query_expr/src/types/native_arithmetic.rs",
+    "first_line": 187,
+    "last_line": 220,
+    "lines": 34
+  }
+]

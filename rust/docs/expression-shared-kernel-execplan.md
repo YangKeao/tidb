@@ -392,3 +392,29 @@ all recorded inputs and isolating the deny policy change from compiler inputs.
 - [x] Preserve skipped-file regression; explicit checkout and repeated init pass.
 - [x] Preserve five source rejections; exact URL addition passes cargo-deny0.18.9 sources.
 - [x] Record lint, input correspondence, fixed pair and full counts in the review receipt/report.
+
+## Task42 — real Decimal column cost and bounded reuse
+
+Designer963621fa authorizes remeasurement of the existing column_mul64 complete
+entry on the current fixed source, then targeted attribution to input
+materialization, arithmetic, shared RPN dispatch and output writing. Preserve
+the existing four routes and full-value checks. Implement at most one small
+original-owner/shared-path optimization if evidence supports it; otherwise
+publish the compact-native-representation cause and a counted reuse proposal.
+No copied Decimal algorithms, old evaluator callbacks, expanded matrix, default
+SQL or lifecycle changes. Original datatype edits require matching SDK Git pin.
+
+### Progress
+
+- [x] Build fixed current baseline; retain complete four-route timing and separate allocation records.
+- [x] Input/representation costs dominate; publish an 810-line estimated owner-reuse proposal, no product change.
+- [x] Validate full values, same-library binaries, diagnostic phases and source correspondence; preserve all records.
+
+Task42 outcome: the same product repeated with the same final harness gives
+sharedVector19.173us versus nativeVector6.590us median. Input materialization
+and ASCII coefficient conversion remain costly; allocator direct self samples
+are3.29%, not the whole gap. RPN direct samples are not a complete cost bound.
+A compact original-owner value plus root output adapter needs broader interfaces,
+so this authorized finite batch ends with attribution and a counted proposal.
+No optimization, lifecycle/default SQL change or universal performance claim.
+See shared-kernel/decimal-column-cost.zh.md for evidence, limits and counts.
