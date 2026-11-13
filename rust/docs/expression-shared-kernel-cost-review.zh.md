@@ -427,3 +427,37 @@ SharedProjection保留现有返回Vec<Vec<Datum>>的evaluate入口，新增明�
 
 
 该范围由Designer负责，到原型固定结果复审结束。此次设计发布仅改两份文档，核对固定链接、ExecPlan及diff；没有另跑产品构建、测试、性能或新采样。
+
+
+## 紧凑载体与直接输出复审：限定原型成立，空间代价仍在
+
+固定TiDB产品／测量源码`005b431ce6709682a3a31c8acf98b79ebcb4e6a5`、[最终报告ea0f4448](https://github.com/YangKeao/tidb/blob/ea0f44480dc9d5fc593b4bf477a30b1e7d660e34/rust/docs/shared-kernel/compact-output.zh.md)，SDK为`5582f0695404a40d3ae714aabef81438ef6c4172`，原datatype Git来源为`de8a34cd3c231abe53180fe61ee0da30120817cd`。本轮固定源码与留存证据复审未发现已接纳路径上的新缺陷，接受task #43有限原型；bcf4e55a的本批范围结束。没有默认SQL接入、跨执行状态或完整245族／10K目标完成的结论。Designer未另运行产品构建、测试或性能。
+
+[原datatype紧凑primitive及完整载体](https://github.com/YangKeao/tidb/blob/ea0f44480dc9d5fc593b4bf477a30b1e7d660e34/rust/crates/tidb-datatype/src/decimal/compact.rs)承接native加减乘、整数和cast原调用点，旧方法体删除。原Decimal的加法和乘法也调用它，保留先解析无符号幅值的原范围；原生紧凑路径可表达的负i128::MIN没有扩大原Decimal快路径。SDK只引用该所有者。共享直接乘法限于已验证的尺度和系数范围；宽值、负零及miss先用已求值操作数上的原Decimal计算。实现将原算法返回值通过`From<Decimal>`重新尝试紧凑表示，而非前版设计所写的一律保留Wide；这是结果表示转换，没有再次做算术或求值子树，保留警告、完整系数／两种尺度及声明形状，但会产生转换工作。以实际实现更新这一描述，不把回退免费化。
+
+两种输出接口在[with_results](https://github.com/YangKeao/tidb/blob/ea0f44480dc9d5fc593b4bf477a30b1e7d660e34/rust/crates/tidb-expr/src/shared_kernel.rs#L912)共用一次原eval_group。直写在任何效果前检查输出列数、物理布局及可见列别名；全部根求值及可失败的结果适配／有效性检查成功后才reset一次并写出。普通返回错误保留旧目标，先前副作用不回滚；这不承诺panic或内存耗尽后的回滚。空选择清空，重复／乱序选择保留，Decimal宽值继续原lossy存储转换，非Decimal沿用原适配。调用者仍须独立持有目标列；可见身份检查不能发现所有外部持有者，物理尺寸检查也不是全逻辑FieldType一致性认证。已有成功Decimal、成功RAND及混合根失败测试结合共同执行代码，支持本次有限边界，不要求另造输出协议或诊断排序。
+
+四轮旧owned向量完整调用中位由18.940942降至10.101256微秒，配对降低46.40%–47.24%；owned Scalar由30.954323降至20.938207微秒。新增direct_chunk中位8.209513微秒，比当轮native向量仍高22.18%–30.95%，不得冒充旧owned接口的同口径替代。native向量本轮中位6.590180→6.293847微秒，但配对变化−11.46%至+2.71%，不能把全部小幅差异归因于提取。独立分配记录显示owned向量70→71次、23796→36540请求字节；direct为12次、29616字节，native为12次、14976字节。分配次数下降与内存流量改善是不同结论，本轮没有证明后者，也没有测峰值驻留内存。
+
+最终同一测量源码哈希`137a60a35530a9cd3003f45e0cd052a0c642b8f511fa115a107c03fc72a00720`，before关闭新增API cfg、after开启；旧四条完整调用及值断言不变。四个最终二进制与副本哈希一致，同一版本的计时和分配程序各自连接相同12份显式rlib／rmeta。最终after计时为`7f9d41f4…`，记录选中它而非初轮`b1bfbed0…`。初轮四份chunk／expr库摘要不一致、被覆盖的原库不能逐字复核，原因未确定；它们的失败封存与36／9个中间单元保留，最终表只采用同库重链接后的完整重测。12份直接库和选定文件后缀都不是整个构建闭包。CPU23未隔离、内部路线顺序固定、opt3无LTO／16 codegen units仍限制外推；这不是SQL吞吐或普遍性能证明。
+
+独立重建5526项固定后缀输入与快照逐项一致，摘要`f275a3f3bdfe838031520dec69bd6ba59532c89d9cc1948505dbe96c13bd3a8f`；142份收据所列记录哈希、36个最终计时／9个分配单元及整张表重算吻合。报告提交仅变更六份文档／数据／核验文件，选定输入与产品源码提交一致。两张Cargo图各自只有一个datatype及error／hack／kvcache／mysql原包，native和SDK在本地图指向同一datatype；独立图是固定Git身份，不要求两个图的ID字面相同。172份五包文件／资源及1421项独立SDK输入与固定版本相同；本次172清单未另包含aggregate-tests.rs，不能把它等同于先前同数量清单或整个继承构建闭包。工具链版本证据沿用既有Aug22记录，本批命令路径相符，没有新版本输出或独立重构建证明。
+
+最终43项共享、8项prepared、90项Decimal、10项Chunk、1项native向量及429项独立SDK均有成功终态和退出0。限定Clippy完成有警告、根lint和最终格式／diff均有成功尾行。正式SDK make clippy在独立检出实跑9.43秒退出2，cargo-deny报19个advisory错误，bans／sources成功、许可证三警告，未进入workspace Clippy；这次是实际失败而非超时。旧SDK780ab3的advisory复查观测到完全相同的19个RUSTSEC ID，但没有固定公告库revision／hash，不能提升为两次数据库逐字相同或依赖安全已通过。三项开发期失败是构造器类型、非法字面值debug断言和预期Chunk虚拟行数的测试构造修正，不是旧产品缺陷的失败到成功证明。新数值对照共享原算法，独立预期来自既有datatype测试和原实现源码核对，不宣称两套实现相等就证明全面兼容。
+
+本批生产`+463/−200`、测试及测量Rust`+285/−2`、构建`+6/−6`、文档／数据／核验`+848/−2`，全部`+1602/−210`，增删**1812**、净增1392；首个未加最终材料的版本835新增／210删除，确为1045增删。相对原始两仓基线，源码测试`+7706/−295`、增删**8001**；全部`+27634/−398`、增删**28032**。均为固定端点重新核算，包含移动两端和材料，不是历史批次简单相加。810初估已被超出；源码测试8001也只是部分函数候选，不能外推全部245族和旧路径退役仍能满足10K目标。
+
+
+## 下一批：只消除载体重复形状的布局成本，再结束本轮Decimal定位
+
+当前`DecimalArithmeticValue`在外层保存`declared_shape`，而`Wide(Decimal)`内部已有形状字段：普通Decimal转来的Wide可能两处都有形状，列转来的Wide则目前由外层补充形状。两种情况都预留了两处存储；所有列元素还按最大枚举变体预留空间，小值也承担这一代价，但不能把全部字节增长归因于这一字段。依据Designer消息180bc037-4be1-4876-9067-99db3372e6db，下一项只在原datatype私有载体内试验消除重复存储，由Designer负责范围，到一次固定布局结果复审结束。保持现有CompactDecimal不变，避免把形状加入native每个紧凑元素；首选将形状放进`ArithmeticValue::Compact { value, declared_shape }`，让Wide直接携带原Decimal及其已有形状。不要用Box给每个宽值增加分配，也不用packed布局、unsafe、列外形状表、第二套数值算法或新的scratch框架。Rust枚举实际大小必须在目标工具链实测，不能凭字段相加声称已经减小。
+
+调整`From<Decimal>`、`from_column`、`into_decimal`和紧凑乘法结果构造：紧凑输入保留原声明形状，Wide列直接用原`Decimal::from_column`保留元信息；Wide返回原值，紧凑返回原数值并恢复该变体形状；算术结果依原规则清除形状。加减除及乘法miss仍先用原算法，再按当前转换规则选择结果表示，字段继续私有。该批不扩大紧凑算术范围，不改诊断／错误需求、两种输出合同或原native算术行为。
+
+先记录`size_of::<Decimal>()`、`size_of::<CompactDecimal>()`、`size_of::<DecimalArithmeticValue>()`及其Option包装的前后大小／对齐，并记录实际嵌入它的ExpressionScalar及RpnStackNode大小，结合现有分配记录确认实际列空间变化。已有完整值／列形状／宽值回退／负零／i128边界和直写错误／别名检查保留，仅在缺少Wide列带声明形状的独立预期时补一项定向用例。原owner先固定提交、SDK Git pin与锁文件同步；本地patch图与独立SDK图分别核对单一类型身份及相同所有者内容。
+
+复用本轮`column_mul/64`和原测量脚本，before与after都已支持direct_chunk，因而两侧均开启相同cfg，保留五条路线及原完整值／Chunk断言。运行器当前只在after允许direct行，before多出该行会被精确集合／数量断言拒绝；需作最小显式扩展以验证两侧各五行，同时保留旧产品只有四路的运行模式。建议新增明确的`--before-direct-chunk`开关（当前尚无此参数），保留`--direct-chunk`控制after；新开关要求同时有`--columns`和`--before`，每版本验证精确五条路线。完成该最小扩展后，用`run-decimal-bench.py --before <before> --after <after> --columns --direct-chunk --before-direct-chunk --rounds 4 --iterations 20000 --output <directory>`；分配另加`--allocations`，改为`--rounds 1 --iterations 100`。预期40个计时／10个分配单元；配套重算程序也须明确校验两侧direct并计算其同接口变化，不能直接用硬编码36／9的历史汇总程序处理新结果，历史材料仍须可原样重算。两个版本构建均给`build-decimal-bench.py`传`--direct-chunk`，其余cargo／rustc／repo／output参数沿用固定构建流程。每版本计时和分配二进制都核对对应12份固定库，先封存库副本再运行；四轮完整计时与独立分配计数即可，不增加场景矩阵或重复采样。报告owned和direct各自的前后耗时、请求字节及次数，保留native对照，不能用变慢的参照路线美化比例。
+
+在TiDB rust/运行现有`cargo test -p tidb-expr --features shared-kernel --lib shared_kernel_ --locked -- --nocapture`、`cargo test -p tidb-expr --features shared-kernel --lib constant::tests::prepared_ --locked -- --nocapture`、`cargo test -p tidb-datatype --lib decimal --locked -- --nocapture`及`cargo test -p tidb-chunk --lib decimal --locked -- --nocapture`；独立SDK根运行`cargo test -p tidb_query_expr --lib --locked -- --nocapture`。按受影响范围补原native向量对照、限定Clippy、根make lint及格式／diff。完整SDK Clippy的已核对公告失败按现状保留，无需为无关依赖更新扩任务；该失败不构成新的算法副本理由。全部移动、测试、构建、测量与文档计入实际增删，不再沿用810估算。
+
+正向验收要求请求字节减少、分配次数不增加，并且同一路线没有可重复的耗时退化。若有小幅波动，先报告原始配对范围，不用四轮结果声称统计显著。若布局未减少实际请求字节，或必须引入新的存储／所有权框架才能继续，保留固定结果与具体原因，结束这一小值Decimal优化窗口。即使有改善也不无限追加微调；后续回到共享内核M1的状态生命周期与完整覆盖／迁移预算，另以真实入口证据推进，默认SQL与扩大函数矩阵不属于此批。
