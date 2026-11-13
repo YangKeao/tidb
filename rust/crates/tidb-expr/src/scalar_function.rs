@@ -328,37 +328,16 @@ fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> {
     })
 }
 
-fn numeric_expression_text(
+pub(crate) fn numeric_expression_text(
     expression: &Expression,
     go_float_format: bool,
     ctx: &dyn Columns,
 ) -> Option<String> {
     match expression {
-        Expression::Constant(constant) => match constant.eval_in(ctx).ok()? {
-            Datum::Int(value) => Some(value.to_string()),
-            Datum::UInt(value) => Some(value.to_string()),
-            Datum::Float32(value) => {
-                if go_float_format {
-                    Some(tidb_datatype::format_float_g_shortest(value))
-                } else {
-                    Some(value.to_string())
-                }
-            }
-            Datum::Real(value) => {
-                if go_float_format {
-                    Some(tidb_datatype::format_float_g_shortest(value))
-                } else {
-                    Some(value.to_string())
-                }
-            }
-            Datum::Decimal(value) => Some(value.to_string()),
-            Datum::BinaryLiteral(value) => Some(value.to_int().value().to_string()),
-            Datum::Null => Some("NULL".to_owned()),
-            value @ (Datum::String(_) | Datum::Bytes(_) | Datum::Json(_)) => {
-                String::from_utf8(value.truncated_stringify().ok()?).ok()
-            }
-            _ => None,
-        },
+        Expression::Constant(constant) => constant
+            .eval_in(ctx)
+            .ok()?
+            .numeric_diagnostic_text(go_float_format),
         Expression::Column(column) => {
             if column.is_hidden {
                 if let Some(expression) = column.virtual_expr.as_deref() {
@@ -1204,7 +1183,7 @@ impl ScalarFunction {
 
     /// The argument evaluation domain selected by Go's arithmetic builder.
     /// DIV returns Int but consumes Decimal unless both arguments are Int.
-    fn numeric_operand_domain(&self) -> Option<EvalType> {
+    pub(crate) fn numeric_operand_domain(&self) -> Option<EvalType> {
         let op = binary_op_for_name(self.func_name.lowercase())?;
         if self.args.len() != 2
             || !matches!(

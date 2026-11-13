@@ -15,8 +15,8 @@ use tidb_query_datatype::{
 };
 use tidb_query_expr::{
     ExpressionScalar, ExpressionVector, InputColumns, InputResult, InvocationMode,
-    NativeArithmetic, OutputOrder, RpnExpression, RpnExpressionNode, RpnStackNode,
-    RpnStackNodeVectorValue,
+    NativeArithmetic, NativeDiagnosticPart, OutputOrder, RpnExpression, RpnExpressionNode,
+    RpnStackNode, RpnStackNodeVectorValue,
 };
 
 use crate::expression::Expression;
@@ -82,6 +82,7 @@ impl SharedExpression {
         }
         enum Visit<'a> {
             Enter(&'a Expression),
+            DecimalOperand(&'a Expression),
             Md5,
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
@@ -119,6 +120,18 @@ impl SharedExpression {
                     !matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div");
             }
             match visit {
+                Visit::DecimalOperand(Expression::Constant(c)) if c.param_marker.is_some() => {
+                    if c.deferred_expr.is_some() {
+                        return Err("deferred parameter is outside shared admission".into());
+                    }
+                    let order = usize::try_from(c.param_marker.unwrap().order)
+                        .map_err(|_| "invalid parameter order")?;
+                    nodes.push(RpnExpressionNode::NativeParameterDecimal {
+                        order,
+                        field_type: FieldTypeTp::NewDecimal.into(),
+                    });
+                }
+                Visit::DecimalOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::Enter(Expression::Constant(c)) => {
                     let datum = c
                         .literal_value()
@@ -348,24 +361,31 @@ impl SharedExpression {
                     };
                     if f.args.len() != 2
                         || !admitted(result)
+                        || (result.code() == Code::NewDecimal && f.numeric_operand_domain() != Some(tidb_datatype::EvalType::Decimal))
                         || !matches!(
                             result.code(),
                             Code::LongLong | Code::Double | Code::NewDecimal
                         )
                         || f.args
                             .iter()
-                            .any(|a| a.static_type().is_none_or(|t| !admitted(t)))
+                            .any(|a| !matches!(a, Expression::Constant(c) if result.code() == Code::NewDecimal && c.param_marker.is_some() && c.deferred_expr.is_none())
+                                && a.static_type().is_none_or(|t| !admitted(t)))
                         || (result.code() == Code::LongLong
                             && !matches!(f.func_name.lowercase(), "plus" | "mul"))
                     {
                         return Err("arithmetic requires matching supported numeric types".into());
                     }
                     work.push(Visit::NumericLeft(f));
-                    work.push(Visit::Enter(&f.args[0]));
+                    work.push(if result.code() == Code::NewDecimal {
+                        Visit::DecimalOperand(&f.args[0])
+                    } else {
+                        Visit::Enter(&f.args[0])
+                    });
                 }
                 Visit::NumericLeft(f) => {
-                    if f.args[0].static_type().unwrap().eval_type()
-                        == tidb_datatype::EvalType::String
+                    if f.ret_type.as_ref().unwrap().eval_type() == tidb_datatype::EvalType::Real
+                        && f.args[0].static_type().unwrap().eval_type()
+                            == tidb_datatype::EvalType::String
                     {
                         nodes.push(RpnExpressionNode::NativeCastReal {
                             field_type: FieldTypeTp::Double.into(),
@@ -385,11 +405,20 @@ impl SharedExpression {
                         Some(at)
                     };
                     work.push(Visit::NumericRight(f, guard));
-                    work.push(Visit::Enter(&f.args[1]));
+                    work.push(
+                        if f.ret_type.as_ref().unwrap().eval_type()
+                            == tidb_datatype::EvalType::Decimal
+                        {
+                            Visit::DecimalOperand(&f.args[1])
+                        } else {
+                            Visit::Enter(&f.args[1])
+                        },
+                    );
                 }
                 Visit::NumericRight(f, guard) => {
-                    if f.args[1].static_type().unwrap().eval_type()
-                        == tidb_datatype::EvalType::String
+                    if f.ret_type.as_ref().unwrap().eval_type() == tidb_datatype::EvalType::Real
+                        && f.args[1].static_type().unwrap().eval_type()
+                            == tidb_datatype::EvalType::String
                     {
                         nodes.push(RpnExpressionNode::NativeCastReal {
                             field_type: FieldTypeTp::Double.into(),
@@ -434,6 +463,11 @@ impl SharedExpression {
                         nodes.push(RpnExpressionNode::NativeArithmetic {
                             op,
                             overflow,
+                            diagnostic: if real {
+                                Vec::new()
+                            } else {
+                                decimal_diagnostic(f).unwrap_or_default()
+                            },
                             field_type: control_type(f)?,
                         });
                     }
@@ -745,7 +779,10 @@ pub struct SharedProjection {
     order: OutputOrder,
 }
 impl SharedProjection {
-    /// Compile roots and retain the original variable-sensitive traversal rule.
+    /// Compile a bound, resolved expression snapshot for one execution.
+    /// Reuse across that execution's chunks; bindings must remain immutable during
+    /// each evaluation. The caller owns lifetime and recompilation, not this adapter.
+    /// No cross-EXECUTE cache or default executor integration is installed.
     pub fn compile(expressions: &[Expression]) -> Result<Self, String> {
         Ok(Self {
             expressions: expressions
@@ -814,7 +851,26 @@ struct NativeInput<'a> {
     effects: &'a dyn crate::context::Columns,
 }
 
+impl tidb_datatype::ConversionWarningAppender for NativeInput<'_> {
+    fn append_conversion_warning(&self, warning: tidb_error::terror::TerrorError) {
+        let warning = warning.to_sql_error();
+        self.effects.append_warning(warning.code, &warning.message);
+    }
+}
+
 impl InputColumns for NativeInput<'_> {
+    fn parameter(&self, order: usize) -> tidb_query_expr::evaluation_error::Result<Datum> {
+        self.effects.param_value(order).map_err(native_policy_error)
+    }
+    fn conversion_flags(&self) -> tidb_datatype::ConversionFlags {
+        self.effects.type_flags()
+    }
+    fn conversion_location(&self) -> tidb_datatype::ConversionLocation {
+        tidb_datatype::ConversionLocation::from_time_zone(&self.effects.time_zone())
+    }
+    fn conversion_warnings(&self) -> &dyn tidb_datatype::ConversionWarningAppender {
+        self
+    }
     fn div_precision_increment(&self) -> u32 {
         self.effects.div_precision_increment()
     }
@@ -930,6 +986,59 @@ impl InputColumns for NativeInput<'_> {
             field_type: &schema[offset],
         })
     }
+}
+
+fn decimal_diagnostic(
+    function: &crate::scalar_function::ScalarFunction,
+) -> Option<Vec<NativeDiagnosticPart>> {
+    fn append(expression: &Expression, parts: &mut Vec<NativeDiagnosticPart>) -> Option<()> {
+        match expression {
+            Expression::Constant(c) if c.param_marker.is_some() && c.deferred_expr.is_none() => {
+                parts.push(NativeDiagnosticPart::Parameter(
+                    usize::try_from(c.param_marker?.order).ok()?,
+                ));
+            }
+            Expression::ScalarFunction(f) => append_function(f, parts)?,
+            Expression::Column(c) if c.is_hidden && c.virtual_expr.is_some() => {
+                append(c.virtual_expr.as_deref()?, parts)?
+            }
+            other => parts.push(NativeDiagnosticPart::Text(
+                crate::scalar_function::numeric_expression_text(other, false, &crate::NoColumns)?,
+            )),
+        }
+        Some(())
+    }
+    fn append_function(
+        f: &crate::scalar_function::ScalarFunction,
+        parts: &mut Vec<NativeDiagnosticPart>,
+    ) -> Option<()> {
+        let symbol = match f.func_name.lowercase() {
+            "plus" => "+",
+            "minus" => "-",
+            "mul" => "*",
+            "div" => "/",
+            _ => return None,
+        };
+        let [left, right] = f.args.as_slice() else {
+            return None;
+        };
+        parts.push(NativeDiagnosticPart::Text("(".into()));
+        append(left, parts)?;
+        parts.push(NativeDiagnosticPart::Text(format!(" {symbol} ")));
+        append(right, parts)?;
+        parts.push(NativeDiagnosticPart::Text(")".into()));
+        Some(())
+    }
+    let mut parts = vec![NativeDiagnosticPart::Text(
+        "DECIMAL value is out of range in '".into(),
+    )];
+    append_function(function, &mut parts)?;
+    parts.push(NativeDiagnosticPart::Text("'".into()));
+    // Existing static diagnostics need no runtime template.
+    parts
+        .iter()
+        .any(|p| matches!(p, NativeDiagnosticPart::Parameter(_)))
+        .then_some(parts)
 }
 
 fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_error::Error {
@@ -1427,6 +1536,15 @@ mod tests {
             }
             crate::EvalError::TruncatedWrongValue(message) => {
                 assert_eq!(actual.code, Some(1292));
+                assert_eq!(actual.message, message);
+            }
+            crate::EvalError::Conversion(error) => {
+                let error = error.to_sql_error();
+                assert_eq!(actual.code, Some(i32::from(error.code)));
+                assert_eq!(actual.message, error.message);
+            }
+            crate::EvalError::Unsupported(message) => {
+                assert_eq!(actual.code, Some(1105));
                 assert_eq!(actual.message, message);
             }
             other => panic!("unexpected original error {other:?}"),
@@ -1970,11 +2088,336 @@ mod tests {
         }
     }
 
-    // Test-only demanded slot: no product parameter node or conversion admission.
+    #[test]
+    fn shared_kernel_typed_decimal_parameter_vector_and_if() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let ty = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(-1);
+        let mut marker = Constant::new(Datum::Decimal(Decimal::from_int(99)), ty.clone());
+        marker.param_marker = Some(ParamMarker { order: 0 });
+        let arithmetic = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("div"),
+            ty.clone(),
+            vec![
+                Expression::Constant(marker),
+                numeric_literal(Datum::Decimal(Decimal::from_int(2)), &ty),
+            ],
+        ));
+        let conditional = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            ty.clone(),
+            vec![
+                numeric_literal(Datum::Int(1), &FieldType::new(FieldTypeCode::LongLong)),
+                arithmetic.clone(),
+                numeric_literal(Datum::Decimal(Decimal::from_int(0)), &ty),
+            ],
+        ));
+        for (expression, warning_count) in [(arithmetic, 1), (conditional, 3)] {
+            let shared = SharedProjection::compile(std::slice::from_ref(&expression)).unwrap();
+            let suite = crate::evaluator::EvaluatorSuite::new(vec![expression.clone()], false);
+            for (vectorized_off, rows) in [(false, 1), (false, 3), (true, 3)] {
+                let activations = if vectorized_off || warning_count == 3 {
+                    rows
+                } else {
+                    1
+                };
+                for strict in [false, true] {
+                    for value in [
+                        Datum::Int(7),
+                        Datum::UInt(u64::MAX),
+                        Datum::Real(1.25),
+                        Datum::Float32(1.25),
+                        Datum::Decimal(Decimal::from_scaled_i128(125, 2)),
+                        Datum::Null,
+                        Datum::new_string(b"2.5junk".to_vec()),
+                    ] {
+                        let mut expected_ctx = ParameterProbe::new(Some(value.clone()), 4);
+                        expected_ctx.session.strict = strict;
+                        expected_ctx.session.vectorized_off = vectorized_off;
+                        let mut actual_ctx = ParameterProbe::new(Some(value.clone()), 4);
+                        actual_ctx.session.strict = strict;
+                        actual_ctx.session.vectorized_off = vectorized_off;
+                        let mut input = Chunk::new_empty(&[]);
+                        input.set_num_virtual_rows(rows);
+                        let mut output = Chunk::new_empty(std::slice::from_ref(&ty));
+                        let expected = suite.run(&expected_ctx, &mut input, &mut output);
+                        let actual = shared.evaluate(
+                            &input,
+                            &(0..rows).collect::<Vec<_>>(),
+                            &mut EvalContext::default(),
+                            &actual_ctx,
+                        );
+                        if strict && matches!(value, Datum::String(_)) {
+                            let crate::evaluator::EvaluatorError::Eval(
+                                crate::EvalError::Conversion(expected),
+                            ) = expected.unwrap_err()
+                            else {
+                                panic!("expected original conversion error")
+                            };
+                            let expected = expected.to_sql_error();
+                            let error = actual.unwrap_err();
+                            assert_eq!(error.code, Some(i32::from(expected.code)));
+                            assert_eq!(error.message, expected.message);
+                        } else {
+                            expected.unwrap();
+                            let actual = actual.unwrap();
+                            let scalar = expression
+                                .eval(
+                                    &ParameterProbe::new(Some(value.clone()), 4),
+                                    input.get_row(0),
+                                )
+                                .unwrap();
+                            let mut encoded = Chunk::new_empty(std::slice::from_ref(&ty));
+                            for value in &actual[0] {
+                                encoded.append_datum(0, value);
+                            }
+                            for (i, value) in actual[0].iter().enumerate() {
+                                let expected = output.get_row(i).get_datum(0, &ty);
+                                if expected.is_null() {
+                                    assert!(value.is_null());
+                                } else {
+                                    assert_same_decimal(value, &scalar);
+                                    assert_same_decimal(
+                                        &encoded.get_row(i).get_datum(0, &ty),
+                                        &expected,
+                                    );
+                                }
+                            }
+                            let expected_count = if matches!(value, Datum::String(_)) {
+                                activations
+                            } else {
+                                0
+                            };
+                            assert_eq!(
+                                expected_ctx.session.warnings.borrow().len(),
+                                expected_count
+                            );
+                        }
+                        assert_eq!(
+                            actual_ctx.reads.get(),
+                            if strict && matches!(value, Datum::String(_)) {
+                                1
+                            } else {
+                                activations
+                            }
+                        );
+                        assert_eq!(
+                            *actual_ctx.session.warnings.borrow(),
+                            *expected_ctx.session.warnings.borrow()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_typed_decimal_parameter_demand_and_current_diagnostics() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let ty = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(-1);
+        let literal = |n| numeric_literal(Datum::Decimal(Decimal::from_int(n)), &ty);
+        let mut c = Constant::new(Datum::Decimal(Decimal::from_int(99)), ty.clone());
+        c.param_marker = Some(ParamMarker { order: 0 });
+        let parameter = Expression::Constant(c.clone());
+        let binary = |name, a, b| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                ty.clone(),
+                vec![a, b],
+            ))
+        };
+        let choose = |condition, branch| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("if"),
+                ty.clone(),
+                vec![
+                    numeric_literal(
+                        Datum::Int(condition),
+                        &FieldType::new(FieldTypeCode::LongLong),
+                    ),
+                    branch,
+                    literal(0),
+                ],
+            ))
+        };
+        assert!(SharedProjection::compile(std::slice::from_ref(&parameter)).is_err());
+        assert!(SharedProjection::compile(&[choose(1, parameter.clone())]).is_err());
+        let mut unresolved = c.clone();
+        unresolved.ret_type = None;
+        assert!(SharedProjection::compile(&[binary(
+            "plus",
+            Expression::Constant(unresolved),
+            literal(0)
+        )])
+        .is_err());
+        c.deferred_expr = Some(Box::new(literal(2)));
+        assert!(
+            SharedProjection::compile(&[binary("plus", Expression::Constant(c), literal(0))])
+                .is_err()
+        );
+        let sum = binary("plus", parameter.clone(), literal(0));
+        let mut column = Column::new(1, ty.clone());
+        column.index = 0;
+        column.orig_name = "t.amount".into();
+        let product = binary("mul", sum.clone(), Expression::Column(column.clone()));
+        let generic = binary("mul", choose(1, sum.clone()), Expression::Column(column));
+        let unbound = ParameterProbe::new(None, 4);
+        let dead = SharedProjection::compile(&[choose(0, product.clone())]).unwrap();
+        let plain = SharedProjection::compile(std::slice::from_ref(&product)).unwrap();
+        assert_eq!(unbound.reads.get(), 0);
+        let empty = Chunk::new_empty(std::slice::from_ref(&ty));
+        assert!(plain
+            .evaluate(&empty, &[], &mut EvalContext::default(), &unbound)
+            .unwrap()[0]
+            .is_empty());
+        let mut input = Chunk::new_empty(std::slice::from_ref(&ty));
+        for _ in 0..3 {
+            input.append_datum(0, &Datum::Decimal(Decimal::from_int(100)));
+        }
+        dead.evaluate(&input, &[2, 0, 2], &mut EvalContext::default(), &unbound)
+            .unwrap();
+        assert_eq!(unbound.reads.get(), 0);
+        let error = plain
+            .evaluate(&input, &[0], &mut EvalContext::default(), &unbound)
+            .unwrap_err();
+        assert_eq!(error.code, Some(1105));
+        assert_eq!(error.message, "unbound prepared parameter");
+        for (expression, detailed) in [(product, true), (generic, false)] {
+            let shared = SharedProjection::compile(std::slice::from_ref(&expression)).unwrap();
+            let suite = crate::evaluator::EvaluatorSuite::new(vec![expression.clone()], false);
+            for value in [
+                Datum::Decimal(Decimal::from_literal(&"9".repeat(80))),
+                Datum::new_string(format!("{}junk", "9".repeat(80)).into_bytes()),
+            ] {
+                let native = ParameterProbe::new(Some(value.clone()), 4);
+                let current = ParameterProbe::new(Some(value), 4);
+                let mut output = Chunk::new_empty(std::slice::from_ref(&ty));
+                let crate::evaluator::EvaluatorError::Eval(expected) =
+                    suite.run(&native, &mut input, &mut output).unwrap_err()
+                else {
+                    panic!("expected numeric error")
+                };
+                let got = shared
+                    .evaluate(&input, &[0, 1, 2], &mut EvalContext::default(), &current)
+                    .unwrap_err();
+                if detailed {
+                    assert_native_error(got, expected);
+                } else {
+                    assert_eq!(expected, crate::EvalError::DecimalOverflow);
+                    assert_eq!(got.code, Some(1690));
+                    assert_eq!(got.message, "DECIMAL value is out of range");
+                }
+                assert_eq!(
+                    *native.session.warnings.borrow(),
+                    *current.session.warnings.borrow()
+                );
+            }
+            let mut current = ParameterProbe::new(Some(Datum::Int(2)), 8);
+            let old = shared
+                .evaluate(&input, &[2, 0, 2], &mut EvalContext::default(), &current)
+                .unwrap();
+            // Both contexts and physical input can change; returned values own their data.
+            current.value = Some(Datum::Null);
+            let nulls = shared
+                .evaluate(&input, &[0], &mut EvalContext::default(), &current)
+                .unwrap();
+            assert!(nulls[0][0].is_null());
+            drop(current);
+            for value in &old[0] {
+                assert_same_decimal(value, &Datum::Decimal(Decimal::from_int(200)));
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_shared_typed_decimal_primitive_padding() {
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let ty = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(3);
+        let mut input = Chunk::new_empty(&[]);
+        input.set_num_virtual_rows(1);
+        let value = Constant::new(Datum::Decimal(Decimal::from_int(7)), ty.clone())
+            .eval_typed_as_on_row(
+                &crate::NoColumns,
+                input.get_row(0),
+                tidb_datatype::EvalType::Decimal,
+            )
+            .unwrap();
+        assert_same_decimal(&value, &Datum::Decimal(Decimal::from_literal("7.000")));
+        let wide = Constant::new(Datum::Decimal(Decimal::from_literal(&"9".repeat(81))), ty);
+        assert!(matches!(
+            wide.eval_typed_as_on_row(
+                &crate::NoColumns,
+                input.get_row(0),
+                tidb_datatype::EvalType::Decimal
+            ),
+            Err(crate::EvalError::Conversion(_))
+        ));
+    }
+
+    #[test]
+    fn shared_kernel_typed_decimal_parameter_runtime_carriers() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::{Decimal, FieldTypeCode};
+        let ty = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(-1);
+        let mut c = Constant::new(Datum::Decimal(Decimal::from_int(99)), ty.clone());
+        c.param_marker = Some(ParamMarker { order: 0 });
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            ty.clone(),
+            vec![
+                Expression::Constant(c),
+                numeric_literal(Datum::Decimal(Decimal::from_int(0)), &ty),
+            ],
+        ));
+        let program = SharedExpression::compile(&expression).unwrap();
+        let mut input = Chunk::new_empty(&[]);
+        input.set_num_virtual_rows(1);
+        for value in [
+            Datum::MinNotNull,
+            Datum::MaxValue,
+            Datum::new_bytes(vec![255, 0]),
+            Datum::Real(f64::NAN),
+            Datum::Real(f64::INFINITY),
+            Datum::new_string(vec![255, 0]),
+            Datum::new_string(b"bad".to_vec()),
+        ] {
+            for mode in [InvocationMode::Scalar, InvocationMode::Vector] {
+                let native = ParameterProbe::new(Some(value.clone()), 4);
+                let shared = ParameterProbe::new(Some(value.clone()), 4);
+                let expected = expression.eval(&native, input.get_row(0));
+                let actual = program.evaluate_with_context(
+                    &input,
+                    &[0],
+                    &mut EvalContext::default(),
+                    &shared,
+                    mode,
+                );
+                match expected {
+                    Ok(expected) => {
+                        let actual = actual.unwrap();
+                        if expected.is_null() {
+                            assert!(actual[0].is_null());
+                        } else {
+                            assert_same_decimal(&actual[0], &expected);
+                        }
+                    }
+                    Err(expected) => assert_native_error(actual.unwrap_err(), expected),
+                }
+                assert_eq!(
+                    *native.session.warnings.borrow(),
+                    *shared.session.warnings.borrow()
+                );
+            }
+        }
+    }
+
+    // Synthetic column-slot fixture, distinct from the product parameter instruction.
     struct ParameterProbe {
         value: Option<Datum>,
         reads: std::cell::Cell<usize>,
         precision: u32,
+        session: Session,
     }
     impl ParameterProbe {
         fn new(value: Option<Datum>, precision: u32) -> Self {
@@ -1982,10 +2425,20 @@ mod tests {
                 value,
                 reads: std::cell::Cell::new(0),
                 precision,
+                session: Session::default(),
             }
         }
     }
     impl crate::context::Columns for ParameterProbe {
+        fn enable_vectorized_expression(&self) -> bool {
+            !self.session.vectorized_off
+        }
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            crate::context::Columns::truncate_level(&self.session)
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            crate::context::Columns::append_warning(&self.session, code, message)
+        }
         fn get(&self, _: &[String]) -> Option<Datum> {
             None
         }
@@ -2144,7 +2597,7 @@ mod tests {
         };
         let unbound = ParameterProbe::new(None, 4);
         let native = choose(1, arithmetic("div", parameter.clone(), 3));
-        assert!(SharedExpression::compile(&native).is_err());
+        assert!(SharedExpression::compile(&native).is_ok());
         let program =
             SharedExpression::compile(&choose(1, arithmetic("div", slot.clone(), 3))).unwrap();
         assert_eq!(unbound.reads.get(), 0);

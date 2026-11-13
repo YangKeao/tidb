@@ -230,29 +230,15 @@ impl Constant {
                     .unwrap_or(tidb_datatype::Collation::Binary),
             ))),
             EvalType::Decimal => {
-                let (value, error) = value.to_decimal_with_context(&context).map_err(|_| {
-                    EvalError::Unsupported("constant cannot be converted to decimal")
-                })?;
+                let (value, error) = value
+                    .to_typed_decimal_with_context(&field, &context)
+                    .map_err(|_| {
+                        EvalError::Unsupported("constant cannot be converted to decimal")
+                    })?;
                 if let Some(error) = error {
                     return Err(EvalError::Conversion(error));
                 }
-                Ok(Datum::Decimal(
-                    if i64::from(value.precision_and_frac().1) < field.decimal() {
-                        // Go adjusts the fixed MyDecimal buffer in place. Adding
-                        // scale can itself truncate an 81-digit value; this error
-                        // is returned directly after any conversion warning.
-                        let mut decimal = value.to_my_decimal().map_err(constant_decimal_error)?;
-                        if let Some(error) = decimal.round_in_place(
-                            field.decimal() as i32,
-                            tidb_datatype::RoundMode::HalfUp,
-                        ) {
-                            return Err(constant_decimal_error(error));
-                        }
-                        tidb_datatype::Decimal::from_my_decimal(&decimal)
-                    } else {
-                        value
-                    },
-                ))
+                Ok(Datum::Decimal(value))
             }
             EvalType::Datetime | EvalType::Timestamp if matches!(value, Datum::Time(_)) => {
                 Ok(value)
@@ -439,16 +425,6 @@ impl Constant {
             && self.param_marker == other.param_marker
             && datum_equals(&self.value, &other.value)
     }
-}
-
-fn constant_decimal_error(error: tidb_datatype::DecimalError) -> EvalError {
-    use tidb_datatype::DecimalError;
-    EvalError::Conversion(match error {
-        DecimalError::Truncated => tidb_datatype::ERR_TRUNCATED.clone(),
-        DecimalError::Overflow => tidb_datatype::ERR_OVERFLOW.clone(),
-        DecimalError::BadNumber => tidb_datatype::ERR_BAD_NUMBER.clone(),
-        DecimalError::TruncatedWrongValue => tidb_datatype::ERR_TRUNCATED_WRONG_VALUE.clone(),
-    })
 }
 
 /// Borrow the active evaluator's warning sink; no per-conversion warning store.

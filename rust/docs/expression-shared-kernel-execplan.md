@@ -324,3 +324,22 @@ interface as an explicitly test-only fixed-type slot prototype.
 - [x] Trace actual SELECT cache owner: asymmetric Decimal compatibility, separate NULL/type keys, per-execution parameter Arc and generation check.
 - [x] Run focused native forms and demanded-slot proof: two new tests pass; integer conversion and current-value overflow text remain concrete counterexamples. RPN empty batches require the existing adapter guard.
 - [x] Publish bounded contract and decision: keep product parameters rejected. 35 shared/native, 8 existing prepared and 1 actual session cache test pass; root lint passes. Source inputs/logs and complete counts accompany the report; no SDK changes or new performance claim.
+
+
+## Task40 — execution-owned typed Decimal parameters
+
+Authority: Designer cda358b9 (task39 accepted), task40 self-claimed. Compile only
+parameter leaves in existing Decimal arithmetic; IF may contain that arithmetic.
+Reject bare/IF-direct/deferred parameters. Extract existing Decimal conversion and
+padding into datatype, reused by Constant and shared RPN. Read raw current Datum
+only on demand; immutable binding throughout each call. Overflow rendering uses
+static fragments and parameter slots only when an actual overflow occurs, with
+native generic fallback. No default executor, worker or cross-EXECUTE program
+cache changes. Explicit callers own bound-signature programs for one execution.
+
+- [x] Record initial admission failure and share the original conversion, padding and diagnostic-value primitives in datatype.
+- [x] Add demanded typed parameter instruction and error-only dynamic diagnostics; preserve inferred NULL types and reject unresolved signatures using the native domain check.
+- [x] Compare real native arithmetic Vector and IF row paths, warnings/strict,
+      runtime carriers, demand, empty input, recovery and retained outputs.
+- [ ] Run affected datatype/native/SDK checks and lint; publish fixed evidence,
+      complete counts and remaining limitations.

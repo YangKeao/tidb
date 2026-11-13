@@ -246,6 +246,62 @@ impl Datum {
         Ok(converted)
     }
 
+    /// Typed constant Decimal conversion, including the original scale extension.
+    /// Conversion diagnostics precede fixed-buffer padding diagnostics.
+    pub fn to_typed_decimal_with_context(
+        &self,
+        field: &crate::FieldType,
+        context: &crate::ConversionContext<'_>,
+    ) -> Result<(Decimal, Option<tidb_error::terror::TerrorError>), DatumValueError> {
+        let (value, error) = self.to_decimal_with_context(context)?;
+        if error.is_some() || i64::from(value.precision_and_frac().1) >= field.decimal() {
+            return Ok((value, error));
+        }
+        let padded = (|| {
+            let mut decimal = value.to_my_decimal()?;
+            if let Some(error) =
+                decimal.round_in_place(field.decimal() as i32, crate::RoundMode::HalfUp)
+            {
+                return Err(error);
+            }
+            Ok(Decimal::from_my_decimal(&decimal))
+        })();
+        Ok(match padded {
+            Ok(value) => (value, None),
+            Err(error) => (
+                value,
+                Some(match error {
+                    crate::DecimalError::Truncated => crate::ERR_TRUNCATED.clone(),
+                    crate::DecimalError::Overflow => crate::ERR_OVERFLOW.clone(),
+                    crate::DecimalError::BadNumber => crate::ERR_BAD_NUMBER.clone(),
+                    crate::DecimalError::TruncatedWrongValue => {
+                        crate::ERR_TRUNCATED_WRONG_VALUE.clone()
+                    }
+                }),
+            ),
+        })
+    }
+
+    /// Original numeric diagnostic operand text; unsupported carriers use generic errors.
+    pub fn numeric_diagnostic_text(&self, go_float_format: bool) -> Option<String> {
+        match self {
+            Self::Int(value) => Some(value.to_string()),
+            Self::UInt(value) => Some(value.to_string()),
+            Self::Float32(value) | Self::Real(value) => Some(if go_float_format {
+                crate::format_float_g_shortest(*value)
+            } else {
+                value.to_string()
+            }),
+            Self::Decimal(value) => Some(value.to_string()),
+            Self::BinaryLiteral(value) => Some(value.to_int().value().to_string()),
+            Self::Null => Some("NULL".to_owned()),
+            Self::String(_) | Self::Bytes(_) | Self::Json(_) => {
+                String::from_utf8(self.truncated_stringify().ok()?).ok()
+            }
+            _ => None,
+        }
+    }
+
     /// Go `Datum.ToDecimal` with its original conversion-stage diagnostics.
     /// Unlike `ConvertTo(DECIMAL)`, this does not fit a declared column shape.
     pub fn to_decimal_with_context(
