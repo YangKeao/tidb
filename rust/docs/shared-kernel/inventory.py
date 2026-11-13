@@ -3,6 +3,7 @@
 import argparse
 import collections
 import json
+import hashlib
 import re
 import subprocess
 from pathlib import Path
@@ -25,12 +26,12 @@ def sources(base, revision, pattern):
     for name in names:
         if Path(name).match(pattern):
             content = subprocess.check_output(['git', '-C', str(base), 'show', revision + ':' + name], text=True)
-            result.append((name, content.split('#[cfg(test)]')[0].splitlines()))
+            result.append((name, content.splitlines()))
     return result
 
 # Path.match does not give ** arbitrary-depth semantics: include all source levels.
 names = subprocess.check_output(['git', '-C', str(root), 'ls-tree', '-r', '--name-only', '364aef2bab5cc633ecb76a775ae8f36f86a6687d', '--', 'rust/crates/tidb-expr/src'], text=True).splitlines()
-native = [(name, subprocess.check_output(['git', '-C', str(root), 'show', '364aef2bab5cc633ecb76a775ae8f36f86a6687d:' + name], text=True).split('#[cfg(test)]')[0].splitlines()) for name in names if name.endswith('.rs')]
+native = [(name, subprocess.check_output(['git', '-C', str(root), 'show', '364aef2bab5cc633ecb76a775ae8f36f86a6687d:' + name], text=True).splitlines()) for name in names if name.endswith('.rs')]
 sdk = sources(a.tikv, '548812e1ef57aef077a2062a9cc356640a6347f5', 'components/tidb_query_expr/src/impl_*.rs')
 
 aliases = {'if':'if_condition', 'case':'case_when', 'ifnull':'if_null', 'not':'unary_not',
@@ -82,8 +83,10 @@ for r in rows:
 counts = dict(collections.Counter(r['classification'] for r in result))
 out = dict(tidb_base='364aef2bab5cc633ecb76a775ae8f36f86a6687d',
     tikv_base='548812e1ef57aef077a2062a9cc356640a6347f5',
+    family_input_sha256=hashlib.sha256(a.families.read_bytes()).hexdigest(),
+    family_identities_sha256=hashlib.sha256('\n'.join(sorted(r['id'] for r in rows)).encode()).hexdigest(),
     denominator=245, exceptions=sorted(exceptions), counts=counts,
-    note='Planning candidates only. No historical functional credit inherited. File anchors are from original-base sources; missing matches do not establish missing algorithms.', rows=result)
+    note='Planning candidates only. No historical functional credit inherited. File anchors conservatively scan whole original-base files, including inline tests; each is an unverified candidate, not necessarily an algorithm owner; missing matches do not establish missing algorithms.', rows=result)
 a.output.write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\n')
 assert sum(counts.values()) == 245
 print(json.dumps(counts, sort_keys=True))

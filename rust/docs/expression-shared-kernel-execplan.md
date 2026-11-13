@@ -13,10 +13,13 @@ Both Rust frontends will compile expressions into one TiKV RPN program, where RP
 - [x] 2026-11-13: create independent expression-shared-kernel-m1 worktrees from TiDB364aef2bab5cc633ecb76a775ae8f36f86a6687d and TiKV548812e1ef57aef077a2062a9cc356640a6347f5.
 - [x] Read original entry points, repository instructions and Designer ddb87c63ff2d0dbe40ede1e84d4b1182b6541cbe design.
 - [ ] Inventory 245 function families, five exceptions, production entry points and file-level cost.
-- [ ] Build opt-in shared MD5 through native and protobuf inputs.
+- [x] Build opt-in shared MD5 through native and protobuf inputs; checkpoint1 published 7e3a636 / 52d7be2.
 - [ ] Add exact Decimal/full-domain floating carriers and demanded complex input conversion.
 - [ ] Extend original RPN control flow to lazy IF, state and repeated evaluation; verify original PB behavior independently.
-- [ ] Validate and publish runnable checkpoint with both repositories' raw additions/deletions, test counts and gaps.
+- [x] Publish checkpoint1 with four passing tests, counts and explicit remaining M1 gates.
+- [x] Demand column reads from the RPN loop; missing unselected column and integer [7,2,7] tests pass.
+- [x] Reproduce three review regressions, then fix/restrict admission; seven shared tests pass.
+- [ ] Complete dynamic branching, scalar/vector contracts, complex error guards and state execution; M1 is not complete.
 
 ## Context and Orientation
 
@@ -75,3 +78,11 @@ Designer reference: https://github.com/YangKeao/tidb/blob/ddb87c63ff2d0dbe40ede1
 
 
 The expression crate gains optional path dependencies on the sibling tidb_query_expr and tidb_query_datatype, with the original tipb revision locked by Cargo. Native adapters build typed RPN nodes and supply input/context/output only. RpnExpression remains the one program type; the shared loop owns all function/branch/repeat scheduling. Borrowed inputs and owned intermediates replace value handles. Any specific API adjustment must be recorded here with its concrete semantic reason.
+
+## Review 1 discoveries and decisions
+
+The first IF admission compared EvalType only, which incorrectly accepted FLOAT/BIT result shapes. Regression tests first failed against the candidate and captured native Float32/Bit results; the adapter now explicitly rejects these shapes until shared coercion exists. Non-integer NULL is lowered by declared type and the program stores an explicit root type instead of inferring it from the last else instruction. Decimal parts additionally check leading integer residual range and trailing fractional alignment. Seven targeted tests pass after these changes; all three before-fix failures are retained.
+
+The optional feature changes workspace dependencies even when disabled: flate2 1.1.9→1.0.11, protobuf registry2.28→PingCAP2.8 and cmake source. Default compression tests are required; disabling the route does not isolate dependencies. The SDK executors library check passed, but was built across input-adapter edits and will be rerun at a frozen source checkpoint. SDK loop tests are also required.
+
+Whole-file candidate scanning fixes production omitted after inline test attributes; candidate identity and exact ledger input hashes are recorded. Inventory/build/prose overhead already costs8767 changed lines at checkpoint1. Revised total known estimate is22–34K (13–22K core +9–12K evidence/build), before unbounded algorithm/semantic/retirement work. No full-range10K proof or M1 completion claim is made.

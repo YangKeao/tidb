@@ -9,15 +9,13 @@
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::Datum;
 use tidb_query_datatype::{
-    codec::{
-        batch::{LazyBatchColumn, LazyBatchColumnVec},
-        data_type::{ChunkRef, ScalarValue, VectorValue},
-    },
+    codec::data_type::{ChunkRef, ScalarValue, VectorValue},
     expr::EvalContext,
     EvalType, FieldTypeTp,
 };
 use tidb_query_expr::{
-    ExpressionDecimal, ExpressionScalar, RpnExpression, RpnExpressionNode, RpnStackNode,
+    ExpressionDecimal, ExpressionScalar, InputColumns, InputResult, RpnExpression,
+    RpnExpressionNode, RpnStackNode, RpnStackNodeVectorValue,
 };
 
 use crate::expression::Expression;
@@ -26,7 +24,7 @@ use crate::expression::Expression;
 #[derive(Debug)]
 pub struct SharedExpression {
     program: RpnExpression,
-    columns: Vec<usize>,
+    columns: Vec<(usize, EvalType)>,
     schema: Vec<tipb::FieldType>,
 }
 
@@ -58,6 +56,15 @@ impl SharedExpression {
                         .literal_value()
                         .ok_or("shared kernel requires a literal constant")?;
                     let extended = match datum {
+                        Datum::Null => match c.ret_type.as_ref().map(|t| t.eval_type()) {
+                            Some(tidb_datatype::EvalType::Real) => {
+                                Some((ExpressionScalar::Real(None), FieldTypeTp::Double))
+                            }
+                            Some(tidb_datatype::EvalType::Decimal) => {
+                                Some((ExpressionScalar::Decimal(None), FieldTypeTp::NewDecimal))
+                            }
+                            _ => None,
+                        },
                         Datum::Real(v) => {
                             Some((ExpressionScalar::Real(Some(*v)), FieldTypeTp::Double))
                         }
@@ -108,18 +115,29 @@ impl SharedExpression {
                     let tp = c.ret_type.as_ref().ok_or("column requires a field type")?;
                     let admitted =
                         tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
-                    if tp.code() != admitted.code()
-                        || tp.collation_name() != admitted.collation_name()
-                        || tp.is_array()
-                    {
-                        return Err(
-                            "this checkpoint requires a default-collation VarString column".into(),
-                        );
+                    let eval_type = match tp.code() {
+                        tidb_datatype::FieldTypeCode::VarString
+                            if tp.collation_name() == admitted.collation_name() =>
+                        {
+                            EvalType::Bytes
+                        }
+                        tidb_datatype::FieldTypeCode::LongLong if !tp.is_unsigned() => {
+                            EvalType::Int
+                        }
+                        _ => return Err("column type is outside shared input admission".into()),
+                    };
+                    if tp.is_array() {
+                        return Err("array columns are not yet admitted".into());
                     }
-                    let offset = match columns.iter().position(|v| *v == index) {
-                        Some(i) => i,
+                    let offset = match columns.iter().position(|(i, _)| *i == index) {
+                        Some(i) => {
+                            if columns[i].1 != eval_type {
+                                return Err("conflicting column types".into());
+                            }
+                            i
+                        }
                         None => {
-                            columns.push(index);
+                            columns.push((index, eval_type));
                             columns.len() - 1
                         }
                     };
@@ -132,6 +150,19 @@ impl SharedExpression {
                     if !matches!(&f.args[0], Expression::Constant(c) if matches!(c.literal_value(), Some(Datum::Int(_) | Datum::Null)))
                     {
                         return Err("IF currently admits literal integer conditions only".into());
+                    }
+                    // shortcut: FLOAT/BIT and decorated result shapes need shared coercion;
+                    // reject them until that instruction is implemented.
+                    let declared = f.ret_type.as_ref().ok_or("IF requires a return type")?;
+                    if !matches!(
+                        declared.code(),
+                        tidb_datatype::FieldTypeCode::LongLong
+                            | tidb_datatype::FieldTypeCode::Double
+                            | tidb_datatype::FieldTypeCode::NewDecimal
+                    ) || declared.is_unsigned()
+                        || declared.is_array()
+                    {
+                        return Err("IF result shape requires unimplemented shared coercion".into());
                     }
                     let result_type = f
                         .ret_type
@@ -216,9 +247,21 @@ impl SharedExpression {
                 }),
             }
         }
-        let schema = columns.iter().map(|_| bytes_type()).collect();
+        let schema = columns
+            .iter()
+            .map(|(_, tp)| match tp {
+                EvalType::Int => FieldTypeTp::LongLong.into(),
+                _ => bytes_type(),
+            })
+            .collect();
+        let mut program = RpnExpression::from(nodes);
+        if let Expression::ScalarFunction(f) = expression {
+            if f.func_name.lowercase() == "if" {
+                program.set_return_type(control_type(f)?);
+            }
+        }
         Ok(Self {
-            program: nodes.into(),
+            program,
             columns,
             schema,
         })
@@ -237,40 +280,66 @@ impl SharedExpression {
         if rows.iter().any(|r| *r >= input.physical_rows()) {
             return Err("selected row is outside the input chunk".into());
         }
-        if self.columns.iter().any(|c| *c >= input.num_cols()) {
-            return Err("referenced column is outside the input chunk".into());
-        }
         if rows.is_empty() {
             return Ok(Vec::new());
         }
         if rows.len() > tidb_query_datatype::codec::data_type::BATCH_MAX_SIZE {
             return Err("selection exceeds the RPN batch limit".into());
         }
-        let columns: Vec<LazyBatchColumn> = self
-            .columns
-            .iter()
-            .map(|index| {
-                let column = input.column(*index);
-                let mut converted =
-                    LazyBatchColumn::decoded_with_capacity_and_tp(rows.len(), EvalType::Bytes);
-                for row in rows {
-                    let value = if column.is_null(*row) {
-                        None
-                    } else {
-                        Some(column.get_bytes(*row).to_vec())
-                    };
-                    converted.mut_decoded().push_bytes(value);
-                }
-                converted
-            })
-            .collect();
-        let columns = LazyBatchColumnVec::from(columns);
-        let logical_rows: Vec<_> = (0..rows.len()).collect();
+        let columns = NativeInput {
+            chunk: input,
+            columns: &self.columns,
+        };
         let result = self
             .program
-            .eval_decoded(ctx, &self.schema, &columns, &logical_rows, rows.len())
+            .eval_input(ctx, &self.schema, &columns, rows, rows.len())
             .map_err(|e| e.to_string())?;
         native_output(result, rows.len())
+    }
+}
+
+struct NativeInput<'a> {
+    chunk: &'a Chunk,
+    columns: &'a [(usize, EvalType)],
+}
+
+impl InputColumns for NativeInput<'_> {
+    fn read<'a>(
+        &'a self,
+        schema: &'a [tipb::FieldType],
+        offset: usize,
+        rows: &'a [usize],
+        _ctx: &mut EvalContext,
+    ) -> InputResult<'a> {
+        use tidb_query_datatype::codec::Error;
+        let &(index, eval_type) = self
+            .columns
+            .get(offset)
+            .ok_or(Error::ColumnOffset(offset))?;
+        if index >= self.chunk.num_cols() {
+            return Err(Error::ColumnOffset(index).into());
+        }
+        if rows.iter().any(|row| *row >= self.chunk.physical_rows()) {
+            return Err(Error::InvalidDataType("selected row is outside input".into()).into());
+        }
+        let column = self.chunk.column(index);
+        let mut values = VectorValue::with_capacity(rows.len(), eval_type);
+        for row in rows {
+            match eval_type {
+                EvalType::Int => {
+                    values.push_int((!column.is_null(*row)).then(|| column.get_int64(*row)))
+                }
+                EvalType::Bytes => values
+                    .push_bytes((!column.is_null(*row)).then(|| column.get_bytes(*row).to_vec())),
+                _ => unreachable!("compiler checks input types"),
+            }
+        }
+        Ok(RpnStackNode::Vector {
+            value: RpnStackNodeVectorValue::Generated {
+                physical_value: values,
+            },
+            field_type: &schema[offset],
+        })
     }
 }
 
@@ -321,8 +390,18 @@ fn native_output(result: RpnStackNode<'_>, rows: usize) -> Result<Vec<Datum>, St
         } => Ok((0..rows).map(|_| convert(v.as_deref())).collect()),
         RpnStackNode::Vector { value, .. } => {
             let values = value.as_ref();
+            if let VectorValue::Int(values) = values {
+                return Ok((0..rows)
+                    .map(|r| {
+                        values
+                            .get_option_ref(value.logical_rows()[r])
+                            .copied()
+                            .map_or(Datum::Null, Datum::Int)
+                    })
+                    .collect());
+            }
             let VectorValue::Bytes(values) = values else {
-                return Err("expected byte result".into());
+                return Err("expected byte or integer result".into());
             };
             Ok((0..rows)
                 .map(|r| convert(values.get_option_ref(value.logical_rows()[r])))
@@ -338,6 +417,7 @@ mod tests {
     use crate::{column::Column, constant::Constant, scalar_function::ScalarFunction};
     use tidb_ast::CiString;
     use tidb_datatype::FieldType;
+    use tidb_query_datatype::codec::batch::LazyBatchColumnVec;
 
     fn native_type() -> FieldType {
         FieldType::new(tidb_datatype::FieldTypeCode::VarString)
@@ -348,6 +428,151 @@ mod tests {
             native_type(),
             vec![arg],
         ))
+    }
+
+    #[test]
+    fn shared_kernel_rejects_unimplemented_result_shapes() {
+        use tidb_datatype::FieldTypeCode;
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        for (code, value, branch_code) in [
+            (
+                FieldTypeCode::Float,
+                Datum::Real(1.0000000000000002),
+                FieldTypeCode::Double,
+            ),
+            (FieldTypeCode::Bit, Datum::Int(3), FieldTypeCode::LongLong),
+        ] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("if"),
+                FieldType::new(code),
+                vec![
+                    Expression::Constant(Constant::new(
+                        Datum::Int(1),
+                        FieldType::new(FieldTypeCode::LongLong),
+                    )),
+                    Expression::Constant(Constant::new(value.clone(), FieldType::new(branch_code))),
+                    Expression::Constant(Constant::new(value, FieldType::new(branch_code))),
+                ],
+            ));
+            let expected = expression
+                .eval(&crate::context::NoColumns, input.get_row(0))
+                .unwrap();
+            if code == FieldTypeCode::Float {
+                assert!(matches!(expected, Datum::Float32(v) if v == 1.0));
+            } else {
+                assert!(matches!(expected, Datum::Bit(_)));
+            }
+            assert!(
+                SharedExpression::compile(&expression).is_err(),
+                "unsupported {code:?} must not silently return a different Datum"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_kernel_typed_null_and_program_exit() {
+        use tidb_datatype::FieldTypeCode;
+        use tidb_query_datatype::FieldTypeAccessor;
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        for code in [FieldTypeCode::Double, FieldTypeCode::NewDecimal] {
+            let tp = FieldType::new(code);
+            for condition in [0, 1] {
+                let value = if code == FieldTypeCode::Double {
+                    Datum::Real(1.5)
+                } else {
+                    Datum::Decimal(tidb_datatype::Decimal::from_int(7))
+                };
+                let expression = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("if"),
+                    tp.clone(),
+                    vec![
+                        Expression::Constant(Constant::new(
+                            Datum::Int(condition),
+                            FieldType::new(FieldTypeCode::LongLong),
+                        )),
+                        Expression::Constant(Constant::new(value, tp.clone())),
+                        Expression::Constant(Constant::new(Datum::Null, tp.clone())),
+                    ],
+                ));
+                let program = SharedExpression::compile(&expression).unwrap();
+                let expected_type = if code == FieldTypeCode::Double {
+                    FieldTypeTp::Double
+                } else {
+                    FieldTypeTp::NewDecimal
+                };
+                assert_eq!(
+                    program
+                        .program
+                        .ret_field_type(&program.schema)
+                        .as_accessor()
+                        .tp(),
+                    expected_type
+                );
+                assert!(!program.program.is_last_constant());
+                let expected = expression
+                    .eval(&crate::context::NoColumns, input.get_row(0))
+                    .unwrap();
+                assert_eq!(
+                    program
+                        .evaluate(&input, &[0], &mut EvalContext::default())
+                        .unwrap(),
+                    vec![expected]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_reads_only_demanded_columns_and_preserves_integer_selection() {
+        use tidb_datatype::FieldTypeCode;
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let mut missing = Column::new(1, integer.clone());
+        missing.index = 7;
+        let mut input = Chunk::new(&[], 3, 3);
+        input.set_num_virtual_rows(3);
+        for condition in [0, 1] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("if"),
+                integer.clone(),
+                vec![
+                    Expression::Constant(Constant::new(Datum::Int(condition), integer.clone())),
+                    Expression::Column(missing.clone()),
+                    Expression::Constant(Constant::new(Datum::Int(9), integer.clone())),
+                ],
+            ));
+            let program = SharedExpression::compile(&expression).unwrap();
+            let actual = program.evaluate(&input, &[2, 0, 2], &mut EvalContext::default());
+            if condition == 0 {
+                assert_eq!(actual.unwrap(), vec![Datum::Int(9); 3]);
+                assert_eq!(
+                    expression
+                        .eval(&crate::context::NoColumns, input.get_row(0))
+                        .unwrap(),
+                    Datum::Int(9)
+                );
+            } else {
+                assert!(actual.is_err());
+            }
+        }
+        let mut column = Column::new(1, integer.clone());
+        column.index = 0;
+        let program = SharedExpression::compile(&Expression::Column(column)).unwrap();
+        let mut input = Chunk::new(&[integer], 8, 8);
+        for row in 0..8 {
+            if row == 2 {
+                input.append_null(0);
+            } else {
+                input.append_int64(0, row - 10);
+            }
+        }
+        assert_eq!(
+            program
+                .evaluate(&input, &[7, 2, 7], &mut EvalContext::default())
+                .unwrap(),
+            vec![Datum::Int(-3), Datum::Null, Datum::Int(-3)]
+        );
     }
 
     #[test]
@@ -464,6 +689,8 @@ mod tests {
         assert_eq!(restored.to_string(), large.to_string());
         for invalid in [
             (82, 0, 0, false, [0; 9]),
+            (0, 1, 1, false, [1, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (1, 0, 0, false, [10, 0, 0, 0, 0, 0, 0, 0, 0]),
             (1, 0, 82, false, [0; 9]),
             (1, 0, 0, false, [1_000_000_000; 9]),
         ] {

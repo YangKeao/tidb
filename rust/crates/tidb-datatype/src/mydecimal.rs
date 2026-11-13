@@ -1869,6 +1869,11 @@ impl MyDecimal {
         if used > 9 || result > 81 || words[..used].iter().any(|w| *w >= 1_000_000_000) {
             return Err("invalid exact MyDecimal parts");
         }
+        if (integer % 9 != 0 && words[0] >= 10_u32.pow(u32::from(integer % 9)))
+            || (fraction % 9 != 0 && words[used - 1] % 10_u32.pow(u32::from(9 - fraction % 9)) != 0)
+        {
+            return Err("misaligned exact MyDecimal parts");
+        }
         Ok(Self {
             digits_int: integer as i8,
             digits_frac: fraction as i8,

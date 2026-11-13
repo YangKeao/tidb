@@ -25,9 +25,35 @@ The numbers below are ranges of added/deleted lines, not net growth. Tests are i
 | TiDB shared_kernel module, native/PB builders and input/context adapters | 2500–4500 | 0–300 | function mapping, input/context/output only; no host task protocol |
 | TiDB evaluator/caller integration and deletion of superseded scheduling | 500–1000 | 2000–3500 | native AST/scalar/vector paths and execution groups; requires full coverage |
 | Targeted shared integration tests in both repositories | 1800–3000 | 0–200 | boundary matrix plus original tests, no generated copies of existing suites |
-| Build/config and maintenance documentation | 100–250 | 0–100 | docs counted separately in actual accounting |
+| Core implementation/test contingency (to reconcile the design 13–22K envelope) | 3650–4750 | 0 | previous table omitted this reserve; re-estimate as semantic scope is proven |
+| Build/config, generated inventory and documentation | measured separately below | measured separately below | original 100–250 estimate withdrawn; these are part of total changes |
 | Necessary algorithm movement and extra semantic differences | not yet bounded | not yet bounded | inspect unmatched/generic families before using this budget as a full estimate |
 
 Per-family classification is intentionally provisional: `direct_reuse_candidate` currently selects MD5 only; `semantic_revision_candidate` says a matching original SDK function is available, not that every overload is equivalent or the revision is known small. `algorithm_migration_candidate` is the inspection queue, not an assertion of absence. Five exceptions remain explicit. File-level retirement cannot be promised before this queue is resolved; whole-file native algorithm moves are not authorized by a missing name match.
 
 M1 proceeds with MD5, Decimal/NaN, lazy complex values, RAND/variables/BENCHMARK. A runnable checkpoint is not final full coverage. Report actual raw additions/deletions for each repository and production/tests/docs independently at every checkpoint.
+
+## Checkpoint 1 measured overhead and revised estimate
+
+The fixed checkpoint contains Cargo/build +1866/-91 (1957 changed lines), generated JSON +6569, generator +89 and prose/maintenance +152. Together these are +8676/-91 (8767 changed lines), separate from the 818 source/test lines. The previous +100–250 documentation/build estimate was wrong. Reserve **9–12K** changed lines for build, inventory and documentation, in addition to the design's **13–22K** core/integration/basic-test envelope: **22–34K** before additional algorithm movement, semantic extensions and retirement deletions. This is an estimate, not a demonstrated full-project bound. The unbounded algorithm/semantic queue must be priced before M2.
+
+The generator now scans complete fixed-base files, conservatively retaining inline-test candidates rather than truncating production after the first test attribute. Candidate anchors can be tests or registrations and require human source review; they do not claim algorithm ownership. BETWEEN's production AST anchor is retained. The JSON records SHA256 of both the exact family-ledger input and the sorted family identities.
+
+Reproduce from this repository root:
+
+```sh
+python3 rust/docs/shared-kernel/inventory.py \
+  --families /home/agent/tidb/expression-unification/tidb/rust/docs/evidence/expression-unification-final-coverage.json \
+  --tikv ../tikv --output rust/docs/shared-kernel/coverage-candidates.json
+```
+
+| Scope | Original budget (changed lines) | Revised budget | Checkpoint1 actual additions/deletions |
+| --- | ---: | ---: | ---: |
+| Listed production/integration/tests | 9350–17250 | 9350–17250 | +802/-16 |
+| Core contingency omitted from original table | implicit in design13–22K | 3650–4750 | not independently spent |
+| Core subtotal including contingency | design13–22K | 13–22K | +802/-16 |
+| Build/config/maintenance, inventory included | 100–350 | 9–12K | +8676/-91 |
+| Known combined scope | not reconciled | 22–34K | +9478/-107 |
+| Algorithm moves, extra compatibility, retirement | unbounded | unbounded until M2 source audit | not credited as complete |
+
+The contingency is inside13–22K, not an additional charge above it. The9–12K overhead is outside that core subtotal. Actuals refer only to the fixed first checkpoint; subsequent checkpoint reports record new totals.
