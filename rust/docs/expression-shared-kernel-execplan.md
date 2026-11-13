@@ -86,3 +86,9 @@ The first IF admission compared EvalType only, which incorrectly accepted FLOAT/
 The optional feature changes workspace dependencies even when disabled: flate2 1.1.9→1.0.11, protobuf registry2.28→PingCAP2.8 and cmake source. Default compression tests are required; disabling the route does not isolate dependencies. The SDK executors library check passed, but was built across input-adapter edits and will be rerun at a frozen source checkpoint. SDK loop tests are also required.
 
 Whole-file candidate scanning fixes production omitted after inline test attributes; candidate identity and exact ledger input hashes are recorded. Inventory/build/prose overhead already costs8767 changed lines at checkpoint1. Revised total known estimate is22–34K (13–22K core +9–12K evidence/build), before unbounded algorithm/semantic/retirement work. No full-range10K proof or M1 completion claim is made.
+
+## Checkpoint 3 progress
+
+Dynamic IF now has explicit else/end edges and a shared branch-frame join, preserving logical occurrences across nested partial selections. Structural finish validates/freezes native control programs;511+ nested levels are tested. Full-domain native intermediate vectors keep float bits and Decimal metadata. Real SDK JSON parse/length and delayed native regexp kernels are covered by demanded-error and bad-unselected-row cases.11 native cases and34 SDK loop cases pass; the added PB eager-IF case also passes against original548812e in a separate test-only worktree. Scoped expression/executor clippy completes with warnings; required make clippy fails before checking because rustup is missing from PATH.
+
+This proves the current pure/control subset only. Scalar versus vector invocation, arithmetic range/error/warning prefixes, shared state/multi-root ordering and BENCHMARK remain M1 work. The program does not yet provide complete native diagnostic adaptation. No decision has been made to relax original native/PB semantic differences.
