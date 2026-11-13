@@ -341,5 +341,5 @@ cache changes. Explicit callers own bound-signature programs for one execution.
 - [x] Add demanded typed parameter instruction and error-only dynamic diagnostics; preserve inferred NULL types and reject unresolved signatures using the native domain check.
 - [x] Compare real native arithmetic Vector and IF row paths, warnings/strict,
       runtime carriers, demand, empty input, recovery and retained outputs.
-- [ ] Run affected datatype/native/SDK checks and lint; publish fixed evidence,
+- [x] Run affected datatype/native/SDK checks and lint; publish fixed evidence,
       complete counts and remaining limitations.

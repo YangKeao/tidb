@@ -1,0 +1,156 @@
+{
+  "source_commits": {
+    "tidb": "be800b9126653ff96620cb78e51ef350b1c352a0",
+    "tikv": "3c9b12cfb80e2928896a28def1b2a3b8b7dc3517"
+  },
+  "source_inputs": {
+    "count": 5525,
+    "sha256": "ca2ccab18525009f7d8b84eb511e282622560be652446b54a93ba14f005e86af"
+  },
+  "tests": {
+    "native-final": {
+      "passed": 39,
+      "ignored": 0,
+      "filtered": 1323
+    },
+    "native-prepared": {
+      "passed": 8,
+      "ignored": 0,
+      "filtered": 1354
+    },
+    "datatype-decimal": {
+      "passed": 89,
+      "ignored": 0,
+      "filtered": 338
+    },
+    "datatype-convert": {
+      "passed": 7,
+      "ignored": 0,
+      "filtered": 420
+    },
+    "sdk-tests": {
+      "passed": 429,
+      "ignored": 0,
+      "filtered": 0
+    }
+  },
+  "checks": {
+    "root_lint": 0,
+    "final_root_lint": 0,
+    "scoped_clippy": 0,
+    "rustfmt_2021": 0,
+    "git_diff_check": 0
+  },
+  "limits": [
+    "adjacent-source Aug22 wrapper only",
+    "no full SDK make clippy",
+    "no performance measurement",
+    "no default executor or cross-EXECUTE program cache"
+  ],
+  "logs": [
+    {
+      "name": "after-signature-guard.log",
+      "sha256": "830e7067e0b24c9c4d54aba7a71f84bba69015b0fc1da6067b1ba385328e8280"
+    },
+    {
+      "name": "attempt1.log",
+      "sha256": "43f9b490e0b47888801e32664bca0b10be60e618ed5ff2a7d3a7a2416f3f733c"
+    },
+    {
+      "name": "attempt2.log",
+      "sha256": "54d5e19a67e40bd9e604fd956ab68cbf00ed743eb29888ea4f4e9fe937120c5d"
+    },
+    {
+      "name": "attempt3.log",
+      "sha256": "42de2b2c5bc9a8a005a371329aba47b659b8ca20b457857af8a62b91901aee7d"
+    },
+    {
+      "name": "attempt4.log",
+      "sha256": "e275ce6c141fe1303bf0706d54bfce6b1c0e173b535d94c20019a8d45b2e13a0"
+    },
+    {
+      "name": "attempt5.log",
+      "sha256": "4b43898af7e4c9e7e05350477c17f9025fd64313db29f14c1b78f85ba6f04982"
+    },
+    {
+      "name": "attempt6.log",
+      "sha256": "3124309b1d15b24f111cf8818912a9d481647738a56c2c1273a57be7b2ae397b"
+    },
+    {
+      "name": "attempt7.log",
+      "sha256": "ae459d7c5cffb621e5747c98f160c53eb2c839c7b3bd8e43bbae00be5b15b20b"
+    },
+    {
+      "name": "attempt8.log",
+      "sha256": "1340b10bd2c1fa9414e0e53ee845fea54e55af307f8e5963f6eb88e238f498b0"
+    },
+    {
+      "name": "before-null-type.log",
+      "sha256": "8130879c9619bbab94ac8afe53226e0e04555a21ee782bf06d2a683376fe41b6"
+    },
+    {
+      "name": "before-signature-guard.log",
+      "sha256": "20d19e18b7727c4672b0e8844bb9379ef5170079df534cf2a4acb2b936e33dbf"
+    },
+    {
+      "name": "before.log",
+      "sha256": "77abc80b3d929282ad05de008f3962e69204d7fe903884f7b995fe7e943f773f"
+    },
+    {
+      "name": "datatype-convert.log",
+      "sha256": "5aeba85c6845f6285fb14ab4d1961dc79c1eef86e2698c617abdbae859466388"
+    },
+    {
+      "name": "datatype-decimal.log",
+      "sha256": "82926d6ca44bc30f1f5c045f83fb317fc4cd937574087f2288746553bc5ee713"
+    },
+    {
+      "name": "final-lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    },
+    {
+      "name": "lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    },
+    {
+      "name": "native-final.log",
+      "sha256": "889cd451abe15b90c75d749571ca66fbf69ca8acea2944a5e9c50ffce334e5af"
+    },
+    {
+      "name": "native-prepared.log",
+      "sha256": "75450d80154c907963523f6f7991f1a4ed625c73d0ccdee0f3a740b376c19c42"
+    },
+    {
+      "name": "pre-guard-datatype-convert.log",
+      "sha256": "7205670e3952aba37c4faf5a4ba48cc484c8bb138a761b5a5538b0baac5dc468"
+    },
+    {
+      "name": "pre-guard-datatype-decimal.log",
+      "sha256": "ecb0ad00b81c2a5ec168149aea7aef47d6866b3e1343983ce5faa0f405ce01af"
+    },
+    {
+      "name": "pre-guard-native-final.log",
+      "sha256": "8af389e558b638daf136a91be4e269da3804383880a18ae08ed6fe383fede4d9"
+    },
+    {
+      "name": "pre-guard-native-prepared.log",
+      "sha256": "21acb0ed010b586aabc419b78390e871bb7a486ec7966360d5257be310641c81"
+    },
+    {
+      "name": "pre-guard-scoped-clippy.log",
+      "sha256": "1d831c5730f2cce1055de1d70a0e03e7f7209cca3ddb0d61b57ecaaf817c6d24"
+    },
+    {
+      "name": "pre-guard-sdk-tests.log",
+      "sha256": "895b5b10da3fb78978aa1404498c637445a9611e3518fc51b92c58ac187f3d62"
+    },
+    {
+      "name": "scoped-clippy.log",
+      "sha256": "821f3e6dde4bff2e0cfff5156668bdb67a33b4b65156c78930b4a5bf8fec4a9c"
+    },
+    {
+      "name": "sdk-tests.log",
+      "sha256": "374a4ac96231fad5980abc5ae3993840f3936edfc0ab2e172d3275065506eefd"
+    }
+  ]
+}
