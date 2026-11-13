@@ -589,7 +589,7 @@ native`shared_kernel.rs`只接纳非array的Date／Datetime／Timestamp常量、
 
 原生IF允许三个时间声明归一到同一求值族，并原样返回选中值；因此编译器的IF接纳、control_type、schema和SDK merge_selected_values要同时更新。保留Int条件，Time分支可有不同kind/FSP，不根据IF结果声明重新stamp选中值。保留原非算术row_fallback：原native DATE没有专门时间向量路径，每个被需求的行都执行政策及诊断。Time常量可广播，**DATE(constant)的诊断不能只算一次再广播**。Scalar与width1 Vector仍是独立调用合同。
 
-owned结果恢复原Datum::Time；direct的目标布局检查为三种时间声明添加原8字节存储尺寸，继续已有Root::Datum暂存和append_datum。所有根求值及可失败转换成功前不reset目标，失败保留旧目标／已发生效果，无新事务或scratch协议。原Chunk读写合同保留：append_time写go_raw，get_time用checked from_go_raw，后者拒绝FSP7；故unchecked FSP7通过常量／中间DATE测试，不冒称它原本能被Chunk成功读回。直接输出按原写入合同，不能为了新的载体悄悄改变存储验证边界。
+owned结果恢复原Datum::Time；direct的目标布局检查为三种时间声明添加原8字节存储尺寸，继续已有Root::Datum暂存和append_datum。所有根求值及可失败转换成功前不reset目标，失败保留旧目标／已发生效果，无新事务或scratch协议。原Chunk读写合同保留：append_time写go_raw，get_time经from_go_raw／Time::new调用原check_fsp，将FSP7钳到6，保留core及Timestamp种类；它不会因FSP7拒绝或panic。unchecked常量／中间载体仍可保留FSP7，物理列按原getter得到FSP6；分别验证原位写入和规范化读回，不能把两种入口误要求为逐字段无损往返。直接输出保持原写入合同，不提前把owned结果的FSP7钳掉，也不绕过原getter的钳制。
 
 ### 能判别设计是否成立的验收
 
@@ -604,3 +604,9 @@ owned结果恢复原Datum::Time；direct的目标布局检查为三种时间声�
 验证在既有声明工具链／依赖环境下执行：TiDB的`rust`目录运行`cargo test -p tidb-expr --features shared-kernel --lib shared_kernel --locked -- --nocapture`及新增纯Time操作的datatype定向测试；原native DATE受影响用例也要跑。独立SDK根运行`cargo test -p tidb_query_expr --lib --locked`，并对SDK Time新增内存接口做datatype定向测试。保持既有根`make lint`、fmt、diff及受影响库Clippy；不以已知全SDK公告失败的重复运行替代本批检查，也不顺便修未改executor夹具。若修改原owner，提交后同步SDK固定Git／锁，并验证本地patch及独立SDK双图、唯一类型身份和实际资源来源。具体测试名、命令／失败终态均入固定收据；设计者审查不冒充这些测试已经运行。
 
 本批不预先承诺行数或提速。首个可编译版本给出实际生产／测试／构建和材料预算差异，最终用本批及原始两仓固定端点新增+删除收束；只更新18组中的temporal、cast、control和实际触及的integration／engine成本，不给未退役运行时删除信用。若保真必须扩大为通用时间context／parser迁移或第二执行机制，停在可审查原型并给最小反例和具体接口差异；这不要求反复等待内部步骤批准。完成这一调用链只能检验“原值所有者＋共享调度＋入口政策”的实际代价，不能由此推出全部时间、245族或10K目标可达。
+
+### FSP7存储边界更正（2026-11-14）
+
+前版1aef4f1e的“Chunk拒绝FSP7”描述有误，已撤回。Engineer的“应panic”测试实际失败后，Designer重新展开固定源码：[check_fsp](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-datatype/src/fsp.rs#L68)对大于6的值返回6，Time::new使用该结果；[Column::get_time](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-chunk/src/column.rs#L626)经from_go_raw走这条链。低四位15经native unchecked解码是Timestamp/FSP7，经Chunk原getter是同core的Timestamp/FSP6，经SDK语义解码则是Date/FSP0。原始基线的这三份文件相同，不能因构造函数名带checked就推断为拒绝。
+
+本批范围b9f2f967不变，工程侧继续实现；验收改为独立断言常量／owned载体保留7、原Chunk写入位保留且读回钳到6、DATE结果为Date/FSP0。共享真实列继续调用原getter，不复制钳制算法；用裸时间列或恒等IF的结果直接断言FSP6，只有DATE结果的FSP0无法辨认输入是否错误绕过钳制。“应panic”失败作为被否定的设计前提保留，不标成产品回归。完整native表达式若在该unchecked值的其他格式化路径已有失败，需保留失败并明确typed DATE直接对照的证明边界，不能把它计为完整native表达式通过。此次更正只验证固定源码调用链和文档，没有重跑产品测试；51项共享通过仍是工程侧的中间报告，待固定交付复审。

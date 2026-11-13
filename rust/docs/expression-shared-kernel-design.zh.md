@@ -411,7 +411,7 @@ task45在ae8a20aa／babdd5c9及SDKc2ef52b8完成限定复审：固定effects、�
 
 原cast_arg_as_datetime对Time／NULL是恒等转换，首批只接这一子域；字符串／数字／Duration／时间参数转换继续整根拒绝。完善同一RPN的Time载体、finish、IF合并、schema／按需原Chunk读取和两种根输出；保留非算术OrderedRows，每被需求行的DATE诊断不能被常量广播合并。直接输出仍在所有根成功后提交，错误保留已发生效果。完整设计、具体代码位置及验证命令见[成本复审的DATE设计](expression-shared-kernel-cost-review.zh.md)。
 
-一个任务内完成旧入口独立预期、提取与贯通、零值／隐藏时钟／FSP／真实列／死分支及错误后续验证，SDK回归、受影响原datatype检查、lint、双构建图和完整增删；内部步骤不另等确认。unchecked FSP7常量可承载不等于Chunk可成功读回。此范围由Designer负责，到固定实现复审结束；不接默认SQL、跨EXECUTE缓存、JSON或其余时间族，不重开Decimal性能矩阵。若保真迫使通用时间框架或另一执行机制，交固定原型与最小反例而不继续扩大。
+一个任务内完成旧入口独立预期、提取与贯通、零值／隐藏时钟／FSP／真实列／死分支及错误后续验证，SDK回归、受影响原datatype检查、lint、双构建图和完整增删；内部步骤不另等确认。unchecked常量／owned载体可保留FSP7；原Chunk写入保留位，get_time经check_fsp将7钳到6，必须分别验收这两个入口。此范围由Designer负责，到固定实现复审结束；不接默认SQL、跨EXECUTE缓存、JSON或其余时间族，不重开Decimal性能矩阵。若保真迫使通用时间框架或另一执行机制，交固定原型与最小反例而不继续扩大。
 
 ### M2：并行补齐适配与兼容
 
@@ -488,6 +488,8 @@ task45在ae8a20aa／babdd5c9及SDKc2ef52b8完成限定复审：固定effects、�
 
 ## Surprises & Discoveries
 
+
+FSP7存储边界的首版判断有误：checked构造最终调用check_fsp，而该函数将大于6的值钳到6，不是拒绝。Engineer的预期panic断言失败促成更正；原始及固定源码一致，Chunk读回Timestamp/FSP6而unchecked常量仍为Timestamp/FSP7。必须展开底层调用，不能仅按接口名称推断合同。
 
 显式执行隔离的旧见证通过固定程序／effects即可复现流延续，无须猜测地址回收；但它不是默认SQL错误。真实StmtContext测试与native PREPARE测试证明不同边界，不能合并为共享默认接入。RpnExecution采用按节点序号的懒HashMap，隔离成立但仍有容器成本。
 
@@ -666,3 +668,5 @@ Date/Author: 2026-11-14 / ExpressionReuseDesigner。
 2026-11-14 布局复审更新：854d47d6／2781f677限定结果通过，105份记录、5526项输入、两侧五路测量、双图和全部计数已独立核对；没有新产品执行。只确认空间请求下降，保留direct剩余性能差距和完整Clippy历史失败。结束单场景优化，转向执行状态与完整迁移预算；完整M1、默认SQL、245族及10K目标均未完成。
 
 2026-11-14 执行状态复审更新：babdd5c9／c2ef52b8限定实现及102记录、5527输入、全部计数核实，没有新产品执行。真实StmtContext共享调用和native PREPARE测试分别定性，完整SDK／executor检查、默认共享SQL及性能仍未证明。7db0fd17范围结束；下一批设计细化为类型化DATE的原所有者载体、共用值算法与明确入口政策，不把单函数切片写成完整时间包迁移。
+
+2026-11-14 FSP7更正：按Engineer反例968f9a38和原始／固定源码调用链，撤回Chunk拒绝FSP7的错误前提，改为写入保留位、读回钳到6；常量／owned载体仍保留7。修改设计、验收和成本复审，实施范围不变且不阻塞继续；本次仅文档及源码核对，未运行产品验证。
