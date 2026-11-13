@@ -461,3 +461,81 @@ SharedProjection保留现有返回Vec<Vec<Datum>>的evaluate入口，新增明�
 在TiDB rust/运行现有`cargo test -p tidb-expr --features shared-kernel --lib shared_kernel_ --locked -- --nocapture`、`cargo test -p tidb-expr --features shared-kernel --lib constant::tests::prepared_ --locked -- --nocapture`、`cargo test -p tidb-datatype --lib decimal --locked -- --nocapture`及`cargo test -p tidb-chunk --lib decimal --locked -- --nocapture`；独立SDK根运行`cargo test -p tidb_query_expr --lib --locked -- --nocapture`。按受影响范围补原native向量对照、限定Clippy、根make lint及格式／diff。完整SDK Clippy的已核对公告失败按现状保留，无需为无关依赖更新扩任务；该失败不构成新的算法副本理由。全部移动、测试、构建、测量与文档计入实际增删，不再沿用810估算。
 
 正向验收要求请求字节减少、分配次数不增加，并且同一路线没有可重复的耗时退化。若有小幅波动，先报告原始配对范围，不用四轮结果声称统计显著。若布局未减少实际请求字节，或必须引入新的存储／所有权框架才能继续，保留固定结果与具体原因，结束这一小值Decimal优化窗口。即使有改善也不无限追加微调；后续回到共享内核M1的状态生命周期与完整覆盖／迁移预算，另以真实入口证据推进，默认SQL与扩大函数矩阵不属于此批。
+
+
+## 载体布局复审：空间请求下降，结束Decimal单场景窗口
+
+固定TiDB产品／测量源码`beda64e0282826a09f6ab34027fb8d1043fc2e56`、[报告854d47d6](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/docs/shared-kernel/carrier-layout.zh.md)、SDK`2781f6775939ea2700bd26563ae7f16cddec0344`及原datatype来源`88e183218a66197bd4a790db96fa1e373b1b17ce`通过限定复审。Designer只读固定源码及已有证据，没有另运行产品构建、测试或性能。180bc037的单次布局范围到此结束，不再追加Decimal单场景优化。
+
+[私有载体](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-datatype/src/decimal/compact.rs#L148)把声明形状移入Compact变体，Wide直接保存原Decimal；Wide列使用原`Decimal::from_column`，结果还原及算术清除形状规则保持。原CompactDecimal、全部数值算法、幅值／尺度保护及输出接纳不变，没有Box逐值分配、packed／unsafe或外部元数据表。现有45位宽值列用例覆盖未指定与固定尺度，完整值／负零／隐藏精度等反例仍保留。此次是表示调整，不宣称产品错误从失败到成功。
+
+实际Aug22工具链测得封装及Option由112降至80字节，ExpressionScalar同样112→80，RpnExpressionNode为240→208；原Decimal80、CompactDecimal32、ExpressionVector32和RpnStackNode160字节不变，对齐不变。同一column_mul/64完整调用中，owned Vector的请求字节36540→28476，direct为29616→21552，各减少8064；分配次数仍为71／12。owned Scalar请求字节115804→102428，次数314不变；native两路不变。请求字节包含realloc请求，不等同于峰值内存或RSS，也不把整份差值只归到64个列元素。
+
+四轮owned Vector中位10.162670→10.056558微秒，配对变化−2.77%至−0.56%；direct中位8.244824→8.306088微秒，配对−2.33%至+1.88%，仍比同轮native慢29.60%–32.31%。只接受空间请求下降，不能声称direct稳定提速或排除小幅真实退化。机器未证明隔离、进程内路线顺序固定、opt3无LTO等测量限制保留；不为获得更有利数字延长本窗口。
+
+独立重算40个计时、10个独立分配单元及全部表格吻合；新runner对两版本各五路检查精确数量和集合，旧四／四、四／五模式有独立退出0记录，原36／9汇总脚本未改。105份记录哈希、5526项固定Git后缀输入逐项一致，输入摘要为`49b5e78606ec88163b76af71015a9482d13de633795b441522eab037ced88d0e`。四份最终程序使用相同测量源码，同版本两模式使用相同十二份封存直接库；before明确复用task43最终after库后重新链接，after由一次成功构建封存后链接。预格式化程序不进入最终表。这里证明记录中的来源与产物关联，不是独立重构建或完整传递构建闭包。
+
+两张依赖图各唯一原datatype等五包；native／SDK本地图同一datatype，独立图使用固定Git来源。172份所有者包文件资源及1421项SDK输入吻合，包外构建输入不在此闭包内。43项shared、8项prepared、90项Decimal（另有1项同命令的集成筛选测试）、10项Chunk、1项native向量及429项独立SDK都有退出0终态；限定Clippy有警告、根lint和格式／diff通过。完整SDK Clippy本批没有重跑，沿用task43停于19项公告的exit2，尚无完整workspace检查通过结论。
+
+本批生产`+42/−27`、测试／测量Rust`+23/−0`、构建`+6/−6`、文档／数据／核验`+667/−1`，合计`+738/−34`，全部增删**772**。相对原始两仓，源码测试`+7744/−295`，增删**8039**；全部`+28338/−398`，增删**28736**。均是固定端点重算，仍不能将局部源码数量等同于全范围10K目标；下一步转向执行状态所有权及旧完整预算的前提更新。
+
+
+## 下一批设计：冻结程序与一次执行的状态分开
+
+[当前共享RAND](https://github.com/YangKeao/tikv/blob/2781f6775939ea2700bd26563ae7f16cddec0344/components/tidb_query_expr/src/types/expr_eval.rs#L912)把节点地址传给输入适配，再由[StmtContext的有种子map](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-executor/src/stmt_context.rs#L4268)持有流。当前SharedProjection虽然说明每次EXECUTE重新编译，API仍能复用同一程序并替换effects；程序销毁也不会移除map中的旧地址。新的显式执行边界必须自行拥有状态，不能把程序地址、上下文地址或缓存generation当成生命周期证明。
+
+设计选择一个轻量的`SharedExecution`（拟新增名称），借用冻结SharedProjection及固定的本次`Columns`，拥有SDK中的每根`RpnExecutionState`。入口形态为`projection.start_execution(effects)`，随后在这个对象上调用`evaluate(input, rows, ctx)`及`evaluate_into_chunk(input, rows, ctx, output)`；effects不在每批方法中替换。单根SharedExpression使用相同的状态／循环机制，不再保留一条依赖裸地址map的带上下文入口。当前真实消费者是shared_kernel内测试及decimal-shared-bench；Unistore的同名SharedExpression属于另一类型，不能误改。审计并迁移全部受影响实验调用，保持调用者可直接拥有完整输出。
+
+SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首次被需求才初始化；同节点跨Chunk继续、同种子不同节点独立、新执行重新初始化。这里只保存现有MySqlRng，不复制随机算法，不把状态放回冻结节点或新建通用任务表。可用现有借用与小型内部可变容器适应`InputColumns`的只读接口，不能强制增加Sync或全局锁；先记录实际状态尺寸／创建点，不承诺所有纯表达式零额外分配。eval_group、行顺序和原帧循环只有一份，两个输出入口共享同一次求值；scratch仍按调用清理。
+
+保留现有NoColumns不提供有种子流时每次取首样本的行为，以及PB已有函数路径。增加一个声明式`Columns`能力，默认false，真实StmtContext及已有共享测试会话为true，在开启执行时读取；不得调用`rand_seeded_next`探测支持，否则探测本身推进状态。支持时由SDK执行状态推进常量种子的流，动态种子继续每次初始化，NULL规则不变。共享桥不再向宿主发送裸节点地址；原生旧求值器及其map保持原用途。无种子RAND继续借用会话流，用户变量、参数、SQL模式／时区和告警仍是本次真实上下文的能力，不因建立或销毁执行对象而清空。
+
+确定性见证不需要等待分配器重用地址：旧版在同一冻结程序、同一保留effects上连续运行时会接续同一map流；新API在其间结束一个执行并创建另一个，必须重新从种子开始。再让两个执行对象借用同一冻结程序交错运行，各自跨批推进而互不串流。旧版本运行时见证说明缺少这个新边界，不能以缺少新API的编译失败充数，也不能宣称默认SQL已经复现同一问题。[实际prepared SELECT](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-session/src/dispatch.rs#L1392)另建语句边界，原StmtContext构造新有种子map而借用持久会话无种子流；应核对并用原测试验证这一区别。没有共享RPN默认SQL接入或跨EXECUTE缓存，现阶段生产集成政策仍是每次EXECUTE编译已绑定／解析的快照，不能因局部测试复用程序而更改这一政策。
+
+同一任务内完成运行时见证、实现及定向回归，不增加内部步骤的审批链。覆盖多Chunk、两个同种子节点、常量／动态／NULL种子、无能力调用、空／死分支、重复乱序选择、BENCHMARK重复、Scalar／Vector及两种输出。错误或取消清理临时值而保留已经发生的随机推进和会话副作用；下一合法批次仍可用。已有direct失败保留旧目标的合同不变；不恢复warning/error排序约束。现有参数按需／诊断反例也应保留，不能让对象创建提前读取参数或执行表达式。
+
+真实所有者用例放在已经依赖tidb-expr的executor测试层，必要时只加测试feature转发，不从expr反向依赖executor。用实际StmtContext及会话RNG／变量／参数存储贯通两批和下一次执行；若取得真实prepared快照需要无关的SQL／worker改造，就交付该真实上下文测试与明确标注的prepared源码追踪，不扩大本批接入。
+
+按[主计划](expression-shared-kernel-design.zh.md)第8节的环境运行shared_kernel定向集、相应StmtContext／prepared测试、独立SDK表达式库回归、限定Clippy及make lint；记录实际通过数量、失败到成功、固定输入与全部增删。测量器若因API迁移修改，只验证调用与完整值，不新增Decimal计时矩阵或把旧性能值冒充新测量；需要的最小编译／调用验证可正常执行。未改依赖不必重复已知19公告检查，完整SDK Clippy仍明确未通过。由Designer消息7db0fd17-d6c6-459b-9add-39b01d4921e0负责这一批边界，固定实现复审后结束；不接默认SQL、跨执行缓存或通用生命周期框架。
+
+
+## 完整预算前提更新：保留原所有者，未完成部分仍需定价
+
+
+以下是Designer本次完成的固定源码判断。输入为TiDB854d47d6／SDK2781f677；沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。当前实际源码测试8039／全部28736行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
+
+| 原组ID | 当前状态／改变的前提 | 已付事实与未闭合部分 | 本行唯一成本归属 |
+| --- | --- | --- | --- |
+| operator_numeric | 原所有者复用已证 | 当前接纳范围的Decimal加减乘除及紧凑primitive已共用；其余位运算、unsigned／混合签名未闭合 | 数值运算主体与本组诊断；通用转换引用cast |
+| math | 原假设保留，未重估 | Go专用exp/log/trig仍在原expr；不可因datatype可依赖便视为已共享 | 数学主体；RAND状态归input_lifecycle |
+| string | 下层primitive可保留，表达式策略未共享 | 编码／GoString已有所有者；StrUnits、完整载体、packet和coercion仍待接入 | 字符串签名策略；字符集转换引用convert_charset |
+| pattern | 原假设保留，局部已付 | 已有REGEXP需求／诊断探针保留；全LIKE／替换语义与缓存有效期未闭合 | 匹配／替换主体；缓存寿命归input_lifecycle |
+| temporal | 搬迁前提需改，非零语义成本 | 原Time／解析primitive无需复制；DATE策略、两端时间载体、FSP／DST／clock未统一 | 时间值算法／策略；共用输入转换引用cast |
+| json | 搬迁前提需改，完整所有者未定 | 原BinaryJSON／path可保留；native serde修改与SDK Json仍非共同执行体 | JSON值／路径／呈现；schema服务归exceptions |
+| crypto | 原假设保留，未重估 | 已有MD5路径沿用；AES需求、mode／IV、压缩错误仍需适配 | 加密压缩主体；密码服务归exceptions |
+| network | 原假设保留，未重估 | 本次无新覆盖信用；地址格式、错误NULL和字节宽度仍须证明 | 网络地址转换／比较；与comparison不重计 |
+| vector | 原假设保留，未重估 | 既有vector库不必搬；完整载体、维度／NaN合同未验证 | 向量运算主体；载体转换归cast |
+| misc | 原假设保留，未重估 | UUID／grouping／identity完整值语义未因Decimal复用而完成 | 杂项值函数／metadata；外部服务归exceptions |
+| comparison | 原假设保留，未重估 | datatype比较／collation可保留；IN准备、混合类型及需求仍未闭合 | 比较／集合算法；通用转换引用cast |
+| control | 共享循环局部已付 | 现有IF／需求／模式已付；CASE／COALESCE和完整分支域未完成 | 组合／需求；旧dispatcher退役归integration |
+| cast | 精确primitive复用已证，全部类型未闭合 | String→Real、类型化Decimal参数转换／完整数值载体已付；time／JSON／enum等仍有源签名策略 | 共用值转换／载体，一次计入供各组引用 |
+| convert_charset | 原假设保留，未重估 | 旧表本来就保留字符集／collation表；不能再把“不复制表”算新节省 | CONVERT／binary政策及编码适配 |
+| exceptions | 原五项保留，未重估 | codec／parser／password库仍原所有者；schema尚含Expression求值和懒外部引用 | 五项具体服务能力／错误桥接，不搬服务本体 |
+| input_lifecycle | 列／参数部分已付，生命周期进行中 | 真实Decimal列、按需typed参数已付；执行owner、克隆销毁、缓存状态和correlation未闭合 | 跨族绑定／状态寿命；由当前生命周期实作结算 |
+| integration | 显式输入输出已付，默认与退役未付 | owned/direct根输出已付；eval_expression_once仍进入原eval，默认AST/PB／Unistore等未切换 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
+| engine | 单RPN及分发依赖已付，剩余范围未定价 | 共用循环、独立表达式包固定Git构建已证；完整签名映射、嵌套PB退役与全workspace检查未完成 | 共享程序／验证／构建余项，不重复计各组算法 |
+
+状态“未重估”不表示零成本或接受旧区间为当前上限；一处未来帮助函数只有表中一个成本归属，其余行引用。没有逐行删除闭包前，不给原始代码退役额度。已有datatype源码原地被调用可以是零算法搬迁量；尚在expr的函数不能据此声称已是公共leaf。
+
+六条有限调用链已经核到具体入口，可用来约束下一次实际diff，无需Engineer重做清单：
+
+1. **已证复用**：[SDK Decimal调用](https://github.com/YangKeao/tikv/blob/2781f6775939ea2700bd26563ae7f16cddec0344/components/tidb_query_expr/src/types/native_arithmetic.rs#L190)→原[算术载体](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-datatype/src/decimal/compact.rs#L256)；[SDK String→Real](https://github.com/YangKeao/tikv/blob/2781f6775939ea2700bd26563ae7f16cddec0344/components/tidb_query_expr/src/types/native_arithmetic.rs#L236)→原str_to_float。结论是保留并调用原owner，已付适配／输出成本仍计入当前端点。
+2. **DATE**：[native date](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-expr/src/time_fn/mod.rs#L174)→date_modes／handle_truncate→原Time；[SDK date](https://github.com/YangKeao/tikv/blob/2781f6775939ea2700bd26563ae7f16cddec0344/components/tidb_query_expr/src/impl_time.rs#L61)→其invalid_zero政策／packed Time。两者不是零改动别名；需一个值算法owner和明确的入口政策适配。
+3. **JSON_SET**：[native json_modify](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-expr/src/builtin_ext/json/modify.rs#L265)→document/path/typed-value策略；[SDK json_modify](https://github.com/YangKeao/tikv/blob/2781f6775939ea2700bd26563ae7f16cddec0344/components/tidb_query_expr/src/impl_json.rs#L44)→SDK Json。原[BinaryJSON::modify](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-datatype/src/binary_json_ops.rs#L139)虽已是leaf，尚未证明能原样替代两端入口；不得把typed／text与路径需求成本抹去。
+4. **转换**：[SDK typed参数](https://github.com/YangKeao/tikv/blob/2781f6775939ea2700bd26563ae7f16cddec0344/components/tidb_query_expr/src/types/native_arithmetic.rs#L28)已调用原[Datum::to_typed_decimal_with_context](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-datatype/src/datum/convert.rs#L251)；[cast_to_time](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-expr/src/cast.rs#L1173)仍在表达式层，说明一个成功primitive不能代表全cast已完成。
+5. **CONCAT**：[concat_with_context](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-expr/src/string_fn.rs#L35)→coerce_str_bytes／max_allowed_packet→结果Datum。编码库可保留，但类型化字符串与packet策略仍需实际共享边界；不整目录搬string/context。
+6. **真实入口**：[eval_expression_once](https://github.com/YangKeao/tidb/blob/854d47d675a82d242467cc92182476c33b6f94ce/rust/crates/tidb-expr/src/lib.rs#L670)→Expression::eval仍是默认事实。公开签名可保留，程序／状态owner由当前生命周期工作落实；未接入共享循环前不能领取旧runtime删除信用。
+
+**生命周期固定结果复审后的单一建议：验证DATE完整调用链。** 只取原Time载体、DATE的类型化参数转换／零日期政策、同一共享循环和原生／PB入口差异，给出一个共同值算法owner及真实增删；不同时启动JSON_SET、全57时间族或新通用context框架。这能检验最大旧成本项的“原算法保留＋入口政策”边界是否成立，当前仍是有源码依据的下一切片建议，不是本轮产品实施授权。
+
+Engineer后续固定交付只需在这18行中更新实际触及的owner、兼容证据和原始基线diff；Designer负责维护前提与跨组归属。无需另开一轮清单任务，也不等待这份表才继续已授权的生命周期实现。
