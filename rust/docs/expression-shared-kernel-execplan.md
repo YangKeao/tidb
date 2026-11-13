@@ -143,3 +143,18 @@ complete all expression signatures or justify default integration. M0 candidate
 coverage needs semantic classification; M2 requires a bounded migration and
 retirement budget. Full SQL/performance validation and old-path deletion remain
 later work; broad10K and universal-performance goals are not established.
+
+
+## Checkpoint 7 — review corrections
+
+
+Designer review found two real gaps in checkpoint6: SETVAR directly or indirectly
+accepted byte/non-default-collation literals despite dropping carrier metadata,
+and omitting the original Decimal multiply fast branch changed hidden precision.
+Both have original-entry failing regressions. SETVAR now rejects unsupported
+literal carriers before encoding; string IF remains explicitly unsupported and
+has a rejection assertion. The shared Decimal kernel restores the original
+checked-i128 branch and exact storage/result scales. Native full-part comparisons
+cover multiplication and a following division, including negative and zero factors.
+See shared-kernel/checkpoint-7.md for final validation and counts. Minimum M1
+remains subject to review; these fixes do not extend the admitted type families.

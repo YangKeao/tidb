@@ -10,8 +10,10 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--tidb', type=Path, required=True)
 parser.add_argument('--tikv', type=Path, required=True)
 parser.add_argument('--evidence', type=Path)
+parser.add_argument('--receipt', type=Path,
+                    default=Path(__file__).with_name('checkpoint-6-validation.json'))
 args = parser.parse_args()
-receipt = json.loads(Path(__file__).with_name('checkpoint-6-validation.json').read_text())
+receipt = json.loads(args.receipt.read_text())
 records = []
 for name in ('tidb', 'tikv'):
     root = getattr(args, name)

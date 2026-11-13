@@ -1,0 +1,50 @@
+{
+  "source_inputs": {
+    "count": 5525,
+    "sha256": "2116f19b78a8ced4eb84b2ccad052c0191320560054a83f89c7026323a2498f1"
+  },
+  "tests": {
+    "native": {
+      "passed": 31,
+      "failed": 0,
+      "filtered": 1323
+    },
+    "sdk_expression_library": {
+      "passed": 429,
+      "failed": 0,
+      "filtered": 0
+    }
+  },
+  "scoped_clippy": "completed with warnings",
+  "official_clippy": "checkpoint6 incomplete/terminated; not rerun or reported passed",
+  "logs": [
+    {
+      "name": "checkpoint7-setvar-before.log",
+      "sha256": "fad7d42d1471bba1229d46961833ea4df2265187616ef855f41ce5e3259bf859"
+    },
+    {
+      "name": "checkpoint7-setvar-before-2.log",
+      "sha256": "8442ccb0b345da4d734a31d05a5b7e0249238ea6a977443f3cbafc2166c56b58"
+    },
+    {
+      "name": "checkpoint7-native-after.log",
+      "sha256": "3f22026da62f4bc254948168de64a509f97db983fe2fa30cf444a4607ba2a894"
+    },
+    {
+      "name": "checkpoint7-decimal-before.log",
+      "sha256": "10ff6ae7abd93e24c9f4ca08bff10d43e879d48f1285269537f4796cc1bcf2d1"
+    },
+    {
+      "name": "checkpoint7-native-final.log",
+      "sha256": "6b9b5ae8bb5a0dd4ba100e956cbb6ea28622066bbd034076721f97f2e2bdcb73"
+    },
+    {
+      "name": "checkpoint7-sdk-final.log",
+      "sha256": "4321c49f6fc8ae69050836ec71aafd7f8dd27f19bab83afabddf5996bdcf7cd1"
+    },
+    {
+      "name": "checkpoint7-clippy.log",
+      "sha256": "12dbac97db7288072ed29b2db6389f3cc57d2f65d55bad7893f83d2c7f15ee96"
+    }
+  ]
+}

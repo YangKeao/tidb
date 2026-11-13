@@ -295,6 +295,14 @@ impl SharedExpression {
                     .to_owned();
                     work.push(Visit::Variable { name, write });
                     if write {
+                        if let Expression::Constant(value) = &f.args[1] {
+                            // SETVAR preserves the Datum carrier, not just its bytes.
+                            if !matches!(value.literal_value(), Some(Datum::Null))
+                                && !matches!(value.literal_value(), Some(Datum::String(v)) if v.collation() == tidb_datatype::Collation::DEFAULT)
+                            {
+                                return Err("SETVAR literal carrier is outside default-string shared admission".into());
+                            }
+                        }
                         work.push(Visit::Enter(&f.args[1]));
                     }
                 }
@@ -1641,6 +1649,70 @@ mod tests {
     }
 
     #[test]
+    fn shared_kernel_decimal_multiply_preserves_hidden_precision() {
+        use tidb_datatype::Decimal;
+        let decimal = FieldType::new(tidb_datatype::FieldTypeCode::NewDecimal);
+        let literal = |n| numeric_literal(Datum::Decimal(Decimal::from_int(n)), &decimal);
+        let binary = |name, left, right| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                decimal.clone(),
+                vec![left, right],
+            ))
+        };
+        let expressions: Vec<_> = [1, -1, 0, i64::MAX]
+            .into_iter()
+            .flat_map(|factor| {
+                let quotient = binary("div", literal(8), literal(7));
+                let product = binary("mul", quotient, literal(factor));
+                let final_value = binary("div", product.clone(), literal(100));
+                [product, final_value]
+            })
+            .collect();
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        let mut differences = Vec::new();
+        for expression in expressions {
+            let expected = expression
+                .eval(&Session::default(), input.physical_row(0))
+                .unwrap();
+            for mode in [InvocationMode::Scalar, InvocationMode::Vector] {
+                let actual = SharedExpression::compile(&expression)
+                    .unwrap()
+                    .evaluate_with_context(
+                        &input,
+                        &[0],
+                        &mut EvalContext::default(),
+                        &Session::default(),
+                        mode,
+                    )
+                    .unwrap()
+                    .remove(0);
+                let parts = |value: &Datum| {
+                    let Datum::Decimal(v) = value else {
+                        panic!("decimal required")
+                    };
+                    (
+                        v.is_negative(),
+                        v.coefficient_digits().to_string(),
+                        v.storage_scale(),
+                        v.scale(),
+                        v.declared_shape(),
+                        v.to_string(),
+                    )
+                };
+                if parts(&actual) != parts(&expected) {
+                    differences.push((parts(&actual), parts(&expected)));
+                }
+            }
+        }
+        assert!(
+            differences.is_empty(),
+            "actual versus original Decimal parts: {differences:?}"
+        );
+    }
+
+    #[test]
     fn shared_kernel_decimal_arithmetic_boundary_differential() {
         use tidb_datatype::Decimal;
         let decimal = FieldType::new(tidb_datatype::FieldTypeCode::NewDecimal);
@@ -2054,6 +2126,84 @@ mod tests {
                 assert_eq!(session.get_uservar("copy"), None);
             }
         }
+    }
+
+    #[test]
+    fn shared_kernel_setvar_literal_storage_admission() {
+        use crate::context::Columns;
+        let set = |name: &str, value| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("setvar"),
+                native_type(),
+                vec![
+                    numeric_literal(Datum::new_string(name.as_bytes()), &native_type()),
+                    value,
+                ],
+            ))
+        };
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        let mut wrongly_admitted = Vec::new();
+        for value in [
+            Datum::new_string(b"abc"),
+            Datum::Null,
+            Datum::new_bytes(b"abc"),
+            Datum::new_collation_string(b"abc", tidb_datatype::Collation::Binary),
+        ] {
+            for nested in [false, true] {
+                let literal = numeric_literal(value.clone(), &native_type());
+                let expression = set(
+                    "copy",
+                    if nested {
+                        set("inner", literal)
+                    } else {
+                        literal
+                    },
+                );
+                let baseline = Session::default();
+                expression.eval(&baseline, input.physical_row(0)).unwrap();
+                let expected = if value.is_null() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+                assert_eq!(baseline.get_uservar("copy"), expected);
+                if nested {
+                    assert_eq!(baseline.get_uservar("inner"), expected);
+                }
+                let conditional = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("if"),
+                    native_type(),
+                    vec![
+                        numeric_literal(
+                            Datum::Int(1),
+                            &FieldType::new(tidb_datatype::FieldTypeCode::LongLong),
+                        ),
+                        numeric_literal(value.clone(), &native_type()),
+                        numeric_literal(Datum::Null, &native_type()),
+                    ],
+                ));
+                assert!(SharedProjection::compile(&[set("copy", conditional)]).is_err());
+                let compiled = SharedProjection::compile(&[expression]);
+                if matches!(&value, Datum::Null) || value == Datum::new_string(b"abc") {
+                    let session = Session::default();
+                    compiled
+                        .unwrap()
+                        .evaluate(&input, &[0], &mut EvalContext::default(), &session)
+                        .unwrap();
+                    assert_eq!(session.get_uservar("copy"), expected);
+                    if nested {
+                        assert_eq!(session.get_uservar("inner"), expected);
+                    }
+                } else if compiled.is_ok() {
+                    wrongly_admitted.push((value.clone(), nested));
+                }
+            }
+        }
+        assert!(
+            wrongly_admitted.is_empty(),
+            "carrier-losing SETVAR literals admitted: {wrongly_admitted:?}"
+        );
     }
 
     #[test]
