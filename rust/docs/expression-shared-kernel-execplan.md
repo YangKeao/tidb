@@ -276,7 +276,7 @@ and the existing constant/native-vector performance gaps.
 - [x] Claim task38 and inspect existing binding and original row conversion.
 - [x] Record failing native column regression and implement complete metadata binding.
 - [x] Verify cross-Chunk/context/error recovery and complete output values.
-- [ ] Measure one real-column complete entry and publish fixed review evidence.
+- [x] Measure one real-column complete entry and prepare fixed review evidence.
 
 Task38 implementation uses the full native FieldType directly in each binding,
 rejects conflicting declarations for the same physical column, and converts only
@@ -292,3 +292,11 @@ root-cwd Cargo invocation are retained as failed attempts, not product failures.
 The one64-row real-column benchmark retains all four complete entry routes and
 separate allocation runs; see shared-kernel/decimal-columns.zh.md for measurements
 and remaining performance/default-build/full-M1 limitations.
+
+Task38 outcome: the limited real-column slice passes33 native/429 SDK tests.
+Four rounds produce16 unwrapped timing cells plus4 separate allocation cells;
+all complete-value and Chunk checks pass. SharedVector median18.85us remains
+slower than nativeVector6.59us for64 rows; sharedScalar31.56us also exceeds native
+Scalar21.59us. This slice demonstrates input/reuse behavior, not performance
+acceptance. Full inputs, failed attempts, library hashes and total changes are
+preserved in shared-kernel/decimal-columns.zh.md and its receipt.

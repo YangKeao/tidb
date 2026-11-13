@@ -1,0 +1,5 @@
+round,version,case,width,phase,route,iterations,nanos,alloc_calls,allocated_bytes,alloc_iterations
+1,after,column_mul,64,reuse,native_vector,1,8520,1200,1497600,100
+1,after,column_mul,64,reuse,native_scalar,1,28180,5800,174000,100
+1,after,column_mul,64,reuse,shared,1,23960,7000,2379600,100
+1,after,column_mul,64,reuse,shared_scalar,1,38350,37100,9659600,100
