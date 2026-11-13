@@ -1,0 +1,198 @@
+{
+  "source_commits": {
+    "tidb": "542d31a7978f7bbee4a6a13dc89cf790b7ef5f7f",
+    "tikv": "41c56427b68ce7518415d22f6d14e9f410b8c2e0"
+  },
+  "datatype_git_revision": "8abb688c80bd48de688bfc792bc735682404e4dd",
+  "source_inputs": {
+    "count": 5525,
+    "sha256": "5842cd9ad21356f089cc144a6fbdd520ec155dc345257b46a9afc33d4b0e2697"
+  },
+  "tests": {
+    "sdk-tests": {
+      "passed": 429,
+      "ignored": 0,
+      "filtered": 0
+    },
+    "sdk-fixed-tests": {
+      "passed": 429,
+      "ignored": 0,
+      "filtered": 0
+    },
+    "native-shared": {
+      "passed": 41,
+      "ignored": 0,
+      "filtered": 1323
+    },
+    "native-prepared": {
+      "passed": 8,
+      "ignored": 0,
+      "filtered": 1356
+    }
+  },
+  "checks": {
+    "sdk_build": 0,
+    "sdk_fixed_build": 0,
+    "root_lint": 0,
+    "sdk_static_checks": 0,
+    "main_scoped_clippy": 0,
+    "sdk_make_clippy": {
+      "command": [
+        "make",
+        "clippy"
+      ],
+      "exit": -15,
+      "timeout_seconds": 120,
+      "timed_out": true,
+      "seconds": 120.00157826699979
+    },
+    "final_root_lint": 0,
+    "git_diff_check": 0
+  },
+  "dependency_identity": {
+    "packages_per_name_per_graph": 1,
+    "matching_owner_files": 172,
+    "matching_sdk_compile_files": 1421,
+    "independent_sdk_checkout": "41c56427b68ce7518415d22f6d14e9f410b8c2e0",
+    "independent_parent_has_tidb": false
+  },
+  "limits": [
+    "expression library only; not all TiKV packages or macOS CI",
+    "full SDK make clippy terminated by our 120-second timeout in deny installation",
+    "no default SQL/lifecycle integration or performance measurement"
+  ],
+  "logs": [
+    {
+      "name": "before-msrv.log",
+      "sha256": "f74d57c775fce7056c968e87197a6517b6f441b2d7fa93cef8260f97abc6e22d"
+    },
+    {
+      "name": "before-path.log",
+      "sha256": "c8a357a4319edfddab6e98537453205a057614f82cec9171c65a71887efed636"
+    },
+    {
+      "name": "checks.py",
+      "sha256": "f4af9819508982a683c6c38b95965dfb805980d92ce6be02b100e27f15187a42"
+    },
+    {
+      "name": "compiler.log",
+      "sha256": "096e73338b7c29114057f594083b66e4c116e7ff65676d24966ea161eaf48df2"
+    },
+    {
+      "name": "dependency-identity.json",
+      "sha256": "1c92cf36fb226c40db28827307a34f5abc72a823e9023329ab7c571e01ca313c"
+    },
+    {
+      "name": "environment.json",
+      "sha256": "25824ec05e77cb02581c1bd28c5533bf74205d912bac0cc4af4136dbfcfa01e6"
+    },
+    {
+      "name": "environment.py",
+      "sha256": "6967cc559c0de3e7b7f14dd2e892c75c25c7dd5261c7f8aad1a24c2fbb03218a"
+    },
+    {
+      "name": "formal-lint.py",
+      "sha256": "11620b0b790f18619fce90dfd96bf99eb0931c2569361898a71b433c82b6f1be"
+    },
+    {
+      "name": "independent-inputs.json",
+      "sha256": "9ea24420f1ff04a3ff3bbb9d19c1bf0444c8b7f8afd28397454098115248c117"
+    },
+    {
+      "name": "main-metadata.json",
+      "sha256": "da9684d98939de9b9d3cb461546b5c6aa90000e3bb2919febc5f7067a5065d29"
+    },
+    {
+      "name": "main-metadata.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "main-tree.log",
+      "sha256": "46677fab281a7bd14d7929de8df52b304afc649c9ed9fbf667ffff235dd5420b"
+    },
+    {
+      "name": "native-prepared.log",
+      "sha256": "dea0c835e83ed11a11ab5e89585b5aec9c18b0158e35705683fb03caaa636ca6"
+    },
+    {
+      "name": "native-shared.log",
+      "sha256": "df0d3aace49e7fa444dbfa65c3e0ddcc4db71b7f3f2de30ffea902618404d7d9"
+    },
+    {
+      "name": "root-lint.log",
+      "sha256": "a55871a485b3f7a702bbdd00bc1676be3c81f921180292470593ed9cd634d491"
+    },
+    {
+      "name": "scoped-clippy.log",
+      "sha256": "510cc95a35691d9012977ba586dd414597c3729c372b5528db5525116eb55953"
+    },
+    {
+      "name": "sdk-build.log",
+      "sha256": "dfedcca22943d4269699846b9c9fe12668a8daebbd888821876c0fbf48ee9b14"
+    },
+    {
+      "name": "sdk-fixed-build.log",
+      "sha256": "9c93fadf9d813e8a1d8610c6153e5aaba1ffab55771d3cf6dfa0e0b84dd934e1"
+    },
+    {
+      "name": "sdk-fixed-tests.log",
+      "sha256": "6c88f64f6ae8aac2300c2fb170fb51a3c3af19b09162bd3154004f200cd78132"
+    },
+    {
+      "name": "sdk-git-metadata.log",
+      "sha256": "f405fdfacc22dc2a33beb6e4f3a4311d70d00ef29b3f6ffc70374f97186bc003"
+    },
+    {
+      "name": "sdk-git-metadata2.log",
+      "sha256": "44e6cfede18187c4e3a0b416a6961c4d8ebaac1090b668474b270a58c2b80432"
+    },
+    {
+      "name": "sdk-make-clippy-result.json",
+      "sha256": "ec08d0f994a3542362001e4a007aeb028771b3eb51969eabb9a4387c5a5f1cc4"
+    },
+    {
+      "name": "sdk-make-clippy.log",
+      "sha256": "e4759ffbc0cd130acc84022e58b7665860d8da527655a3942c6a56854032ea9b"
+    },
+    {
+      "name": "sdk-metadata.json",
+      "sha256": "f39d0590ec1b02306ab7cf0e94299064a2e4321c1a58da42062a0267a13c48d6"
+    },
+    {
+      "name": "sdk-metadata.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "sdk-static-lint.log",
+      "sha256": "445175c28bf5483a2123baf97a23fc98b321d7cdd78eff83da916eb15394b072"
+    },
+    {
+      "name": "sdk-tests.log",
+      "sha256": "334735c9b270046581c8affd7ed3c6af15656c587a4e75dbc4c4256377d1982f"
+    },
+    {
+      "name": "sdk-tree.log",
+      "sha256": "4de55d8049facb1cb2bd87a20eadff61c92912ee99ad25b6e2ae5a0d046ad14d"
+    },
+    {
+      "name": "tidb-build-wiring.patch",
+      "sha256": "0bceae195525cd345a240a666ad43c608172e03f638d62bc99bb44bee68e69d1"
+    },
+    {
+      "name": "tikv-build-wiring.patch",
+      "sha256": "9dd10cf88238cc77c0109091b7b0bf30667c44c36d73e2ea4cf3b3c36ac18558"
+    },
+    {
+      "name": "toolchain-components.log",
+      "sha256": "4ae2551ea6202e5136e5d7344c5cd841fb1b981ec6798b8e0c525a228d335c72"
+    },
+    {
+      "name": "final-lint.log",
+      "sha256": "a55871a485b3f7a702bbdd00bc1676be3c81f921180292470593ed9cd634d491"
+    },
+    {
+      "name": "final-diff.log",
+      "sha256": "feefc8ee11bfaae354506ab40c4964cee2de1b8ac49d0e7e8bcca053092191c0"
+    }
+  ]
+}

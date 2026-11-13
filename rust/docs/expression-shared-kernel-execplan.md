@@ -354,3 +354,28 @@ a demanded parameter leaf still propagates its original1105. No broader casts.
 - [x] Preserve both before-fix native differential failures.
 - [x] Apply the two minimal shared fixes: 41 shared, 8 prepared, 429 SDK pass; root lint/scoped Clippy complete.
 - [x] Publish corrected fixed pair, evidence and full incremental/cumulative counts in typed-parameters.zh.md and its review receipt.
+
+## Task41 — standalone SDK expression build
+
+Authority Designer dd2cd5b5; task40 bounded corrections accepted. Keep the original
+datatype owner, resolve SDK via fixed TiDB Git revision, and patch that Git source
+to local datatype in the TiDB root workspace. Verify the entire datatype leaf
+closure has one type identity. Align the declared SDK nightly with Aug22 without
+lowering MSRV. Validate ordinary locked Cargo in a separate SDK checkout with no
+adjacent TiDB, plus native shared/prepared regressions. Record toolchain-wide CI
+impact without claiming all TiKV packages validated. No SQL/lifecycle expansion.
+
+### Progress
+
+- [x] Preserve standalone path/MSRV failures; verify Git nested workspace resources.
+- [x] Wire fixed Git dependency and local root patch; inspect metadata/tree identities.
+- [x] Validate isolated SDK429 and Main41/8 with declared toolchains, lint and fixed evidence.
+- [x] Publish source/lock differences, complete counts and explicit remaining limitations.
+
+Task41 outcome: independent SDK build and429 tests pass with declaredAug22 and
+fixedGit8abb owner; Main41/8 pass with one local datatype identity. Metadata,172
+owner files,1421 SDK compile inputs and5525 local source inputs match. Formal SDK
+makeclippy exceeded our120-second bound in deny tool installation and was
+terminated by our runner; full workspace/macOS compatibility is not claimed.
+The enterprise submodule default is explicitly skipped for Cargo consumers;
+enterprise users must request checkout explicitly. See independent-sdk-build.zh.md.
