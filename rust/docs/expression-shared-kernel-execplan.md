@@ -323,4 +323,4 @@ interface as an explicitly test-only fixed-type slot prototype.
 - [x] Claim task39 and correct per-root metadata wording.
 - [x] Trace actual SELECT cache owner: asymmetric Decimal compatibility, separate NULL/type keys, per-execution parameter Arc and generation check.
 - [x] Run focused native forms and demanded-slot proof: two new tests pass; integer conversion and current-value overflow text remain concrete counterexamples. RPN empty batches require the existing adapter guard.
-- [ ] Publish contract, limits, evidence and complete change counts.
+- [x] Publish bounded contract and decision: keep product parameters rejected. 35 shared/native, 8 existing prepared and 1 actual session cache test pass; root lint passes. Source inputs/logs and complete counts accompany the report; no SDK changes or new performance claim.

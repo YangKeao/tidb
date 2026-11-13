@@ -2204,7 +2204,14 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(unbound.reads.get(), 0);
-        assert!(parameter_probe_eval(&program, &unbound, &[0], InvocationMode::Scalar).is_err());
+        assert_eq!(
+            crate::eval_expression_once(&native, &unbound).unwrap_err(),
+            crate::EvalError::Unsupported("unbound prepared parameter")
+        );
+        let error =
+            parameter_probe_eval(&program, &unbound, &[0], InvocationMode::Scalar).unwrap_err();
+        assert_eq!(error.code, Some(1105));
+        assert_eq!(error.message, "unbound prepared parameter");
         let integer = ParameterProbe::new(Some(Datum::Int(7)), 4);
         assert!(crate::eval_expression_once(&native, &integer).is_ok());
         assert!(parameter_probe_eval(&program, &integer, &[0], InvocationMode::Scalar).is_err());
