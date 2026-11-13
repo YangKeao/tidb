@@ -108,3 +108,17 @@ permission to reorder warning/error diagnostics. The earlier failing ordering
 test remains evidence, not an acceptance requirement. The region mechanism is
 required by independently tested child demand, not error ordering. Real state,
 wide arithmetic and warning-prefix completeness remain unresolved M1 gates.
+
+## Checkpoint 5 progress and corrected root admission
+
+Checkpoint4's outer Vector assertion was missing a complete native baseline and
+was wrong. Original numeric admission rejects the whole root containing IF or
+JSON_LENGTH; the shared compiler now selects a single root scalar region for
+fallback trees, preserving pure numeric Vector behavior. Both discrepancies were
+reproduced before fixing. Invalid UTF-8 JSON retains native1105 diagnostics.
+
+Shared group traversal now preserves RAND column order and variable row order.
+Session capabilities carry values/state only; flat BENCHMARK repeats reexecute
+children and preserve count/type demand.19 native and34 SDK tests pass; state
+admission is deliberately limited to integer seeds and string variables. Wide
+arithmetic, warning prefixes and remaining error adaptation still block M1.
