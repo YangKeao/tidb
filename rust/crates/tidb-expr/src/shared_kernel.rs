@@ -718,12 +718,21 @@ impl SharedExpression {
                         work.push(Visit::RegexpLike(f, index + 1, guards));
                         work.push(Visit::Enter(&f.args[index + 1]));
                     } else {
+                        if f.args[1..].iter().all(|arg| matches!(arg,
+                            Expression::Constant(c) if matches!(c.literal_value(), Some(Datum::Bytes(_) | Datum::String(_)))
+                        )) {
+                            nodes.push(RpnExpressionNode::NativeRegexpLike {
+                                args_len: f.args.len(),
+                                field_type: FieldTypeTp::LongLong.into(),
+                            });
+                        } else {
                         nodes.push(RpnExpressionNode::FnCall {
                             func_meta: tidb_query_expr::impl_regexp::native_regexp_like_fn_meta(),
                             args_len: f.args.len(),
                             field_type: FieldTypeTp::LongLong.into(),
                             metadata: Box::new(()),
                         });
+                        }
                         let end = nodes.len();
                         for at in guards {
                             let RpnExpressionNode::RegexpArgument { target, .. } = &mut nodes[at]
@@ -831,7 +840,7 @@ pub struct SharedExpressionExecution<'p, 'e> {
     effects: &'e dyn crate::context::Columns,
 }
 impl SharedExpressionExecution<'_, '_> {
-    /// Evaluate another batch in this execution, retaining seeded state.
+    /// Evaluate another batch in this execution, retaining execution state.
     pub fn evaluate(
         &mut self,
         input: &Chunk,
@@ -2647,6 +2656,190 @@ mod tests {
                 assert_eq!(actual.message, message);
             }
             other => panic!("unexpected original error {other:?}"),
+        }
+    }
+
+    fn regexp_expr(
+        subject: Expression,
+        pattern: Expression,
+        flags: Option<Expression>,
+    ) -> Expression {
+        let mut args = vec![subject, pattern];
+        args.extend(flags);
+        Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("regexp_like"),
+            FieldType::new(tidb_datatype::FieldTypeCode::LongLong),
+            args,
+        ))
+    }
+
+    fn regexp_column(index: usize) -> Expression {
+        let mut col = Column::new(index as i64 + 1, native_type());
+        col.index = index as i64;
+        Expression::Column(col)
+    }
+
+    #[test]
+    fn shared_kernel_regexp_literal_admission_and_dynamic_batches() {
+        let text = |v| numeric_literal(Datum::new_string(v), &native_type());
+        for (pattern, flags, cached) in [
+            (text(b"a".to_vec()), None, true),
+            (text(b"a".to_vec()), Some(text(b"i".to_vec())), true),
+            (regexp_column(1), Some(text(b"i".to_vec())), false),
+            (text(b"a".to_vec()), Some(regexp_column(2)), false),
+        ] {
+            let expression = regexp_expr(regexp_column(0), pattern, flags);
+            let compiled = SharedExpression::compile(&expression).unwrap();
+            assert_eq!(
+                compiled
+                    .program
+                    .as_ref()
+                    .iter()
+                    .any(|n| matches!(n, RpnExpressionNode::NativeRegexpLike { .. })),
+                cached
+            );
+            let mut execution = compiled.start_execution(&crate::context::NoColumns);
+            for (subject, pattern, flags) in
+                [("Abc", "a", "i"), ("abc", "z", "c"), ("ABC", "A", "c")]
+            {
+                let mut input = Chunk::new(&[native_type(), native_type(), native_type()], 3, 3);
+                for _ in 0..3 {
+                    for (i, v) in [subject, pattern, flags].into_iter().enumerate() {
+                        input.append_datum(i, &Datum::new_string(v.as_bytes()));
+                    }
+                }
+                let expected = expression
+                    .eval(&crate::context::NoColumns, input.physical_row(0))
+                    .unwrap();
+                assert_eq!(
+                    execution
+                        .evaluate(
+                            &input,
+                            &[2, 0, 2],
+                            &mut EvalContext::default(),
+                            InvocationMode::Vector
+                        )
+                        .unwrap(),
+                    vec![expected; 3]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_regexp_cached_error_guards_and_output_recovery() {
+        use crate::context::Columns;
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let text = |v: &[u8]| numeric_literal(Datum::new_string(v), &native_type());
+        let write = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("setvar"),
+            native_type(),
+            vec![text(b"v"), regexp_column(0)],
+        ));
+        let expr = regexp_expr(write, text(b"["), None);
+        let projection = SharedProjection::compile(&[expr.clone()]).unwrap();
+        for scalar in [false, true] {
+            for direct in [false, true] {
+                let effects = Session {
+                    vectorized_off: scalar,
+                    ..Session::default()
+                };
+                let mut execution = projection.start_execution(&effects);
+                let mut output = Chunk::new(std::slice::from_ref(&integer), 1, 1);
+                output.append_int64(0, 97);
+                for value in [
+                    Some(b"first".to_vec()),
+                    None,
+                    Some(vec![0xff]),
+                    Some(b"again".to_vec()),
+                    None,
+                ] {
+                    let mut input = Chunk::new(&[native_type()], 1, 1);
+                    input.append_datum(
+                        0,
+                        &value.clone().map(Datum::new_string).unwrap_or(Datum::Null),
+                    );
+                    let prior = output.physical_row(0).get_datum(0, &integer);
+                    let oracle = Session::default();
+                    let expected = expr.eval(&oracle, input.physical_row(0));
+                    let actual = if direct {
+                        execution
+                            .evaluate_into_chunk(
+                                &input,
+                                &[0],
+                                &mut EvalContext::default(),
+                                &mut output,
+                            )
+                            .map(|()| vec![vec![output.physical_row(0).get_datum(0, &integer)]])
+                    } else {
+                        execution.evaluate(&input, &[0], &mut EvalContext::default())
+                    };
+                    match expected {
+                        Ok(value) => assert_eq!(actual.unwrap(), vec![vec![value]]),
+                        Err(error) => {
+                            assert_native_error(actual.unwrap_err(), error);
+                            assert_eq!(output.physical_row(0).get_datum(0, &integer), prior);
+                        }
+                    }
+                    if value.is_some() {
+                        assert_eq!(effects.get_uservar("v"), oracle.get_uservar("v"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_regexp_empty_dead_and_cached_subject_effects() {
+        use crate::context::Columns;
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let text = |v: &[u8]| numeric_literal(Datum::new_string(v), &native_type());
+        let write = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("setvar"),
+            native_type(),
+            vec![text(b"v"), regexp_column(0)],
+        ));
+        let regexp = regexp_expr(write, text(b"a"), None);
+        let mut condition = Column::new(2, integer.clone());
+        condition.index = 1;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            integer.clone(),
+            vec![
+                Expression::Column(condition),
+                regexp,
+                numeric_literal(Datum::Int(7), &integer),
+            ],
+        ));
+        let projection = SharedProjection::compile(&[expression.clone(), expression]).unwrap();
+        let effects = Session::default();
+        let mut execution = projection.start_execution(&effects);
+        for (subject, condition, expected) in [("first", 0, 7), ("abc", 1, 1), ("zzz", 1, 0)] {
+            let mut input = Chunk::new(&[native_type(), integer.clone()], 3, 3);
+            for _ in 0..3 {
+                input.append_datum(0, &Datum::new_string(subject.as_bytes()));
+                input.append_int64(1, condition);
+            }
+            assert_eq!(
+                execution
+                    .evaluate(&input, &[], &mut EvalContext::default())
+                    .unwrap(),
+                vec![vec![], vec![]]
+            );
+            assert_eq!(
+                execution
+                    .evaluate(&input, &[2, 0, 2], &mut EvalContext::default())
+                    .unwrap(),
+                vec![vec![Datum::Int(expected); 3]; 2]
+            );
+            if condition == 0 {
+                assert_eq!(effects.get_uservar("v"), None);
+            } else {
+                assert_eq!(
+                    effects.get_uservar("v"),
+                    Some(Datum::new_string(subject.as_bytes()))
+                );
+            }
         }
     }
 

@@ -600,3 +600,49 @@ Keep frontend diagnostics and conversion admission; share only the original-owne
 
 
 Implementation and validation are complete: 53 shared, 34 original Time, 21 native time, one DATE source-row, one SDK memory-bit and 432 independent SDK expression tests pass; scoped Clippy and root lint exit0. Both graphs have one identity per original owner and all 172 owner files/1421 SDK inputs match. See shared-kernel/typed-date.zh.md and its receipt for exact sources, failures and full counts. No human acceptance, default SQL integration or performance claim.
+
+## Task47: lazy preparation for literal REGEXP_LIKE
+
+
+Following PLANS.md and Designer871fddab, reuse a compiled native regular expression within one explicit execution, without changing when its arguments or errors are demanded. A strict literal is Constant::literal_value with no parameter/deferred source. Only literal pattern and omitted/literal match_type qualify; dynamic native expressions and PB compile-time metadata retain their current paths.
+
+### Progress
+
+
+- [x] Record baseline repeated preparation with exact tested source reconstruction.
+- [x] Add narrow checked instruction and execution-owned per-node preparation; preserve sequential argument guards.
+- [x] Verify successful/error reuse, distinct executions/nodes, cross-batch/error continuation, empty/dead paths and dynamic/PB behavior.
+- [ ] Run scoped checks and independent SDK regression, verify graphs, publish fixed sources and all incremental/original counts.
+
+### Plan of work and validation
+
+
+The native compiler in rust/crates/tidb-expr/src/shared_kernel.rs currently emits sequential RegexpArgument guards followed by an ordinary FnCall. Emit a dedicated native preparation instruction only for strict literal pattern/flags, leaving all argument instructions and guards. SDK components/tidb_query_expr/src/types/expr.rs validates the instruction's bytes inputs and integer output. Its existing expr_eval.rs frame loop accesses an execution-owned map keyed by local instruction ordinal after the guards. Regex construction and error mapping remain in impl_regexp.rs; successful Regex and only original native1105 errors can be replayed. No cached host expression, global key, shared cache, new evaluator or regex family is added.
+
+Use test-only preparation counts to prove the old instruction prepares repeatedly and the new one only once; capture commit, binary patch and selected input hashes before each command. Unit tests must prove parameters/NULL/UTF8 and side effects still precede cache lookup, distinct executions are independent, repeated selections/chunks retain state, dead/empty input does not prepare, and an error does not prevent later legal batches. Preserve PB's earlier error timing. Run Main cargo test -p tidb-expr --features shared-kernel --lib shared_kernel, independent SDK cargo test -p tidb_query_expr --lib, affected scoped Clippy, rustfmt and root make lint. Full workspace's inherited advisory failure is not repaired or retried here. Count all files against task46 and original endpoints; no performance claim.
+
+### Surprises & Discoveries
+
+
+The native helper currently recompiles after all sequential guards. PB uses init_regexp_data during expression construction, which must remain untouched. Frozen-program metadata cannot own native mutable preparation state.
+
+### Decision Log
+
+
+Keep one narrow execution map and reuse the existing regex builder. Error caching must preserve numeric identity/message without stringifying the outer error wrapper. Test snapshots use immutable commits plus complete working patches and selected-input hashes; unlike task46 this makes each attempt reconstructible within the declared source scope.
+
+### Outcomes & Retrospective
+
+
+Implementation and validation in progress.
+
+Task47 implementation: literal native nodes retain preparation in the existing
+RpnExecution; dynamic calls keep FnCall. All argument guards precede lookup.
+Only inner 1105 code/message is retained; other errors pass through uncached.
+The before witness reached an assertion (six builds versus one), then the same
+single-execution case passed. Expanded checks cover two executions, nodes,
+BENCHMARK, dead branch, errors/guards, and native dynamic Chunk/output recovery.
+Local 56 shared, 436 SDK, original regexp 24 passed/1 existing ignored; scoped
+Clippy and root lint passed. Independent SDK and fixed-source receipt follow.
+Native literal NULL remains on the existing uncached path, with guards preventing
+preparation. No generic cache framework or PB timing change was needed.
