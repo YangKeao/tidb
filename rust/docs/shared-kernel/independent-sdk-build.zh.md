@@ -95,5 +95,43 @@ scripts/deny的工具安装阶段。由本次运行器在120秒限时到达时�
 既有verify-checkpoint-6.py可用此收据与本地independent-sdk-build证据目录独立核验。
 Git资源哈希与metadata/tree、实际编译器、两个锁文件差异、独立检出状态和失败尝试一并保留。
 统计基线为Main dece836798／SDK05130ce8；本批不改生产Rust或测试逻辑。
-统计器把.gitmodules、toolchain文件和CI workflow与Cargo文件一起归为构建，脚本／报告为文档证据。
-本批生产与测试增删均为0；构建+14/−3，文档／证据+364/−1；全部+378/−4，净增374，共382行增删。原始累计源码及测试7030行增删，全部+24861/−221，共25082行增删。
+统计器把.gitmodules、toolchain文件、CI workflow、Makefile及deny.toml与Cargo文件一起归为构建，脚本／报告为文档证据。
+首次交付（修正前）生产与测试增删均为0；构建+14/−3，文档／证据+364/−1；全部+378/−4，净增374，共382行增删。原始累计源码及测试7030行增删，全部+24861/−221，共25082行增删。
+
+## 复审修正：enterprise入口与Git来源检查
+
+Designer 5caea732／227514d5发现两处构建接线缺口。Main修正提交
+`98a1535fce668c1920685663988bb1ba568dd64b`只把现有init-submodule命令补为
+`git submodule init && git submodule update --force --checkout`。
+全仓跟踪文件检索确认enterprise-server和enterprise-docker均调用此共同目标，无其他更新命令。
+保留.gitmodules的update=none，Cargo仍跳过可选仓库；显式enterprise入口恢复取出文件。
+
+`check-enterprise-submodule.py`从传入仓库的Makefile原样提取目标配方，在本地临时Git
+父仓库和子模块中运行make。旧配方返回0但跳过文件，要求取出文件的回归断言退出1；
+修正后文件内容及固定HEAD匹配，重复调用也通过。临时目录自动清理，仅允许file协议。
+这是初始化配方回归，不是enterprise产品或Docker构建，不需要访问私有仓库。
+
+SDK修正提交`780ab3e776f47d634ac8963437baf8477a7b2df7`只在deny.toml加入
+`allow-git = ["https://github.com/YangKeao/tidb"]`，没有放宽整个账号或其余来源限制。
+按原scripts/deny要求完成cargo-deny0.18.9安装，用其独立Rust1.92运行：
+
+```sh
+# SDK根目录；沿用前述正常Cargo环境
+cargo +1.92.0 deny --locked --offline check sources --show-stats
+# TiDB根目录；回归脚本仅需要Python3、Git、make
+python3 rust/docs/shared-kernel/check-enterprise-submodule.py . --expect checked-out
+make lint
+```
+
+sources修正前返回8，五个TiDB包均报source-not-allowed；修正后返回0，无错误或警告。
+首个验证脚本误写诊断名称的断言失败也保留，实际来源拒绝日志未丢弃。
+本轮只完成sources检查，未重跑完整Clippy或advisories／licenses／bans。
+
+[复审收据](independent-sdk-build-review-validation.json)及本地enterprise-submodule-review目录
+保留补丁、回归脚本、原始日志与输入差分。5525项输入中仅deny.toml策略变化，其余5524项
+（含全部产品源码、依赖声明、锁文件）逐项匹配原收据，因此沿用429／41／8项产品结果，未重跑。
+新摘要为`8a5a8877cfcf510c2bd98413bd9108ee9a6cc5171505d39935b7ae580f73c6aa`；
+Makefile不在该源码扩展名清单内，由单独补丁哈希和回归验证覆盖。根make lint通过。
+原收据保留首次输入摘要；核验当前树请给verify-checkpoint-6.py传入复审收据和对应证据目录。
+
+复审增量生产／测试0，构建+2/−1，文档及验证脚本+227/−3，全部+229/−4（净225，增删233）。task41完整批次生产／测试0，构建+16/−4，文档及证据+588/−1，全部+604/−5（净599，增删609）。原始累计源码及测试仍7030行增删，全部+25087/−222，共25309行增删。统计基线同前，回归脚本计入文档证据；所有新增材料均计数。

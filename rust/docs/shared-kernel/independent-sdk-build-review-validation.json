@@ -1,0 +1,118 @@
+{
+  "source_commits": {
+    "tidb": "98a1535fce668c1920685663988bb1ba568dd64b",
+    "tikv": "780ab3e776f47d634ac8963437baf8477a7b2df7"
+  },
+  "source_inputs": {
+    "count": 5525,
+    "sha256": "8a5a8877cfcf510c2bd98413bd9108ee9a6cc5171505d39935b7ae580f73c6aa"
+  },
+  "inherited_product_receipt": "independent-sdk-build-validation.json",
+  "inherited_test_counts": {
+    "sdk": 429,
+    "shared": 41,
+    "prepared": 8
+  },
+  "input_delta": "Only SDK deny.toml changed in the 5525-file input inventory; all 5524 other files unchanged. Makefile is outside that inventory and covered by the patch hash.",
+  "checks": {
+    "submodule_before_regression": 1,
+    "submodule_after_and_repeat": 0,
+    "sources_before": 8,
+    "sources_after": 0,
+    "root_lint": 0
+  },
+  "limitations": [
+    "Submodule fixture extracts the real init-submodule recipe; no private enterprise product build or Docker build.",
+    "Product regressions inherited, not rerun; complete SDK Clippy/advisory/license/bans gates not rerun."
+  ],
+  "logs": [
+    {
+      "name": "after-result.json",
+      "sha256": "704d1fd3543d2bd2b69cb47d58444d2f0dd7f9c6d32acc4c0f149ac7178bbed3"
+    },
+    {
+      "name": "after.log",
+      "sha256": "ca0c392c1ace0d5adcf4463da369257439ab6f81e7c22517a1bd8915a5561a88"
+    },
+    {
+      "name": "before-regression.log",
+      "sha256": "33248016d09b9ed584cace4365603a5120809eb53b8a44257b7470dcdbb2b539"
+    },
+    {
+      "name": "before-result.json",
+      "sha256": "45fb5354c7ee58ca948e0346c87c24d1f64b2004e748b7116c9f1e9345a1dd60"
+    },
+    {
+      "name": "before.log",
+      "sha256": "8221583b776dd9e0a186198141a1605dbbe880dac8f6a89a96d248114501b8ba"
+    },
+    {
+      "name": "build-fix.patch",
+      "sha256": "662162c3f0d149c4e3e0cc2420214dae533120e7389d2cd5d05c859794f029ff"
+    },
+    {
+      "name": "callers.log",
+      "sha256": "e6010a37a52a8df061d392a145065d048a23e2fe1be3861fbf3280436d1994c2"
+    },
+    {
+      "name": "deny-install-result.json",
+      "sha256": "ed143b98e974871f725f8fc91c7e7231b18f451ee6a5658153dc589348f0fd03"
+    },
+    {
+      "name": "deny-install.log",
+      "sha256": "8a3f25d3064fe86b8ecfdc8241fc3be762a9284c3f2ddf8694534cbd892e0e56"
+    },
+    {
+      "name": "inherited-inputs.log",
+      "sha256": "230a22ecb146f4400357179a11358bba98816e7a1a89e920c2ff3f89398ff904"
+    },
+    {
+      "name": "input-delta.json",
+      "sha256": "31a42f25c75c54fe912137e571a274d42acc307d79a1c5076700ba604cece287"
+    },
+    {
+      "name": "lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    },
+    {
+      "name": "source-snapshot.json",
+      "sha256": "29b03b79db37f01898f10db0c0680ee366e2ae487784f7cb3927f2b4187af447"
+    },
+    {
+      "name": "sources-after.log",
+      "sha256": "4ed1e260eabf9b8d7d806c92fe47c6e2237ba67a606bec922250ea08128f4084"
+    },
+    {
+      "name": "sources-before.log",
+      "sha256": "4c67e4d8f1bd9fae58888fc83790b1e9fea3ed728682d165a4f32c796902dfb1"
+    },
+    {
+      "name": "sources-check.py",
+      "sha256": "fb842de2b339baae23aca1119a22c5ef5080ab9a2367ba7cdade0238da379ac0"
+    },
+    {
+      "name": "sources-first-results.json",
+      "sha256": "3e7e31110580e74568116037db29e5dcdd39d8dbd5526aebc88de11133dffa53"
+    },
+    {
+      "name": "sources-first.log",
+      "sha256": "4c67e4d8f1bd9fae58888fc83790b1e9fea3ed728682d165a4f32c796902dfb1"
+    },
+    {
+      "name": "sources-harness-correction.txt",
+      "sha256": "ace06012487de2ec45e731b8a6972728f8addc63bab41687016b7b12e1b04a0c"
+    },
+    {
+      "name": "sources-results.json",
+      "sha256": "36a82e8e705e745d7767e9987473ffa228420e2ee226678203e7f15437fc401d"
+    },
+    {
+      "name": "tidb-review.patch",
+      "sha256": "662162c3f0d149c4e3e0cc2420214dae533120e7389d2cd5d05c859794f029ff"
+    },
+    {
+      "name": "tikv-review.patch",
+      "sha256": "3f48e947701a034b809bc249a83b566c9c89ebd80164715eba7d2e17021707f9"
+    }
+  ]
+}

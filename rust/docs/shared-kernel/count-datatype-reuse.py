@@ -12,7 +12,7 @@ for repo,base,previous in [('tidb','364aef2bab5cc633ecb76a775ae8f36f86a6687d','7
   def git(*args):return subprocess.check_output(['git','-C',str(root/repo),*args],text=True)
   for row in git('diff','--numstat',ref).splitlines():
    a,d,path=row.split('\t'); a,d=int(a),int(d)
-   build = 'Cargo.' in path or path in ('.gitmodules', 'rust-toolchain.toml') or path.startswith('.github/workflows/')
+   build = 'Cargo.' in path or path in ('.gitmodules', 'rust-toolchain.toml', 'Makefile', 'deny.toml') or path.startswith('.github/workflows/')
    kind='tests' if path.endswith('/decimal-shared-bench.rs') else ('production' if path.endswith('.rs') else ('build' if build else 'documents'))
    if path.endswith('/shared_kernel.rs') or path in ('components/tidb_query_expr/src/types/expr_eval.rs','components/tidb_query_expr/src/impl_op.rs'):
     old=git('show',ref+':'+path).splitlines() if ref==previous or not path.endswith('/shared_kernel.rs') else []

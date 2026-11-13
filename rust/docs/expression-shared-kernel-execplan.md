@@ -379,3 +379,16 @@ makeclippy exceeded our120-second bound in deny tool installation and was
 terminated by our runner; full workspace/macOS compatibility is not claimed.
 The enterprise submodule default is explicitly skipped for Cargo consumers;
 enterprise users must request checkout explicitly. See independent-sdk-build.zh.md.
+
+### Task41 review corrections (Designer 5caea732 / 227514d5)
+
+The enterprise init target must explicitly select checkout despite update=none.
+The SDK deny sources policy must admit only the chosen YangKeao/tidb Git URL,
+retaining unknown-git/registry deny and the existing organization list.
+Use a local temporary submodule for the first regression, and cargo-deny0.18.9
+sources checks for the second. Inherit product regressions only after comparing
+all recorded inputs and isolating the deny policy change from compiler inputs.
+
+- [x] Preserve skipped-file regression; explicit checkout and repeated init pass.
+- [x] Preserve five source rejections; exact URL addition passes cargo-deny0.18.9 sources.
+- [x] Record lint, input correspondence, fixed pair and full counts in the review receipt/report.
