@@ -612,7 +612,7 @@ Following PLANS.md and Designer871fddab, reuse a compiled native regular express
 - [x] Record baseline repeated preparation with exact tested source reconstruction.
 - [x] Add narrow checked instruction and execution-owned per-node preparation; preserve sequential argument guards.
 - [x] Verify successful/error reuse, distinct executions/nodes, cross-batch/error continuation, empty/dead paths and dynamic/PB behavior.
-- [ ] Run scoped checks and independent SDK regression, verify graphs, publish fixed sources and all incremental/original counts.
+- [x] Run scoped checks and independent SDK regression, verify graphs, publish fixed sources and all incremental/original counts.
 
 ### Plan of work and validation
 
@@ -634,7 +634,7 @@ Keep one narrow execution map and reuse the existing regex builder. Error cachin
 ### Outcomes & Retrospective
 
 
-Implementation and validation in progress.
+Implementation and validation complete; fixed-source review pending.
 
 Task47 implementation: literal native nodes retain preparation in the existing
 RpnExecution; dynamic calls keep FnCall. All argument guards precede lookup.
@@ -643,6 +643,8 @@ The before witness reached an assertion (six builds versus one), then the same
 single-execution case passed. Expanded checks cover two executions, nodes,
 BENCHMARK, dead branch, errors/guards, and native dynamic Chunk/output recovery.
 Local 56 shared, 436 SDK, original regexp 24 passed/1 existing ignored; scoped
-Clippy and root lint passed. Independent SDK and fixed-source receipt follow.
+Clippy and root lint passed. Independent SDK 436 tests passed; dual graphs match
+172 owner files and 1421 SDK inputs. See shared-kernel/regexp-state.zh.md for
+fixed sources, failed attempts, per-command source reconstruction and total counts.
 Native literal NULL remains on the existing uncached path, with guards preventing
 preparation. No generic cache framework or PB timing change was needed.
