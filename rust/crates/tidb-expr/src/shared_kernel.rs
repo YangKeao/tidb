@@ -2,9 +2,9 @@
 
 //! Opt-in native adapter for the original TiKV RPN evaluator.
 //!
-//! shortcut: this checkpoint admits MD5, byte columns, numeric literals and
-//! integer-condition numeric IF. Extend demand and typed kernel admission before
-//! enabling a default path; byte literal identity is not yet an output contract.
+//! shortcut: this opt-in subset covers numeric/control/state M1 probes.
+//! Extend typed signature admission before enabling a default path; no native
+//! evaluator fallback is available for unsupported expressions.
 
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::Datum;
@@ -15,7 +15,7 @@ use tidb_query_datatype::{
 };
 use tidb_query_expr::{
     ExpressionDecimal, ExpressionScalar, ExpressionVector, InputColumns, InputResult,
-    InvocationMode, OutputOrder, RpnExpression, RpnExpressionNode, RpnStackNode,
+    InvocationMode, NativeArithmetic, OutputOrder, RpnExpression, RpnExpressionNode, RpnStackNode,
     RpnStackNodeVectorValue,
 };
 
@@ -85,13 +85,23 @@ impl SharedExpression {
             Md5,
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
-            Variable { name: String, write: bool },
-            Rand { seeded: bool, constant_seed: bool },
-            IntegerLeft(&'a crate::scalar_function::ScalarFunction),
-            IntegerRight(&'a crate::scalar_function::ScalarFunction, usize),
+            Variable {
+                name: String,
+                write: bool,
+            },
+            Rand {
+                seeded: bool,
+                constant_seed: bool,
+            },
+            NumericLeft(&'a crate::scalar_function::ScalarFunction),
+            NumericRight(&'a crate::scalar_function::ScalarFunction, Option<usize>),
             ParseJson,
             JsonLength,
-            RegexpLike(usize),
+            RegexpLike(
+                &'a crate::scalar_function::ScalarFunction,
+                usize,
+                Vec<usize>,
+            ),
             IfCondition(&'a crate::scalar_function::ScalarFunction),
             IfThen(&'a crate::scalar_function::ScalarFunction, usize),
             IfElse(usize, usize),
@@ -105,7 +115,8 @@ impl SharedExpression {
             if let Visit::Enter(Expression::ScalarFunction(f)) = &visit {
                 // In this admitted subset only pure plus/mul trees enter the
                 // original numeric batch route; one fallback child rejects the root.
-                row_fallback |= !matches!(f.func_name.lowercase(), "plus" | "mul");
+                row_fallback |=
+                    !matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div");
             }
             match visit {
                 Visit::Enter(Expression::Constant(c)) => {
@@ -178,6 +189,7 @@ impl SharedExpression {
                         {
                             EvalType::Bytes
                         }
+                        tidb_datatype::FieldTypeCode::Double if !tp.is_unsigned() => EvalType::Real,
                         tidb_datatype::FieldTypeCode::LongLong if !tp.is_unsigned() => {
                             EvalType::Int
                         }
@@ -322,54 +334,118 @@ impl SharedExpression {
                     field_type: FieldTypeTp::Double.into(),
                 }),
                 Visit::Enter(Expression::ScalarFunction(f))
-                    if matches!(f.func_name.lowercase(), "plus" | "mul") =>
+                    if matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div") =>
                 {
+                    use tidb_datatype::FieldTypeCode as Code;
+                    let result = f.ret_type.as_ref().ok_or("arithmetic needs result type")?;
                     let admitted = |t: &tidb_datatype::FieldType| {
-                        t.code() == tidb_datatype::FieldTypeCode::LongLong
+                        (t.code() == result.code()
+                            || (result.code() == Code::Double
+                                && t.code() == Code::VarString
+                                && t.collation_name()
+                                    == tidb_datatype::FieldType::new(Code::VarString)
+                                        .collation_name()))
                             && !t.is_unsigned()
                             && !t.is_array()
                     };
                     if f.args.len() != 2
-                        || f.ret_type.as_ref().is_none_or(|t| !admitted(t))
+                        || !admitted(result)
+                        || !matches!(
+                            result.code(),
+                            Code::LongLong | Code::Double | Code::NewDecimal
+                        )
                         || f.args
                             .iter()
                             .any(|a| a.static_type().is_none_or(|t| !admitted(t)))
+                        || (result.code() == Code::LongLong
+                            && !matches!(f.func_name.lowercase(), "plus" | "mul"))
                     {
-                        return Err(
-                            "arithmetic currently admits signed integer plus/mul only".into()
-                        );
+                        return Err("arithmetic requires matching supported numeric types".into());
                     }
-                    work.push(Visit::IntegerLeft(f));
+                    work.push(Visit::NumericLeft(f));
                     work.push(Visit::Enter(&f.args[0]));
                 }
-                Visit::IntegerLeft(f) => {
-                    let at = nodes.len();
-                    nodes.push(RpnExpressionNode::NullGuard {
-                        target: 0,
-                        field_type: FieldTypeTp::LongLong.into(),
-                    });
-                    work.push(Visit::IntegerRight(f, at));
+                Visit::NumericLeft(f) => {
+                    if f.args[0].static_type().unwrap().eval_type()
+                        == tidb_datatype::EvalType::String
+                    {
+                        nodes.push(RpnExpressionNode::NativeCastReal {
+                            field_type: FieldTypeTp::Double.into(),
+                        });
+                    }
+                    // Native REAL plus evaluates its RHS even for scalar NULL.
+                    let guard = if f.func_name.lowercase() == "plus"
+                        && f.ret_type.as_ref().unwrap().eval_type() == tidb_datatype::EvalType::Real
+                    {
+                        None
+                    } else {
+                        let at = nodes.len();
+                        nodes.push(RpnExpressionNode::NullGuard {
+                            target: 0,
+                            field_type: control_type(f)?,
+                        });
+                        Some(at)
+                    };
+                    work.push(Visit::NumericRight(f, guard));
                     work.push(Visit::Enter(&f.args[1]));
                 }
-                Visit::IntegerRight(f, guard) => {
+                Visit::NumericRight(f, guard) => {
+                    if f.args[1].static_type().unwrap().eval_type()
+                        == tidb_datatype::EvalType::String
+                    {
+                        nodes.push(RpnExpressionNode::NativeCastReal {
+                            field_type: FieldTypeTp::Double.into(),
+                        });
+                    }
                     use tidb_query_expr::impl_arithmetic::{
                         arithmetic_fn_meta, IntIntMultiply, IntIntPlus,
                     };
-                    nodes.push(RpnExpressionNode::FnCall {
-                        func_meta: if f.func_name.lowercase() == "plus" {
-                            arithmetic_fn_meta::<IntIntPlus>()
-                        } else {
-                            arithmetic_fn_meta::<IntIntMultiply>()
-                        },
-                        args_len: 2,
-                        field_type: FieldTypeTp::LongLong.into(),
-                        metadata: Box::new(()),
-                    });
+                    if f.ret_type.as_ref().unwrap().code() == tidb_datatype::FieldTypeCode::LongLong
+                    {
+                        nodes.push(RpnExpressionNode::FnCall {
+                            func_meta: if f.func_name.lowercase() == "plus" {
+                                arithmetic_fn_meta::<IntIntPlus>()
+                            } else {
+                                arithmetic_fn_meta::<IntIntMultiply>()
+                            },
+                            args_len: 2,
+                            field_type: FieldTypeTp::LongLong.into(),
+                            metadata: Box::new(()),
+                        });
+                    } else {
+                        let (op, native_op) = match f.func_name.lowercase() {
+                            "plus" => (NativeArithmetic::Add, tidb_ast::BinaryOp::Plus),
+                            "minus" => (NativeArithmetic::Subtract, tidb_ast::BinaryOp::Minus),
+                            "mul" => (NativeArithmetic::Multiply, tidb_ast::BinaryOp::Mul),
+                            "div" => (NativeArithmetic::Divide, tidb_ast::BinaryOp::Div),
+                            _ => unreachable!(),
+                        };
+                        let real = f.ret_type.as_ref().unwrap().eval_type()
+                            == tidb_datatype::EvalType::Real;
+                        let class = if real { "DOUBLE" } else { "DECIMAL" };
+                        let source = crate::scalar_function::arithmetic_overflow_expression(
+                            f,
+                            native_op,
+                            real,
+                            &crate::context::NoColumns,
+                        );
+                        let overflow = source.map_or_else(
+                            || format!("{class} value is out of range"),
+                            |source| format!("{class} value is out of range in '{source}'"),
+                        );
+                        nodes.push(RpnExpressionNode::NativeArithmetic {
+                            op,
+                            overflow,
+                            field_type: control_type(f)?,
+                        });
+                    }
                     let end = nodes.len();
-                    let RpnExpressionNode::NullGuard { target, .. } = &mut nodes[guard] else {
-                        unreachable!()
-                    };
-                    *target = end;
+                    if let Some(guard) = guard {
+                        let RpnExpressionNode::NullGuard { target, .. } = &mut nodes[guard] else {
+                            unreachable!()
+                        };
+                        *target = end;
+                    }
                 }
                 Visit::Enter(Expression::ScalarFunction(f)) if f.func_name.lowercase() == "if" => {
                     if f.args.len() != 3 {
@@ -477,7 +553,9 @@ impl SharedExpression {
                         work.push(Visit::JsonLength);
                         work.push(Visit::ParseJson);
                     } else {
-                        work.push(Visit::RegexpLike(f.args.len()));
+                        work.push(Visit::RegexpLike(f, 0, Vec::new()));
+                        work.push(Visit::Enter(&f.args[0]));
+                        continue;
                     }
                     work.extend(f.args.iter().rev().map(Visit::Enter));
                 }
@@ -505,6 +583,12 @@ impl SharedExpression {
                 Visit::Enter(_) => {
                     return Err("expression is outside shared kernel admission".into())
                 }
+                Visit::Md5 => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta: tidb_query_expr::impl_encryption::md5_fn_meta(),
+                    args_len: 1,
+                    field_type: bytes_type(),
+                    metadata: Box::new(()),
+                }),
                 Visit::ParseJson => {
                     let mut field_type: tipb::FieldType = FieldTypeTp::Json.into();
                     field_type
@@ -524,26 +608,40 @@ impl SharedExpression {
                     metadata: Box::new(()),
                 }),
                 // Native preparation does not parse a guarded constant pattern.
-                Visit::RegexpLike(args_len) => nodes.push(RpnExpressionNode::FnCall {
-                    func_meta: tidb_query_expr::impl_regexp::regexp_like_fn_meta::<
-                        tidb_query_datatype::codec::collation::collator::CollatorUtf8Mb4Bin,
-                    >(),
-                    args_len,
-                    field_type: FieldTypeTp::LongLong.into(),
-                    metadata: Box::new(None::<regex::Regex>),
-                }),
-                Visit::Md5 => nodes.push(RpnExpressionNode::FnCall {
-                    func_meta: tidb_query_expr::impl_encryption::md5_fn_meta(),
-                    args_len: 1,
-                    field_type: bytes_type(),
-                    metadata: Box::new(()),
-                }),
+                Visit::RegexpLike(f, index, mut guards) => {
+                    guards.push(nodes.len());
+                    nodes.push(RpnExpressionNode::RegexpArgument {
+                        target: 0,
+                        count: index + 1,
+                        field_type: FieldTypeTp::LongLong.into(),
+                    });
+                    if index + 1 < f.args.len() {
+                        work.push(Visit::RegexpLike(f, index + 1, guards));
+                        work.push(Visit::Enter(&f.args[index + 1]));
+                    } else {
+                        nodes.push(RpnExpressionNode::FnCall {
+                            func_meta: tidb_query_expr::impl_regexp::native_regexp_like_fn_meta(),
+                            args_len: f.args.len(),
+                            field_type: FieldTypeTp::LongLong.into(),
+                            metadata: Box::new(()),
+                        });
+                        let end = nodes.len();
+                        for at in guards {
+                            let RpnExpressionNode::RegexpArgument { target, .. } = &mut nodes[at]
+                            else {
+                                unreachable!()
+                            };
+                            *target = end;
+                        }
+                    }
+                }
             }
         }
         let schema: Vec<tipb::FieldType> = columns
             .iter()
             .map(|(_, tp)| match tp {
                 EvalType::Int => FieldTypeTp::LongLong.into(),
+                EvalType::Real => FieldTypeTp::Double.into(),
                 _ => bytes_type(),
             })
             .collect();
@@ -561,6 +659,7 @@ impl SharedExpression {
                         *end += 1;
                     }
                     RpnExpressionNode::Jump { target, .. }
+                    | RpnExpressionNode::RegexpArgument { target, .. }
                     | RpnExpressionNode::NullGuard { target, .. } => *target += 1,
                     RpnExpressionNode::Repeat { end, .. } => *end += 1,
                     _ => {}
@@ -692,11 +791,21 @@ impl SharedProjection {
             .zip(&inputs)
             .map(|(e, i)| (&e.program, e.schema.as_slice(), i as &dyn InputColumns))
             .collect();
-        RpnExpression::eval_group(&programs, ctx, rows, self.order)
-            .map_err(SharedEvaluationError::from)?
-            .into_iter()
-            .map(|v| native_output(v, rows.len()).map_err(SharedEvaluationError::from))
-            .collect()
+        RpnExpression::eval_group(
+            &programs,
+            ctx,
+            rows,
+            self.order,
+            if effects.enable_vectorized_expression() {
+                InvocationMode::Vector
+            } else {
+                InvocationMode::Scalar
+            },
+        )
+        .map_err(SharedEvaluationError::from)?
+        .into_iter()
+        .map(|v| native_output(v, rows.len()).map_err(SharedEvaluationError::from))
+        .collect()
     }
 }
 
@@ -707,16 +816,33 @@ struct NativeInput<'a> {
 }
 
 impl InputColumns for NativeInput<'_> {
+    fn div_precision_increment(&self) -> u32 {
+        self.effects.div_precision_increment()
+    }
+    fn handle_truncate(&self, message: &str) -> tidb_query_expr::evaluation_error::Result<()> {
+        self.effects
+            .handle_truncate(message)
+            .map_err(native_policy_error)
+    }
+    fn handle_division_by_zero(&self) -> tidb_query_expr::evaluation_error::Result<()> {
+        self.effects
+            .handle_division_by_zero()
+            .map_err(native_policy_error)
+    }
+
     fn get_string_variable(
         &self,
         name: &str,
     ) -> tidb_query_expr::evaluation_error::Result<Option<Vec<u8>>> {
         match self.effects.get_uservar(name) {
             None | Some(Datum::Null) => Ok(None),
-            Some(Datum::Bytes(v)) => Ok(Some(v)),
-            Some(Datum::String(v)) => Ok(Some(v.bytes().to_vec())),
+            // shortcut: extend the typed string carrier before admitting metadata
+            // that cannot survive a byte-only read followed by SETVAR.
+            Some(Datum::String(v)) if v.collation() == tidb_datatype::Collation::DEFAULT => {
+                Ok(Some(v.bytes().to_vec()))
+            }
             _ => Err(tidb_query_expr::evaluation_error::EvaluateError::Other(
-                "non-string session variable is outside shared admission".into(),
+                "session variable carrier is outside default-string shared admission".into(),
             )
             .into()),
         }
@@ -757,6 +883,16 @@ impl InputColumns for NativeInput<'_> {
             return Err(Error::InvalidDataType("selected row is outside input".into()).into());
         }
         let column = self.chunk.column(index);
+        if eval_type == EvalType::Real {
+            return Ok(RpnStackNode::ExpressionVector {
+                value: ExpressionVector::Real(
+                    rows.iter()
+                        .map(|row| (!column.is_null(*row)).then(|| column.get_float64(*row)))
+                        .collect(),
+                ),
+                field_type: &schema[offset],
+            });
+        }
         let mut values = VectorValue::with_capacity(rows.len(), eval_type);
         for row in rows {
             match eval_type {
@@ -775,6 +911,20 @@ impl InputColumns for NativeInput<'_> {
             field_type: &schema[offset],
         })
     }
+}
+
+fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_error::Error {
+    use tidb_query_expr::evaluation_error::EvaluateError;
+    let (code, msg) = match error {
+        crate::EvalError::TruncatedWrongValue(message) => (1292, message),
+        crate::EvalError::DivisionByZero => (1365, "Division by 0".into()),
+        crate::EvalError::Unsupported(message) => (1105, message.into()),
+        other => {
+            return EvaluateError::Other(format!("unsupported native policy diagnostic: {other:?}"))
+                .into()
+        }
+    };
+    EvaluateError::Custom { code, msg }.into()
 }
 
 fn control_type(f: &crate::scalar_function::ScalarFunction) -> Result<tipb::FieldType, String> {
@@ -934,18 +1084,35 @@ mod tests {
         // The user permits diagnostic ordering differences between reachable errors.
         let message = actual.to_string().to_lowercase();
         assert!(
-            message.contains("regex") || message.contains("json"),
+            message.contains("regular expression") || message.contains("json"),
             "unexpected error: {actual}"
         );
     }
 
     #[derive(Default)]
     struct Session {
+        strict: bool,
+        warnings: std::cell::RefCell<Vec<(u16, String)>>,
+        vectorized_off: bool,
         draws: std::cell::Cell<u32>,
         seeds: std::cell::RefCell<std::collections::HashMap<usize, crate::MysqlRng>>,
         vars: std::cell::RefCell<std::collections::HashMap<String, Datum>>,
     }
     impl crate::context::Columns for Session {
+        fn truncate_level(&self) -> crate::ErrorLevel {
+            if self.strict {
+                crate::ErrorLevel::Error
+            } else {
+                crate::ErrorLevel::Warn
+            }
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.warnings.borrow_mut().push((code, message.to_owned()));
+        }
+
+        fn enable_vectorized_expression(&self) -> bool {
+            !self.vectorized_off
+        }
         fn get(&self, _: &[String]) -> Option<Datum> {
             None
         }
@@ -1228,6 +1395,665 @@ mod tests {
             ]
         );
         assert!(dynamic_session.seeds.borrow().is_empty());
+    }
+
+    fn numeric_literal(value: Datum, ty: &FieldType) -> Expression {
+        Expression::Constant(Constant::new(value, ty.clone()))
+    }
+    fn numeric_binary(name: &str, ty: &FieldType, left: Datum, right: Datum) -> Expression {
+        Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new(name),
+            ty.clone(),
+            vec![numeric_literal(left, ty), numeric_literal(right, ty)],
+        ))
+    }
+    fn assert_same_decimal(actual: &Datum, expected: &Datum) {
+        let (Datum::Decimal(a), Datum::Decimal(b)) = (actual, expected) else {
+            panic!("decimal results required");
+        };
+        assert_eq!(a.is_negative(), b.is_negative());
+        assert_eq!(a.coefficient_digits(), b.coefficient_digits());
+        assert_eq!(a.storage_scale(), b.storage_scale());
+        assert_eq!(a.scale(), b.scale());
+        assert_eq!(a.declared_shape(), b.declared_shape());
+        assert_eq!(a.to_string(), b.to_string());
+    }
+    fn assert_native_error(actual: SharedEvaluationError, expected: crate::EvalError) {
+        match expected {
+            crate::EvalError::DataOutOfRange { value, expression } => {
+                assert_eq!(actual.code, Some(1690));
+                assert_eq!(
+                    actual.message,
+                    format!("{value} value is out of range in '{expression}'")
+                );
+            }
+            crate::EvalError::TruncatedWrongValue(message) => {
+                assert_eq!(actual.code, Some(1292));
+                assert_eq!(actual.message, message);
+            }
+            other => panic!("unexpected original error {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_kernel_regexp_arguments_stop_on_null_and_invalid_utf8() {
+        use crate::context::Columns;
+        let text = |v| numeric_literal(v, &native_type());
+        for first in [Datum::Null, Datum::new_string(vec![0xff])] {
+            let write = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("setvar"),
+                native_type(),
+                vec![text(Datum::new_string(b"v")), text(Datum::new_string(b"["))],
+            ));
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("regexp_like"),
+                FieldType::new(tidb_datatype::FieldTypeCode::LongLong),
+                vec![text(first.clone()), write],
+            ));
+            let original = Session::default();
+            let session = Session::default();
+            let mut input = Chunk::new(&[], 1, 1);
+            input.set_num_virtual_rows(1);
+            let expected = expression.eval(&original, input.physical_row(0));
+            assert_eq!(original.get_uservar("v"), None);
+            let actual = SharedExpression::compile(&expression)
+                .unwrap()
+                .evaluate_with_context(
+                    &input,
+                    &[0],
+                    &mut EvalContext::default(),
+                    &session,
+                    InvocationMode::Vector,
+                );
+            assert_eq!(session.get_uservar("v"), None);
+            if first == Datum::Null {
+                assert_eq!(expected, Ok(Datum::Null));
+                assert_eq!(actual.unwrap(), vec![Datum::Null]);
+            } else {
+                assert_eq!(
+                    expected,
+                    Err(crate::EvalError::Unsupported(
+                        "invalid UTF-8 REGEXP_LIKE argument"
+                    ))
+                );
+                assert_eq!(actual.unwrap_err().code, Some(1105));
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_regexp_and_rand_diagnostic_identity() {
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let text = |v: Vec<u8>| numeric_literal(Datum::new_string(v), &native_type());
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        for (subject, pattern, flags) in [
+            (b"abc".to_vec(), b"".to_vec(), b"".to_vec()),
+            (b"abc".to_vec(), b"[".to_vec(), b"".to_vec()),
+            (b"abc".to_vec(), b"a".to_vec(), b"n".to_vec()),
+            (vec![0xff], b"a".to_vec(), vec![]),
+            (b"abc".to_vec(), vec![0xff], vec![]),
+            (b"abc".to_vec(), b"a".to_vec(), vec![0xff]),
+        ] {
+            let expr = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("regexp_like"),
+                integer.clone(),
+                vec![text(subject), text(pattern), text(flags)],
+            ));
+            let expected = expr
+                .eval(&crate::context::NoColumns, input.physical_row(0))
+                .unwrap_err();
+            let actual = SharedExpression::compile(&expr)
+                .unwrap()
+                .evaluate(&input, &[0], &mut EvalContext::default())
+                .unwrap_err();
+            let crate::EvalError::Unsupported(message) = expected else {
+                panic!("unexpected {expected:?}");
+            };
+            assert_eq!(
+                actual,
+                SharedEvaluationError {
+                    code: Some(1105),
+                    message: message.into()
+                }
+            );
+        }
+        let expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("rand"),
+            FieldType::new(tidb_datatype::FieldTypeCode::Double),
+            vec![],
+        ));
+        assert_eq!(
+            expr.eval(&crate::context::NoColumns, input.physical_row(0)),
+            Err(crate::EvalError::Unsupported("RAND requires a session"))
+        );
+        assert_eq!(
+            SharedExpression::compile(&expr)
+                .unwrap()
+                .evaluate(&input, &[0], &mut EvalContext::default())
+                .unwrap_err(),
+            SharedEvaluationError {
+                code: Some(1105),
+                message: "RAND requires a session".into()
+            }
+        );
+    }
+
+    #[test]
+    fn shared_kernel_numeric_warning_prefix_matches_actual_invocation() {
+        let real = FieldType::new(tidb_datatype::FieldTypeCode::Double);
+        let mut s = Column::new(1, native_type());
+        s.index = 0;
+        let mut x = Column::new(2, real.clone());
+        x.index = 1;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            real.clone(),
+            vec![
+                Expression::Column(s),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("mul"),
+                    real.clone(),
+                    vec![
+                        Expression::Column(x),
+                        numeric_literal(Datum::Real(2.0), &real),
+                    ],
+                )),
+            ],
+        ));
+        let shared = SharedProjection::compile(&[expression.clone()]).unwrap();
+        for vectorized_off in [true, false] {
+            let original = Session {
+                vectorized_off,
+                ..Session::default()
+            };
+            let session = Session {
+                vectorized_off,
+                ..Session::default()
+            };
+            let mut input = Chunk::new(&[native_type(), real.clone()], 2, 2);
+            input.append_string(0, "1x");
+            input.append_float64(1, f64::MAX);
+            input.append_string(0, "2y");
+            input.append_float64(1, 1.0);
+            let mut output = Chunk::new(&[real.clone()], 2, 2);
+            let expected = crate::evaluator::EvaluatorSuite::new(vec![expression.clone()], false)
+                .run(&original, &mut input, &mut output)
+                .unwrap_err();
+            let actual = shared
+                .evaluate(&input, &[0, 1], &mut EvalContext::default(), &session)
+                .unwrap_err();
+            let crate::evaluator::EvaluatorError::Eval(expected) = expected else {
+                panic!("expected evaluation failure");
+            };
+            assert_native_error(actual, expected);
+            let expected_warnings = if vectorized_off { 1 } else { 2 };
+            assert_eq!(original.warnings.borrow().len(), expected_warnings);
+            assert_eq!(*session.warnings.borrow(), *original.warnings.borrow());
+        }
+        let mut input = Chunk::new(&[native_type(), real.clone()], 8, 8);
+        for row in 0..8 {
+            input.append_string(0, if row == 2 { "2y" } else { "1x" });
+            input.append_float64(1, 1.0);
+        }
+        let session = Session::default();
+        assert_eq!(
+            shared
+                .evaluate(&input, &[7, 2, 7], &mut EvalContext::default(), &session)
+                .unwrap(),
+            vec![vec![Datum::Real(3.0), Datum::Real(4.0), Datum::Real(3.0)]]
+        );
+        assert_eq!(session.warnings.borrow().len(), 3);
+    }
+
+    #[test]
+    fn shared_kernel_real_arithmetic_checks_only_demanded_values() {
+        let real = FieldType::new(tidb_datatype::FieldTypeCode::Double);
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        for (a, b) in [(f64::from_bits(0x7ff8000000000001), 1.0), (1e308, 1e308)] {
+            for flag in [0, 1] {
+                let arithmetic = numeric_binary("plus", &real, Datum::Real(a), Datum::Real(b));
+                let expression = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("if"),
+                    real.clone(),
+                    vec![
+                        numeric_literal(Datum::Int(flag), &integer),
+                        arithmetic,
+                        numeric_literal(Datum::Real(7.0), &real),
+                    ],
+                ));
+                let baseline = expression.eval(&crate::context::NoColumns, input.physical_row(0));
+                let shared = SharedExpression::compile(&expression).unwrap();
+                for mode in [InvocationMode::Scalar, InvocationMode::Vector] {
+                    let actual =
+                        shared.evaluate_mode(&input, &[0], &mut EvalContext::default(), mode);
+                    if flag == 0 {
+                        assert_eq!(baseline, Ok(Datum::Real(7.0)));
+                        assert_eq!(actual.unwrap(), vec![Datum::Real(7.0)]);
+                    } else {
+                        assert_native_error(actual.unwrap_err(), baseline.clone().unwrap_err());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_decimal_arithmetic_boundary_differential() {
+        use tidb_datatype::Decimal;
+        let decimal = FieldType::new(tidb_datatype::FieldTypeCode::NewDecimal);
+        let mut input = Chunk::new(&[], 3, 3);
+        input.set_num_virtual_rows(3);
+        let mut seed = 193u64;
+        let mut value = |width: usize, scale: usize, negative: bool| {
+            let digits: String = (0..width)
+                .map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    char::from(b'0' + ((seed >> 32) % 10) as u8)
+                })
+                .collect();
+            let split = width.saturating_sub(scale);
+            Decimal::from_signed_literal(&format!(
+                "{}{}.{}",
+                if negative { "-" } else { "" },
+                &digits[..split],
+                &digits[split..]
+            ))
+        };
+        for case in 0..48 {
+            let width = [1, 8, 9, 10, 18, 39, 40, 72, 81, 82][case % 10];
+            let scale = [0, 1, 9, 30, 40][case % 5].min(width);
+            let a = value(width, scale, case % 2 == 0);
+            let b = value(
+                width,
+                [0, 1, 9, 30, 40][(case / 5) % 5].min(width),
+                case % 3 == 0,
+            );
+            for op in ["plus", "minus", "mul", "div"] {
+                let expression = numeric_binary(
+                    op,
+                    &decimal,
+                    Datum::Decimal(a.clone()),
+                    Datum::Decimal(b.clone()),
+                );
+                let baseline = Session::default();
+                let context = Session::default();
+                let expected = expression.eval(&baseline, input.physical_row(0));
+                let actual = SharedExpression::compile(&expression)
+                    .unwrap()
+                    .evaluate_with_context(
+                        &input,
+                        &[2, 0, 2],
+                        &mut EvalContext::default(),
+                        &context,
+                        InvocationMode::Vector,
+                    );
+                match expected {
+                    Ok(expected) => {
+                        for actual in actual.unwrap() {
+                            if expected == Datum::Null {
+                                assert_eq!(actual, Datum::Null);
+                            } else {
+                                assert_same_decimal(&actual, &expected);
+                            }
+                        }
+                        assert_eq!(
+                            *context.warnings.borrow(),
+                            (0..3)
+                                .flat_map(|_| baseline.warnings.borrow().clone())
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                    Err(error) => assert_native_error(actual.unwrap_err(), error),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_string_real_cast_matches_original_prefix_policy() {
+        let real = FieldType::new(tidb_datatype::FieldTypeCode::Double);
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        for bytes in [
+            b"".to_vec(),
+            b"1e".to_vec(),
+            b"1e+".to_vec(),
+            b"1e999x".to_vec(),
+            b"-1e999".to_vec(),
+            b"1\0suffix".to_vec(),
+            b"\0".to_vec(),
+            b".2x".to_vec(),
+            b"--2".to_vec(),
+            [b"12".as_slice(), &[0xff]].concat(),
+            "  ".as_bytes().to_vec(),
+            "\u{2003}1x\u{2003}".as_bytes().to_vec(),
+            format!("1{}", "é".repeat(80)).into_bytes(),
+        ] {
+            let expr = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("plus"),
+                real.clone(),
+                vec![
+                    numeric_literal(Datum::new_string(bytes), &native_type()),
+                    numeric_literal(Datum::Real(0.0), &real),
+                ],
+            ));
+            for strict in [false, true] {
+                let baseline = Session {
+                    strict,
+                    ..Session::default()
+                };
+                let context = Session {
+                    strict,
+                    ..Session::default()
+                };
+                let expected = expr.eval(&baseline, input.physical_row(0));
+                let actual = SharedExpression::compile(&expr)
+                    .unwrap()
+                    .evaluate_with_context(
+                        &input,
+                        &[0],
+                        &mut EvalContext::default(),
+                        &context,
+                        InvocationMode::Vector,
+                    );
+                match expected {
+                    Ok(value) => assert_eq!(actual.unwrap(), vec![value]),
+                    Err(error) => assert_native_error(actual.unwrap_err(), error),
+                }
+                assert_eq!(*baseline.warnings.borrow(), *context.warnings.borrow());
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_full_real_columns_and_wide_null_demand() {
+        let real = FieldType::new(tidb_datatype::FieldTypeCode::Double);
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let mut input = Chunk::new(&[real.clone()], 8, 8);
+        for row in 0..8 {
+            if row == 2 {
+                input.append_null(0);
+            } else {
+                input.append_float64(0, f64::from_bits(0xfff8000000000042));
+            }
+        }
+        let mut column = Column::new(1, real.clone());
+        column.index = 0;
+        let expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            real.clone(),
+            vec![
+                numeric_literal(Datum::Int(1), &integer),
+                Expression::Column(column),
+                numeric_literal(Datum::Real(0.0), &real),
+            ],
+        ));
+        let result = SharedExpression::compile(&expr)
+            .unwrap()
+            .evaluate(&input, &[7, 2, 7], &mut EvalContext::default())
+            .unwrap();
+        assert_eq!(result[1], Datum::Null);
+        for i in [0, 2] {
+            let Datum::Real(value) = result[i] else {
+                panic!("full Real required");
+            };
+            assert_eq!(value.to_bits(), 0xfff8000000000042);
+        }
+        for op in ["plus", "minus", "mul", "div"] {
+            let expr = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(op),
+                real.clone(),
+                vec![
+                    numeric_literal(Datum::Null, &real),
+                    numeric_binary("mul", &real, Datum::Real(f64::MAX), Datum::Real(2.0)),
+                ],
+            ));
+            let baseline = expr.eval(&crate::context::NoColumns, input.physical_row(0));
+            let compiled = SharedExpression::compile(&expr).unwrap();
+            let scalar = compiled.evaluate_mode(
+                &input,
+                &[0],
+                &mut EvalContext::default(),
+                InvocationMode::Scalar,
+            );
+            if op == "plus" {
+                assert_native_error(scalar.unwrap_err(), baseline.unwrap_err());
+            } else {
+                assert_eq!(baseline, Ok(Datum::Null));
+                assert_eq!(scalar.unwrap(), vec![Datum::Null]);
+            }
+            assert_eq!(
+                compiled
+                    .evaluate_mode(
+                        &input,
+                        &[0],
+                        &mut EvalContext::default(),
+                        InvocationMode::Vector
+                    )
+                    .unwrap_err()
+                    .code,
+                Some(1690)
+            );
+        }
+    }
+
+    #[test]
+    fn shared_kernel_decimal_arithmetic_exact_parts_and_policy() {
+        use tidb_datatype::Decimal;
+        let decimal = FieldType::new(tidb_datatype::FieldTypeCode::NewDecimal);
+        let mut input = Chunk::new(&[], 8, 8);
+        input.set_num_virtual_rows(8);
+        let d = |s: &str| Datum::Decimal(Decimal::from_signed_literal(s));
+        let p = format!("81{}", "0".repeat(79));
+        let d8 = Decimal::from_int(8)
+            .true_div(&Decimal::from_int(7), 7)
+            .unwrap();
+        let d9 = Decimal::from_int(9)
+            .true_div(&Decimal::from_int(7), 7)
+            .unwrap();
+        let cases = vec![
+            ("plus", d(&format!("{}.5", "9".repeat(40))), d("0.25")),
+            (
+                "plus",
+                Datum::Decimal(Decimal::from_literal("1.50").with_declared_shape(50, 2)),
+                d("0.00"),
+            ),
+            ("plus", Datum::Decimal(d8), Datum::Decimal(d9)),
+            (
+                "minus",
+                d(&format!("1{}", "0".repeat(81))),
+                d(&format!("1{}", "0".repeat(81))),
+            ),
+            ("plus", d(&p), d(&p)),
+            ("minus", d(&p), d(&format!("-{p}"))),
+            ("mul", d(&p), d(&p)),
+            ("div", d(&p), d("0.1")),
+            ("plus", d(&format!("999999999{}", "0".repeat(72))), d("1")),
+            ("mul", d("1.234567890123456789"), d("9.876543210987654321")),
+            (
+                "div",
+                d("10000000000000000000.000000000000000000000000000000"),
+                d("3.000000000000000000000000000000"),
+            ),
+            ("div", Datum::Null, d("3.000000000000000000000000000000")),
+        ];
+        for (case, (op, left, right)) in cases.into_iter().enumerate() {
+            let expression = numeric_binary(op, &decimal, left, right);
+            let program = SharedExpression::compile(&expression).unwrap();
+            for strict in [false, true] {
+                for mode in [InvocationMode::Scalar, InvocationMode::Vector] {
+                    let original = Session {
+                        strict,
+                        ..Session::default()
+                    };
+                    let session = Session {
+                        strict,
+                        ..Session::default()
+                    };
+                    let rows = if mode == InvocationMode::Scalar {
+                        &[7][..]
+                    } else {
+                        &[7, 2, 7][..]
+                    };
+                    let baseline = expression.eval(&original, input.physical_row(7));
+                    let actual = program.evaluate_with_context(
+                        &input,
+                        rows,
+                        &mut EvalContext::default(),
+                        &session,
+                        mode,
+                    );
+                    match baseline {
+                        Ok(expected) => {
+                            let values = actual.unwrap();
+                            for value in values {
+                                if expected == Datum::Null {
+                                    assert_eq!(value, Datum::Null);
+                                } else {
+                                    assert_same_decimal(&value, &expected);
+                                }
+                                if case == 0 {
+                                    assert_eq!(value, d(&format!("{}.75", "9".repeat(40))));
+                                }
+                                if case == 2 {
+                                    let Datum::Decimal(v) = value else {
+                                        unreachable!()
+                                    };
+                                    assert_eq!(v.div_round(2, 14).to_string(), "1.21428571350000");
+                                }
+                            }
+                            let expected_warnings = (0..rows.len())
+                                .flat_map(|_| original.warnings.borrow().clone())
+                                .collect::<Vec<_>>();
+                            assert_eq!(
+                                *session.warnings.borrow(),
+                                expected_warnings,
+                                "case {case}"
+                            );
+                        }
+                        Err(error) => assert_native_error(actual.unwrap_err(), error),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_kernel_projection_session_vector_switch() {
+        let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let constant = |v| Expression::Constant(Constant::new(v, integer.clone()));
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            integer.clone(),
+            vec![
+                constant(Datum::Null),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("mul"),
+                    integer.clone(),
+                    vec![constant(Datum::Int(i64::MAX)), constant(Datum::Int(2))],
+                )),
+            ],
+        ));
+        for vectorized_off in [false, true] {
+            let context = Session {
+                vectorized_off,
+                ..Session::default()
+            };
+            let mut input = Chunk::new(&[], 2, 2);
+            input.set_num_virtual_rows(2);
+            let mut output = Chunk::new(&[integer.clone()], 2, 2);
+            let original = crate::evaluator::EvaluatorSuite::new(vec![expression.clone()], false)
+                .run(&context, &mut input, &mut output);
+            assert_eq!(original.is_ok(), vectorized_off);
+            if vectorized_off {
+                assert!(output.get_row(0).is_null(0));
+            }
+            let actual = SharedProjection::compile(&[expression.clone()])
+                .unwrap()
+                .evaluate(&input, &[0, 1], &mut EvalContext::default(), &context);
+            assert_eq!(actual.is_ok(), vectorized_off, "{actual:?}");
+            if vectorized_off {
+                assert_eq!(actual.unwrap(), vec![vec![Datum::Null; 2]]);
+            }
+        }
+        // Disabling root vectorization must preserve column-major RAND traversal.
+        let rand = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("rand"),
+            FieldType::new(tidb_datatype::FieldTypeCode::Double),
+            vec![],
+        ));
+        let mut input = Chunk::new(&[], 2, 2);
+        input.set_num_virtual_rows(2);
+        assert_eq!(
+            SharedProjection::compile(&[rand.clone(), rand])
+                .unwrap()
+                .evaluate(
+                    &input,
+                    &[0, 1],
+                    &mut EvalContext::default(),
+                    &Session {
+                        vectorized_off: true,
+                        ..Session::default()
+                    }
+                )
+                .unwrap(),
+            vec![
+                vec![Datum::Real(0.125), Datum::Real(0.25)],
+                vec![Datum::Real(0.375), Datum::Real(0.5)]
+            ]
+        );
+    }
+
+    #[test]
+    fn shared_kernel_variable_storage_admission() {
+        use crate::context::Columns;
+        let text = |s: &str| {
+            Expression::Constant(Constant::new(
+                Datum::new_string(s.as_bytes()),
+                native_type(),
+            ))
+        };
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("setvar"),
+            native_type(),
+            vec![
+                text("copy"),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("getvar_string"),
+                    native_type(),
+                    vec![text("v")],
+                )),
+            ],
+        ));
+        let shared = SharedProjection::compile(&[expression.clone()]).unwrap();
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        for value in [
+            Datum::new_string(b"abc"),
+            Datum::new_bytes(b"abc"),
+            Datum::new_collation_string(b"abc", tidb_datatype::Collation::Binary),
+        ] {
+            let baseline = Session::default();
+            baseline.set_uservar("v", value.clone());
+            expression.eval(&baseline, input.physical_row(0)).unwrap();
+            assert_eq!(baseline.get_uservar("copy"), Some(value.clone()));
+            let session = Session::default();
+            session.set_uservar("v", value.clone());
+            let result = shared.evaluate(&input, &[0], &mut EvalContext::default(), &session);
+            if value == Datum::new_string(b"abc") {
+                result.unwrap();
+                assert_eq!(session.get_uservar("copy"), Some(value));
+            } else {
+                assert!(
+                    result.is_err(),
+                    "unsupported stored carrier must be rejected: {value:?}"
+                );
+                assert_eq!(session.get_uservar("copy"), None);
+            }
+        }
     }
 
     #[test]
@@ -1886,6 +2712,41 @@ mod tests {
         ] {
             assert!(RpnExpression::finish(nodes, &[], FieldTypeTp::LongLong.into()).is_err());
         }
+        let bytes = || RpnExpressionNode::Constant {
+            value: ScalarValue::Bytes(None),
+            field_type: FieldTypeTp::VarString.into(),
+        };
+        for (target, count) in [(99, 1), (1, 1), (3, 0), (3, 2)] {
+            assert!(RpnExpression::finish(
+                vec![
+                    bytes(),
+                    RpnExpressionNode::RegexpArgument {
+                        target,
+                        count,
+                        field_type: FieldTypeTp::LongLong.into()
+                    },
+                    int()
+                ],
+                &[],
+                FieldTypeTp::LongLong.into()
+            )
+            .is_err());
+        }
+        assert!(RpnExpression::finish(
+            vec![RpnExpressionNode::ExpressionConstant {
+                value: ExpressionScalar::Decimal(Some(ExpressionDecimal {
+                    negative: false,
+                    coefficient: b"x".to_vec(),
+                    storage_scale: 0,
+                    result_scale: 0,
+                    declared_shape: None
+                })),
+                field_type: FieldTypeTp::NewDecimal.into()
+            }],
+            &[],
+            FieldTypeTp::NewDecimal.into()
+        )
+        .is_err());
         let mut program = RpnExpression::finish(
             vec![int(), branch(4, 5), int(), jump(5), int()],
             &[],

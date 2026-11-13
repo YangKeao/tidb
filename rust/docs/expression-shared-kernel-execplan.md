@@ -122,3 +122,24 @@ Session capabilities carry values/state only; flat BENCHMARK repeats reexecute
 children and preserve count/type demand.19 native and34 SDK tests pass; state
 admission is deliberately limited to integer seeds and string variables. Wide
 arithmetic, warning prefixes and remaining error adaptation still block M1.
+
+## Checkpoint 6 minimum M1 probe outcome
+
+Native full Real/Decimal arithmetic, string-to-Real warning prefixes and remaining
+probe diagnostics now run inside the shared loop.29 native probes and all429 SDK
+expression-library tests pass. A5525-file source snapshot brackets final reruns;
+scoped expression/executor Clippy completes with warnings. Final evidence and
+bounds are in shared-kernel/checkpoint-6.md; full workspace Clippy is separate.
+
+Review exposed two corrected boundaries: session vector mode is independent of
+multi-output traversal, and byte-only variable transport must reject metadata it
+cannot preserve. New comparisons also exposed native Real-plus eager NULL demand,
+full Real columns under temporary branch selections, and REGEXP sequential
+argument effects. Actual failing records precede their fixes. Decimal arithmetic
+helpers are counted even while original copies remain for the default route.
+
+M1's minimum numeric/control/state probe set is ready for review. This does not
+complete all expression signatures or justify default integration. M0 candidate
+coverage needs semantic classification; M2 requires a bounded migration and
+retirement budget. Full SQL/performance validation and old-path deletion remain
+later work; broad10K and universal-performance goals are not established.

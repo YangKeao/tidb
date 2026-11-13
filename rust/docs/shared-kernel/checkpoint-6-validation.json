@@ -1,0 +1,88 @@
+{
+  "source_inputs": {
+    "count": 5525,
+    "sha256": "6a8b5f6ac419862238d5d408b7c87af140c903c45644bde51c9fc040753dd54f"
+  },
+  "native_tests": {
+    "passed": 29,
+    "failed": 0,
+    "filtered": 1323
+  },
+  "sdk_expression_library_tests": {
+    "passed": 429,
+    "failed": 0,
+    "filtered": 0
+  },
+  "scoped_clippy": "completed with warnings",
+  "official_clippy": "incomplete; first attempt failed direct cargo +toolchain dispatch; corrected invocation terminated during deny setup after session interruption; no final workspace check result",
+  "logs": [
+    {
+      "name": "checkpoint6-native-frozen.log",
+      "sha256": "434492ccb776ab87971544fd20db227ba1964d84fe175a404b2db993600e8d97"
+    },
+    {
+      "name": "checkpoint6-sdk-frozen.log",
+      "sha256": "af795451459acea913cf963bf68835549b083f4c99397676466ffe102f51be78"
+    },
+    {
+      "name": "checkpoint6-clippy.log",
+      "sha256": "a17d29e3e6f9983a9b47c5e8b0605c8c8aa1b7536b1184be42dfb863b7773ca2"
+    },
+    {
+      "name": "checkpoint6-official-clippy.log",
+      "sha256": "1e04dd96e0b71b0336bd7debdb8c7e3454b44c603e69b1d62782411fa80ca44c"
+    },
+    {
+      "name": "checkpoint6-official-clippy-2.log",
+      "sha256": "8b4f035588b449f6641659a0b3c3f53c24d599e6bd4fc66b75b33d22e3104025"
+    },
+    {
+      "name": "session-boundary-before-2.log",
+      "sha256": "5673b974d7ebcb4bea050d418919a3c0afc8aa33a06589771794d92ffb05ecf9"
+    },
+    {
+      "name": "session-boundary-after.log",
+      "sha256": "4e0f432f0ea1a127b3bba2d3981d5dbe834704417b4082fe1c4df86b68e45f1b"
+    },
+    {
+      "name": "regexp-rand-before.log",
+      "sha256": "3d5c527e30d151e3a8e90787e18623a00131f6947bef4f190f3e1f1212d695f2"
+    },
+    {
+      "name": "regexp-demand-rand-before.log",
+      "sha256": "d5835731801fbe8078a1c8d71bbc01186aafc6d661a7b69406e5bf5cfc592aeb"
+    },
+    {
+      "name": "regexp-demand-after-2.log",
+      "sha256": "38012074454b1b8f7465f7c91518e3634bb200dd232d6f6d9573144c739eaad1"
+    },
+    {
+      "name": "numeric-boundaries.log",
+      "sha256": "301b0b85cf08363d5070275ad20811b3cb1f7496b877c626eb7e7c8de287053b"
+    },
+    {
+      "name": "numeric-boundaries-2.log",
+      "sha256": "c2e7a327363c8434d5d47ab8c595385b94ed024817d4435e7e1244fd78a66c81"
+    },
+    {
+      "name": "real-plus-null-before.log",
+      "sha256": "2fd5191c2cc2ae33af2d5e13e6dd826f770115d6751df9262009288af5f4fe13"
+    },
+    {
+      "name": "real-plus-null-after.log",
+      "sha256": "bb414821f4c9b4e5db8104e11a9c2c3b2d5c6651c39757c7eb3bf42e4a634879"
+    }
+  ],
+  "test_artifacts_observed_after_resume": [
+    {
+      "name": "tidb_expr-77e223b0120dd4db",
+      "sha256": "e6c8347726f0ca05beeb5b8aacdfb1d8b3be70f22d86191876e38a529787846d",
+      "bytes": 245858520
+    },
+    {
+      "name": "tidb_query_expr-6140ab0df246d126",
+      "sha256": "18bd456ae4b61de5bb2fc4a4f40198847ca19841c25cb9b6df4cdf6a3c39d1ea",
+      "bytes": 50536488
+    }
+  ]
+}

@@ -499,7 +499,7 @@ fn integer_division_overflow(
 /// in an arithmetic overflow. Resolved columns and nested arithmetic
 /// functions retain their source names and shape; unknown expression kinds
 /// keep the caller's safe fallback instead of inventing a display string.
-fn arithmetic_overflow_expression(
+pub(crate) fn arithmetic_overflow_expression(
     function: &ScalarFunction,
     op: tidb_ast::BinaryOp,
     go_float_format: bool,
