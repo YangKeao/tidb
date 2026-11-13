@@ -56,6 +56,37 @@ pub struct Time {
     fsp: u8,
 }
 
+/// Clock handling for the pure DATE value operation.
+#[derive(Clone, Copy, Debug)]
+pub enum DateClockPolicy {
+    /// Clear all clock fields, including an existing Date's hidden clock.
+    Clear,
+    /// Keep hidden clock fields only when the input is already a Date.
+    PreserveExistingDate,
+}
+
+/// Frontend-specific zero and clock policy; diagnostics stay at the caller.
+#[derive(Clone, Copy, Debug)]
+pub struct DateValuePolicy {
+    /// Reject an entirely zero calendar and clock.
+    pub reject_zero: bool,
+    /// Reject a nonzero value with zero month or day.
+    pub reject_partial_zero: bool,
+    /// Whether an existing Date retains hidden clock fields.
+    pub clock: DateClockPolicy,
+}
+
+impl DateValuePolicy {
+    /// Native DATE uses SQL modes and always clears clock fields.
+    pub fn native(modes: crate::DateModes) -> Self {
+        Self {
+            reject_zero: modes.no_zero_date,
+            reject_partial_zero: modes.no_zero_in_date,
+            clock: DateClockPolicy::Clear,
+        }
+    }
+}
+
 /// Parsed trailing timezone fields from a temporal literal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimezoneSuffix {
@@ -209,6 +240,25 @@ impl Time {
             kind,
             fsp,
         )
+    }
+
+    /// Applies DATE to the original value, before frontend diagnostic mapping.
+    pub fn date_value(mut self, policy: DateValuePolicy) -> Option<Self> {
+        // Decide all-zero versus partial-zero before clearing hidden clock fields.
+        if if self.is_zero() {
+            policy.reject_zero
+        } else {
+            self.invalid_zero() && policy.reject_partial_zero
+        } {
+            return None;
+        }
+        if matches!(policy.clock, DateClockPolicy::Clear) || self.kind != TimeType::Date {
+            let core = self.core;
+            self.core =
+                CoreTime::from_date(core.year() as u16, core.month(), core.day(), 0, 0, 0, 0);
+        }
+        self.set_kind(TimeType::Date);
+        Some(self)
     }
 
     /// Returns the internal calendar fields.
@@ -883,6 +933,54 @@ pub fn format_int_width(value: i32, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_value_policy_preserves_frontend_contracts() {
+        let native = DateValuePolicy::native(crate::DateModes {
+            no_zero_date: false,
+            no_zero_in_date: true,
+            ..crate::DateModes::TIDB_DEFAULT_SQL_MODE
+        });
+        assert!(Time::new(CoreTime::default(), TimeType::DateTime, 0)
+            .unwrap()
+            .date_value(native)
+            .is_some());
+        let clock_zero = Time::new(
+            CoreTime::from_date(0, 0, 0, 1, 0, 0, 0),
+            TimeType::DateTime,
+            0,
+        )
+        .unwrap();
+        assert!(clock_zero.date_value(native).is_none());
+        let pb = DateValuePolicy {
+            reject_zero: true,
+            reject_partial_zero: true,
+            clock: DateClockPolicy::PreserveExistingDate,
+        };
+        assert!(Time::new(CoreTime::default(), TimeType::DateTime, 0)
+            .unwrap()
+            .date_value(pb)
+            .is_none());
+        let hidden = CoreTime::from_date(2024, 2, 31, 12, 34, 56, 123456);
+        for tag in [0, 6, 13, 14, 15] {
+            let time = Time::from_go_raw_like_go(hidden.raw() | tag);
+            let result = time.date_value(native).unwrap();
+            assert_eq!(
+                result.core_time(),
+                CoreTime::from_date(2024, 2, 31, 0, 0, 0, 0)
+            );
+            assert_eq!(result.kind(), TimeType::Date);
+            assert_eq!(result.fsp(), 0);
+            assert_eq!(
+                time.date_value(pb).unwrap().core_time(),
+                if tag == 14 {
+                    hidden
+                } else {
+                    result.core_time()
+                }
+            );
+        }
+    }
 
     #[test]
     fn test_codec() {

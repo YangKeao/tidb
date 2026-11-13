@@ -213,7 +213,8 @@ pub use mydecimal::{
 };
 pub use mysql_time::{
     core_time_from_datetime, date_fsp, format_int_width, get_frac_index, get_fsp, get_timezone,
-    round_datetime_fraction, truncate_datetime_fraction, Time, TimeError, TimeType, TimezoneSuffix,
+    round_datetime_fraction, truncate_datetime_fraction, DateClockPolicy, DateValuePolicy, Time,
+    TimeError, TimeType, TimezoneSuffix,
 };
 pub use numeric_helper::{
     decimal_length_to_precision, get_max_float, precision_to_length_no_truncation, round,
