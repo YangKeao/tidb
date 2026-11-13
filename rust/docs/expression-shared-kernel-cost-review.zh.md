@@ -1,6 +1,6 @@
 # 成本复审与底层算法复用：下一步设计
 
-当前结论是：**保留一个共享表达式执行循环和原底层算法所有者；已接纳表达式的显式执行状态改造通过限定复审，下一批验证DATE的类型化完整调用链。** 下文按固定版本保留历史审查和当时范围，已结束的阶段不构成新的等待条件；当前结论、证据边界与下一批接口在末两节。完整范围、默认SQL、性能和10K目标尚未证明。
+当前结论是：**保留一个共享表达式执行循环和原底层算法所有者；显式执行状态及类型化DATE完整调用链已通过限定复审，下一批补现有REGEXP_LIKE的按需准备状态。** 下文按固定版本保留历史审查和当时范围，已结束的阶段不构成新的等待条件；当前结论、证据边界与下一批接口在末两节。完整范围、默认SQL、性能和10K目标尚未证明。
 
 这是设计与固定源码审查，不是替代实现的验收。完整245族、默认入口、旧执行器退役和性能目标均未完成。人类要求的10K数量级仍是目标；本轮没有证明它可达，也没有证明它不可能。
 
@@ -502,7 +502,7 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 ## 完整预算前提更新：保留原所有者，未完成部分仍需定价
 
 
-以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45复审后用babdd5c9／c2ef52b8更新input_lifecycle行和当前端点，其余行无新增覆盖结论。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。当前实际源码测试8620／全部29914行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
+以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45更新执行状态，task46以dad1610309／00106bee更新类型化DATE触及的temporal、cast、control及输入输出／engine事实，其余行不领取新增覆盖信用。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。当前实际源码测试9616／全部31419行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
 
 | 原组ID | 当前状态／改变的前提 | 已付事实与未闭合部分 | 本行唯一成本归属 |
 | --- | --- | --- | --- |
@@ -510,20 +510,20 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 | math | 原假设保留，未重估 | Go专用exp/log/trig仍在原expr；不可因datatype可依赖便视为已共享 | 数学主体；RAND状态归input_lifecycle |
 | string | 下层primitive可保留，表达式策略未共享 | 编码／GoString已有所有者；StrUnits、完整载体、packet和coercion仍待接入 | 字符串签名策略；字符集转换引用convert_charset |
 | pattern | 原假设保留，局部已付 | 已有REGEXP需求／诊断探针保留；全LIKE／替换语义与缓存有效期未闭合 | 匹配／替换主体；缓存寿命归input_lifecycle |
-| temporal | 搬迁前提需改，非零语义成本 | 原Time／解析primitive无需复制；DATE策略、两端时间载体、FSP／DST／clock未统一 | 时间值算法／策略；共用输入转换引用cast |
+| temporal | 类型化DATE原owner复用已证 | 原Time、共用DATE值算法和明确零值／clock政策已付；其他时间函数、解析和DST仍未闭合 | 时间值算法／策略；共用输入转换引用cast |
 | json | 搬迁前提需改，完整所有者未定 | 原BinaryJSON／path可保留；native serde修改与SDK Json仍非共同执行体 | JSON值／路径／呈现；schema服务归exceptions |
 | crypto | 原假设保留，未重估 | 已有MD5路径沿用；AES需求、mode／IV、压缩错误仍需适配 | 加密压缩主体；密码服务归exceptions |
 | network | 原假设保留，未重估 | 本次无新覆盖信用；地址格式、错误NULL和字节宽度仍须证明 | 网络地址转换／比较；与comparison不重计 |
 | vector | 原假设保留，未重估 | 既有vector库不必搬；完整载体、维度／NaN合同未验证 | 向量运算主体；载体转换归cast |
 | misc | 原假设保留，未重估 | UUID／grouping／identity完整值语义未因Decimal复用而完成 | 杂项值函数／metadata；外部服务归exceptions |
 | comparison | 原假设保留，未重估 | datatype比较／collation可保留；IN准备、混合类型及需求仍未闭合 | 比较／集合算法；通用转换引用cast |
-| control | 共享循环局部已付 | 现有IF／需求／模式已付；CASE／COALESCE和完整分支域未完成 | 组合／需求；旧dispatcher退役归integration |
-| cast | 精确primitive复用已证，全部类型未闭合 | String→Real、类型化Decimal参数转换／完整数值载体已付；time／JSON／enum等仍有源签名策略 | 共用值转换／载体，一次计入供各组引用 |
+| control | 共享循环局部已付 | 现有IF／需求／模式及Time分支保真已付；CASE／COALESCE和完整分支域未完成 | 组合／需求；旧dispatcher退役归integration |
+| cast | 精确primitive复用已证，全部类型未闭合 | String→Real、类型化Decimal参数／完整数值载体及Time恒等输入已付；完整时间转换／JSON／enum仍有源签名策略 | 共用值转换／载体，一次计入供各组引用 |
 | convert_charset | 原假设保留，未重估 | 旧表本来就保留字符集／collation表；不能再把“不复制表”算新节省 | CONVERT／binary政策及编码适配 |
 | exceptions | 原五项保留，未重估 | codec／parser／password库仍原所有者；schema尚含Expression求值和懒外部引用 | 五项具体服务能力／错误桥接，不搬服务本体 |
 | input_lifecycle | 列／typed参数／已接纳有种子执行状态已付 | 显式owner跨批延续／新执行重建已证；完整缓存寿命、correlation和默认集成未闭合 | 跨族绑定／状态寿命；task45实际端点已计，不重复估价 |
-| integration | 显式输入输出已付，默认与退役未付 | owned/direct根输出已付；eval_expression_once仍进入原eval，默认AST/PB／Unistore等未切换 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
-| engine | 单RPN及分发依赖已付，剩余范围未定价 | 共用循环、独立表达式包固定Git构建已证；完整签名映射、嵌套PB退役与全workspace检查未完成 | 共享程序／验证／构建余项，不重复计各组算法 |
+| integration | 显式输入输出已付，默认与退役未付 | 含Time的owned/direct根输出已付；eval_expression_once仍进入原eval，默认AST/PB／Unistore等未切换 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
+| engine | 单RPN及分发依赖已付，剩余范围未定价 | 共用循环、类型化NativeDate分发及独立表达式包固定Git构建已证；完整签名映射、嵌套PB退役与全workspace检查未完成 | 共享程序／验证／构建余项，不重复计各组算法 |
 
 状态“未重估”不表示零成本或接受旧区间为当前上限；一处未来帮助函数只有表中一个成本归属，其余行引用。没有逐行删除闭包前，不给原始代码退役额度。已有datatype源码原地被调用可以是零算法搬迁量；尚在expr的函数不能据此声称已是公共leaf。
 
@@ -610,3 +610,46 @@ owned结果恢复原Datum::Time；direct的目标布局检查为三种时间声�
 前版1aef4f1e的“Chunk拒绝FSP7”描述有误，已撤回。Engineer的“应panic”测试实际失败后，Designer重新展开固定源码：[check_fsp](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-datatype/src/fsp.rs#L68)对大于6的值返回6，Time::new使用该结果；[Column::get_time](https://github.com/YangKeao/tidb/blob/ae8a20aa4945a4da6ca9f15c5baf2caa3734c67c/rust/crates/tidb-chunk/src/column.rs#L626)经from_go_raw走这条链。低四位15经native unchecked解码是Timestamp/FSP7，经Chunk原getter是同core的Timestamp/FSP6，经SDK语义解码则是Date/FSP0。原始基线的这三份文件相同，不能因构造函数名带checked就推断为拒绝。
 
 本批范围b9f2f967不变，工程侧继续实现；验收改为独立断言常量／owned载体保留7、原Chunk写入位保留且读回钳到6、DATE结果为Date/FSP0。共享真实列继续调用原getter，不复制钳制算法；用裸时间列或恒等IF的结果直接断言FSP6，只有DATE结果的FSP0无法辨认输入是否错误绕过钳制。“应panic”失败作为被否定的设计前提保留，不标成产品回归。完整native表达式若在该unchecked值的其他格式化路径已有失败，需保留失败并明确typed DATE直接对照的证明边界，不能把它计为完整native表达式通过。此次更正只验证固定源码调用链和文档，没有重跑产品测试；51项共享通过仍是工程侧的中间报告，待固定交付复审。
+
+## 类型化DATE复审：原值算法与共享求值链成立
+
+固定TiDB源码`6d88afb6a313ecf2f16fc676741cbeba9e2e7af9`、[报告dad1610309](https://github.com/YangKeao/tidb/blob/dad1610309f814213c32f98e3d990c43e809aa02/rust/docs/shared-kernel/typed-date.zh.md)，SDK`00106bee21d25fbf9ce18475a0400bebeaf4cdff`，原datatype来源`b6630d7bdeeccffa5262f5362bcb5cf88e6cec6b`。固定源码及留存证据复审未发现本批接纳路径的新缺陷，接受task #46限定实现；b9f2f967的本批范围结束。Designer未运行产品构建、测试或性能测量，本节结论来自源码、日志、哈希、构建图及Git端点审计。
+
+[Time::date_value](https://github.com/YangKeao/tidb/blob/6d88afb6a313ecf2f16fc676741cbeba9e2e7af9/rust/crates/tidb-datatype/src/mysql_time.rs#L245)在清时钟前区分全零和部分零；原native包装器和共享NativeDate使用DateModes及总清时钟政策，[PB包装器](https://github.com/YangKeao/tikv/blob/00106bee21d25fbf9ce18475a0400bebeaf4cdff/components/tidb_query_expr/src/impl_time.rs#L61)使用两个拒绝位及保留已有Date隐藏时钟政策。两端已删除各自的DATE值处理片段，诊断仍归原入口。SDK表达式层按语义kind/FSP和日历高位桥接，SDK datatype仅新增明确为unchecked内存位的访问方法；没有复制Time、引入存储packed／时区往返或让SDK datatype反向依赖原datatype。
+
+共享Time常量、真实列、IF汇合及owned/direct输出直接使用原Time。DATE前的字面NULL特例也先拒绝array；参数、deferred和除NULL外的非Time实际字面值仍被整根拒绝。新增result_type保存完整native返回声明，内部PB类型只选择执行家族；IF不按结果声明改写选中值。NativeDate进入原帧循环及OrderedRows，每个需求行分别执行政策；三行重复选择产生三次诊断。新增错误恢复用例是无种子会话RAND在DATE错误前推进、目标不变、同执行下一批继续，不能把它扩大成取消或所有缓存寿命证明。
+
+unchecked裸常量保留Timestamp/FSP7；原getter及owned列输出断言保留core/kind并将FSP7读成6，direct列输出也断言FSP6，DATE的FSP0没有掩盖输入差异。旧完整Expression在FSP7上的Display panic保留为失败，修正后的旧入口对照只对该值直接调用typed DATE；因此没有任意FSP7 SQL兼容、存储无损往返或旧panic已修复的结论。PB hidden-clock/raw15测试通过合成PB签名构造FnCall并执行原RPN，支持表达式调用链，不是实际存储集成证明。
+
+79份记录摘要及5527项固定后缀输入逐项吻合，输入摘要`39b41e5b18b46b8b1e03e8cc55bf44f095420821434d6ca200bb445aabf7847c`。源码至报告只变更五份材料，输入集合不变。两图各有五个唯一原owner，172份owner文件／资源和1421项SDK输入相同；独立SDK干净、无相邻TiDB和alternates。所选后缀、metadata及资源比较不是完整构建闭包，本批也没有固定性能二进制。
+
+最终53项shared、34项原Time、21项原生时间及1项DATE来源行、432项独立SDK表达式和1项SDK位接口测试均有退出0及成功终态；受影响库Clippy有警告，格式／根lint成功。两项旧入口固定预期有成功记录；其中PB脚本与最终测试除格式外一致，native因FSP7格式化失败调整过对照入口。未留存修正后before-native的完整源码快照及逐次输入清单，脚本、日志和本地时间顺序仅支持提取前运行的记录，不能冒充不可变的逐次构建证明。独立预期断言、原实现差异审查仍支持本次有限语义结论。
+
+“Chunk应panic”的51过／1败是否定设计前提；array NULL则是接纳缺陷的失败→修正记录。Main工作区误跑外部SDK测试、codec/common错误类型、测试API／Chrono替换、PB错误前缀等失败也已保留。完整SDK Clippy未重跑，沿用task43的19项公告失败；全产品、executor/session及新性能未在本批验证。
+
+| 固定端点 | 生产新增／删除 | 测试新增／删除 | 构建新增／删除 | 材料新增／删除 | 全部新增／删除 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 本批task46 | 293／33 | 678／0 | 6／6 | 509／0 | **1486／39** |
+| 原始两仓至固定版 | 3925／320 | 5367／4 | 1990／103 | 19710／0 | **30992／427** |
+
+本批全部增删**1525**，其中生产测试1004；相对原始基线源码测试**9616**、全部**31419**。这是默认Git diff的固定端点结果，不是历史批次相加，也未排除测试或材料。DATE证明一条时间调用链能够保留原所有者并共享求值；其余时间、JSON、完整签名、默认接入及旧运行时退役仍未闭合。18组表仅更新实际触及部分，不把这一单函数成本线性外推为全部245族，更不宣称10K目标已经可达。
+
+## 下一批：现有REGEXP_LIKE的按需准备与执行对象寿命
+
+依据Designer消息871fddab-349e-491a-a53b-5dbc182ef299，由ExpressionReuseEngineer在同一任务中实现并验证，Designer负责范围，到固定结果复审结束。目标是已接纳native REGEXP_LIKE首次真正需要时才编译，后续批次和BENCHMARK复用同一执行内的编译结果，新执行不沿用旧缓存。这里只处理严格字面pattern及省略／严格字面match_type，继续现有默认UTF-8声明和函数范围；列、变量、MD5等非字面来源继续不缓存，不扩大参数或字符集接纳。无默认SQL、全正则迁移、跨执行缓存或性能矩阵工作。
+
+当前[共享native_regexp_like](https://github.com/YangKeao/tikv/blob/00106bee21d25fbf9ce18475a0400bebeaf4cdff/components/tidb_query_expr/src/impl_regexp.rs#L101)每次调用build_regexp；[原native入口](https://github.com/YangKeao/tidb/blob/6d88afb6a313ecf2f16fc676741cbeba9e2e7af9/rust/crates/tidb-expr/src/scalar_function.rs#L1486)在顺序求参及UTF-8检查后，通过[原缓存](https://github.com/YangKeao/tidb/blob/6d88afb6a313ecf2f16fc676741cbeba9e2e7af9/rust/crates/tidb-expr/src/regexp.rs#L81)按语句上下文保存成功或失败。原native的ONLY_IN_CONTEXT范围比本批字面范围宽；后者是明确的保守缓存子域，不宣称已取代全部原缓存。SDK [PB init_regexp_data](https://github.com/YangKeao/tikv/blob/00106bee21d25fbf9ce18475a0400bebeaf4cdff/components/tidb_query_expr/src/impl_regexp.rs#L144)则在构建期准备literal pattern，错误可在构建时发生，不能一并改为native的懒准备。
+
+具体在SDK `types/expr_eval.rs`现有RpnExecution中增加私有、按本根指令位置索引的正则缓存；字段可直接存成功Regex或原生编译诊断的最小快照，不引入全局键、地址身份、上下文ID服务、LRU或通用状态注册表。每个执行对象各持一份，两个根的相同指令位置也不冲突；首次用到才分配条目，drop即释放。program仍只持冻结结构和原PB metadata，native缓存不放入program的OnceCell，不改变Send/Sync合同。已有有种子状态原行为保持，新增内存占用如实记录，不能将“少编译”写成“零分配”。正则缓存不受supports_seeded_rand控制，NoColumns也可使用；跨批复用仅由显式SharedExpressionExecution／SharedProjectionExecution保证，现有便利入口每次创建临时执行，只复用单次调用内的准备结果，无需新增公开入口。
+
+TiDB `shared_kernel.rs`中Visit::RegexpLike保留当前全部RegexpArgument守卫；仅将最后的native FnCall接成拟新增`NativeRegexpLike { args_len, cacheable, field_type }`节点，cacheable只由strict literal_value证明，不能调用旧求值器探测常量。finish按已有节点方式检查2／3个Bytes参数及Int输出。同一原帧循环消费已经求出的参数，把当前PC及本执行缓存传给SDK impl_regexp中的小型调用入口；不再写一个参数需求循环。共享现有build_regexp和is_match主体；PB wrapper、metadata_mapper和旧native表达式缓存继续原用途，不复制正则编译算法。
+
+缓存查找必须发生在原顺序求参及NULL／UTF-8守卫之后。命中成功或失败都不得省略subject或后续实际被需求参数的求值，不能越过NULL提前重放旧错误；未进入的IF分支、空选择以及subject为NULL均不初始化。BENCHMARK仍重新执行子表达式和其副作用，只复用编译结果。动态pattern／match_type不使用缓存，跨批换值仍重新编译，不做按文本内容全局记忆。
+
+缓存失败保存内层`EvaluateError::Custom { code, msg }`的字段，每次需求重建同一Custom返回；禁止保存外层Error的Display后再包装，否则会多出“Evaluate error:”前缀。当前通过UTF-8守卫后的native编译错误是既有1105诊断；若出现其他／Storage错误，按原错误返回且不缓存，不为此重写公共错误类型。第一次失败、缓存失败和后续不同错误的code／文本及需求数量都须保持；重复报错不是抑制诊断。普通错误丢弃本次临时值而保留此执行已有编译结果和已发生效果，direct仍在全部根成功后才改目标。
+
+验证复用现有shared_kernel、原native regexp和SDK regexp测试。用局部测试计数器或私有状态断言证明同节点跨行／跨Chunk／BENCHMARK只准备一次，两个相同模式节点、两个根和同程序两个执行各自独立；新执行从未准备状态开始。计数不得变成生产遥测或进程全局易受并行干扰的测试开关。先保存当前确实重复准备的可运行见证，不能拿旧版缺新API的编译失败充数；若同一测试无法链接旧API，则保留旧调用日志和独立预期，明确证据边界。
+
+最小语义反例包括：空／死分支不初始化；subject NULL或坏UTF-8使后续参数不被需求；一次非法pattern失败后，NULL subject不重放错误，下一正常subject再报相同code／文本；不同Chunk的动态pattern及match_type改变生效；两个执行交错独立；RAND／变量效果不能被缓存绕过；两种调用模式、乱序重复选择和owned/direct恢复保持。保留PB非法literal pattern原构建期报错以及动态参数原运行期行为，避免把两侧准备时机统一错。每项合并到现有套件，有限状态证据不等于SQL吞吐或完整缓存覆盖。
+
+TiDB rust/运行现有shared_kernel定向集及受影响原regexp用例，独立SDK运行整个tidb_query_expr库测试；格式、根make lint和受影响库Clippy按声明工具链执行。工具链与已知完整SDK公告失败沿用当前记录，不为本批重复未变全workspace检查。原datatype没有改动时不要求重新pin，也不重复DATE全矩阵；仍核对实际固定来源、现有双图关系及完整新增+删除。报告分列生产／测试／构建／材料及RpnExecution静态大小变化，不另建大套计时材料。本批结论最多是这一已有签名的准备次数及生命周期成立；完整性能、M1其余缓存、245族和10K目标继续待证。若必须引入通用缓存协议或改变PB时机，交固定原型和最小反例，在该边界收束范围。
