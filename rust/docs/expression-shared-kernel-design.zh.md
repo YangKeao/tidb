@@ -10,7 +10,7 @@
 
 达到目标的关键不是把一个复杂接口写得更短，而是缩小新增机制的数量：**一个程序、一个执行循环、一种类型化值边界、每个语义一种函数实现**。原有存储格式、优化器和与表达式无关的 datatype 公共 API 留在原处；共享表达式内核不要求统一它们的全部实现。
 
-目标保持为人类提出的“总修改在 10K 数量级”。初步为核心接入和基础测试分配 13–22K 原始增删量，其余算法迁移、语义修订和旧代码删除另算，不能把这个局部预算当作全项目总量。**设计有明确的缩减路径，但完整体积尚未证明；第 6 节给出可核算的预算公式及停止条件。**
+目标保持为人类提出的“总修改在 10K 数量级”。最初为核心接入和基础测试分配13–22K原始增删量，后来全范围成本清单表明既定迁移路线缺少达到目标的证据。当前优先验证直接复用已有底层类型／算法，避免新增复制；该试验不改变完整共享表达式内核的目标。**完整体积仍未证明；第6节保留核算口径，最新边界与限定试验见[成本复审](expression-shared-kernel-cost-review.zh.md)。**
 
 ## Progress
 
@@ -26,7 +26,8 @@
 - [x] (2026-11-13) 复核975f35d / 8b59ab4：会话调用方式、Real/Decimal算术及REGEXP需求进入共享循环，固定源码与日志哈希可核对；发现乘法遗漏原快路径的隐藏精度行为、SETVAR常量仍绕过载体接纳，已交实现者修正。
 - [x] (2026-11-13) 复核4958bb6 / 3ad4dc7：Decimal隐藏精度和SETVAR载体两个问题关闭；最小数值/控制/状态机制验证通过设计审查，31native/429SDK及固定源摘要核实。
 - [ ] 完成M1其余场景及检查：参数重新绑定、完整生命周期与相关检查仍有缺口；最小机制验证不等于完整M1、全范围兼容或默认接入。
-- [ ] 将245族候选和五个例外落实为逐算法/文件的迁移、兼容修订、保留调用者及退役成本表，再审查完整规模的可达性。
+- [x] (2026-11-13) 复核9af57421成本清单：245族内含五例外，18组预算与候选18284行增删核实；发现10条测试见证误列为生产，72fedb911c修复后独立重生成327条吻合，候选全部增删变为18294。预算是工程估计，尚无逐修改片互斥／完整删除证明。
+- [ ] 先验证现有tidb-datatype底层复用：RPN直接承载原Decimal、调用原算术及String→Real primitive，移除候选重复算法，测量实际依赖／体积／性能成本；通过后重新定价时间／JSON切片。
 - [ ] 证明全部函数与入口覆盖、总改动量和性能目标；未证明前不推广到默认路径。
 
 ## Context and Orientation
@@ -40,7 +41,7 @@
 
 当前增长主要在 `tidb-expr/src/evaluator/`、`tidb-expr/src/tikv/`、SDK `src/local/`，以及 native datatype/函数适配。此前统计两仓库 Rust 总计 `+360,939/-47,904`，其中明确识别测试净增 209,121 行、其他 Rust 净增 97,419 行、docs 中探针 6,495 行；分类定义见 [现有复审](expression-10k-design-review.zh.md)。这不是“共享求值循环必然需要这么多代码”的证据。
 
-当前能力清单仍以 `rust/docs/evidence/expression-unification-final-coverage.json` 及入口清单为基准；不能从预算倒推出删除功能。此前冻结分母是 245 个函数族，240 个已有共享库算法迁移记录，另五个明确保留兼容函数。不把它表述为全部 TiDB SQL 已完整支持。
+当前能力清单仍以 `rust/docs/evidence/expression-unification-final-coverage.json` 及入口清单为基准；不能从预算倒推出删除功能。此前冻结分母是245个函数族，**包含**240个已有共享库算法迁移记录和五个明确保留兼容函数。不把它表述为全部 TiDB SQL 已完整支持。
 
 ## 1. 决定保留什么，替换什么
 
@@ -185,7 +186,7 @@ TiDB Chunk 的 Decimal 是 Go 兼容 40 字节布局，时间、duration 和字�
 | --- | --- | --- |
 | 整数 | 符号、unsigned 标志、溢出语义 | 值与完整 FieldType 一起传递，不经 f64 |
 | 浮点 | TiDB `f64` 的非有限输入和位模式合同 | 标准 TiKV `Real = NotNan<f64>` 不够；共享值层增加有明确意义的原始 f64 承载及对应函数适配，不丢 NaN |
-| Decimal | 精确系数、scale、负号、精度及舍入/溢出 | 边界使用 parts/精确表示；能无损进入原 Decimal 的走原 kernel，超域操作进入共享库内的精确兼容实现，不经字符串或 f64 中转 |
+| Decimal | 精确系数、存储／结果尺度、负号、声明形状及舍入／溢出 | 下一项试验让共享槽直接承载现有tidb-datatype::Decimal，复用已有算法；PB原存储类型保留。不得逐节点拆parts后重建，也不经字符串或f64中转 |
 | JSON | 二进制数值/字符串信息、非法编码和解析发生时机 | 保留原始 bytes 直到被需求；共用算法但不强迫先转 serde_json 文本 |
 | 文本 | 原始非 UTF-8 字节、charset/collation、PAD 规则 | bytes + FieldType；字符转换是按需表达式操作 |
 | 时间 | 时区、零日期、负 duration、FSP | 值、类型和上下文完整传递，不先格式化再解析 |
@@ -204,7 +205,7 @@ TiDB Chunk 的 Decimal 是 Go 兼容 40 字节布局，时间、duration 和字�
 
 RAND(const seed) 需要语句内、每个表达式实例独立的流；同一节点跨批继续推进，两个同种子节点不能错误合并，动态种子按原语义逐次初始化。FunctionInstanceId 由 prepared owner 分配，clone/新语句重新绑定状态；不能以物理行号、seed 或全局递增 program token 代替这种合同。它只关联函数状态，不能请求求值或认证传输。
 
-必须保留五个原有例外的真实计数，并验证它们只吃值：JSON_SCHEMA_VALID、TIDB_DECODE_PLAN、TIDB_DECODE_BINARY_PLAN、TIDB_ENCODE_SQL_DIGEST、VALIDATE_PASSWORD_STRENGTH。若本次目标要求连这五个也移到共享库，需要另记实际产品依赖与改动预算，不能自动把原 240/245 宣称成 245/245。
+五个原有例外包含在245族目标内，必须保留真实计数，并验证其外部能力只吃值：JSON_SCHEMA_VALID、TIDB_DECODE_PLAN、TIDB_DECODE_BINARY_PLAN、TIDB_ENCODE_SQL_DIGEST、VALIDATE_PASSWORD_STRENGTH。它们的表达式组合与需求仍应进入共享内核，底层服务可以保留原所有者；具体能力接入、依赖与测试照实计价。不能自动把原240/245宣称成245/245，也不把五项移出目标。
 
 准备好的 regex/JSON path 只按常量、collation 和必要配置建立缓存；含参数的 pattern 不能错误复用。**prepare 失败不等于 SQL 应立即失败**：SDK `impl_regexp.rs:97` 有常量 regex 编译，对于原合同允许抑制死分支错误的入口，builder 必须将可失败初始化延迟到该节点首次被需求，或保存待触发的错误；对于原合同规定 prepare 失败的入口，仍在 prepare 返回错误，不能一律推迟。不可变元数据保留在 program，lazy/cache 状态放 executor-owned state。第一版不承诺 `Arc<Program>: Sync`；现有 `Box<dyn Any + Send>` 也不能直接当成线程安全共享。不要为省一次初始化引入全局缓存、lease 和代次认证。
 
@@ -213,7 +214,7 @@ warning/error 的相对顺序已被人类 `2979a576` 放宽，保留实际执行
 ## 6. 改动量预算与停止条件
 
 
-以下分配用**两仓库原始新增+删除**计量，单位千行，包含注释、空行与基础测试。各行是暂定工程预算，不能冒充已有实现测量，也不是人类批准的新上限。
+以下保留最初的局部预算用于解释核算，**不再作为当前全范围预测或下一批实现额度**。用两仓库原始新增+删除计量，单位千行，包含注释、空行与基础测试。9af57421的18组工程估计预计剩余源码／测试36.47–79.76K，但不证明必需下界或保证上限；下一步先验证已有底层算法复用，再按实际diff重新定价。
 
 | 基础工作 B（不含下文迁移/额外语义/独立删除） | 原始增删预算（K 行） |
 | --- | ---: |
@@ -252,6 +253,13 @@ warning/error 的相对顺序已被人类 `2979a576` 放宽，保留实际执行
 
 2026-11-13 checkpoint7达到上述数值/控制/状态的最小机制证明；参数重绑定等完整生命周期场景和完整检查仍未完成。这一阶段性结论允许继续做覆盖与成本分析，不把未支持参数、Decimal列、字符串IF及其他类型的明确拒绝视为完整SQL支持；也不提前批准默认接入。
 
+### M1后续：先验证现有底层库复用
+
+
+固定checkpoint7仍是语义对照。先在SDK tidb_query_expr/Cargo.toml增加现有tidb-datatype的向下依赖；types/expr.rs中的ExpressionDecimal改为原Decimal的别名或薄封装，native_arithmetic.rs调用原算术／转换primitive，移除候选native_decimal.rs。TiDB shared_kernel.rs在编译时克隆原Decimal，输出时直接移动／克隆成Datum，避免每节点重建。保持当前接纳范围与PB合同，用现有反例、两个构建入口及限定release测量检查行为、依赖和分配；具体路径、验收与失败回退见[成本复审](expression-shared-kernel-cost-review.zh.md)。
+
+本试验完成并提交固定源码、完整增删与验证后重新评审；在此之前不铺开时间／JSON或整批生命周期扩展。完整检查和清单修复可独立继续。依赖边界成立后，再逐步完成M1缺口及DATE／CONVERT_TZ、JSON_SET等真实调用链，并据此重新估算后续覆盖；不以源码保留原位置推断免费兼容。
+
 ### M2：并行补齐适配与兼容
 
 
@@ -284,7 +292,7 @@ warning/error 的相对顺序已被人类 `2979a576` 放宽，保留实际执行
 
 以 release 构建比较三份二进制：原始 native、当前保留版、新候选。保留 compile/prepare 与 steady-state eval 的独立测量，再做完整 SQL CPU、p50/p95、吞吐；不能只看被 RPC 掩盖的 SQL 延迟。另测 allocation/复制量，避免 profiler 与计时同时运行。同版重复、随机/交错顺序和多个轮次用于评估波动，不将几轮 min/max 称为置信区间。性能目标仍是达到或超过原始水平，无法由减少抽象推断已经达成；发现稳定回退必须披露并定位。
 
-建议 M1 增加名含 `shared_kernel` 的定向测试；以下命令是里程碑完成后需存在的测试入口。执行时先列测试清单确认匹配数非零，零测试不能算通过。环境依赖沿用现有工具链记录，不在这次设计审查中新跑产品：
+建议 M1 增加名含 `shared_kernel` 的定向测试；以下命令是里程碑完成后需存在的测试入口。执行时先列测试清单确认匹配数非零，零测试不能算通过。环境依赖沿用现有工具链记录，不在这次设计审查中新跑产品。checkpoint7在TiDB的rust目录使用`../../tools/cargo-tidb --locked --offline`对应操作，该包装器及工具链配置应随新验证记录；以下cargo表示同等已配置入口，不能误用SDK默认旧nightly解释native最低版本：
 
     # TiKV candidate root
     cargo test -p tidb_query_expr --lib shared_kernel -- --list
@@ -293,8 +301,8 @@ warning/error 的相对顺序已被人类 `2979a576` 放宽，保留实际执行
     cargo clippy -p tidb_query_expr --all-targets
 
     # TiDB candidate root
-    cargo test --manifest-path rust/Cargo.toml -p tidb-expr --lib shared_kernel -- --list
-    cargo test --manifest-path rust/Cargo.toml -p tidb-expr --lib shared_kernel
+    cargo test --manifest-path rust/Cargo.toml -p tidb-expr --features shared-kernel --lib shared_kernel -- --list
+    cargo test --manifest-path rust/Cargo.toml -p tidb-expr --features shared-kernel --lib shared_kernel
     make lint
     git diff --check
 
@@ -342,6 +350,8 @@ regex 常量准备本身可以失败；将所有验证移到 prepare 会破坏�
 
 第六个候选显示算法快路径也可能携带可见语义：原生Decimal乘法保留隐藏精度，抽取通用分支会提前舍入，使后续除法结果不同。原始对照需覆盖嵌套运算产生的载体，直接字面值的字边界覆盖不能替代它。字符串载体拒绝也必须覆盖常量、列及状态读取等全部来源，不能只在GETVAR处检查。
 
+成本清单最大的新增／删除估计受算法所有权影响。已有tidb-datatype不依赖表达式层，却拥有当前SDK再次复制的Decimal与数值解析；优先直接共享现有所有者，比先搬迁更具体。时间／JSON仍有Columns、cast和schema递归依赖，不能照搬这一结论。
+
 ## Decision Log
 
 
@@ -373,6 +383,10 @@ Decision: 抽取表达式算法时按完整可达合同审查，包括快路径�
 Rationale: checkpoint6的乘法隐藏精度及SETVAR常量反例属于当前接纳范围，不能当作纯优化或尚未支持功能排除。
 Date/Author: 2026-11-13 / ExpressionReuseDesigner。
 
+Decision: 下一批先验证SDK直接依赖既有tidb-datatype，复用Decimal载体／算法和String→Real primitive；不先扩大整批生命周期及时间／JSON覆盖。
+Rationale: 全范围清单未支持原规模目标；已有底层库可避免实证重复，且无需另建求值器。先用限定原型测量依赖、体积与性能，再扩展。工程估计不视为新预算，完整245族目标及诊断顺序放宽不变。
+Date/Author: 2026-11-13 / ExpressionReuseDesigner。
+
 ## Outcomes & Retrospective
 
 
@@ -393,3 +407,5 @@ Date/Author: 2026-11-13 / ExpressionReuseDesigner。
 2026-11-13 checkpoint 6 更新：两个候选累计源码/测试5698行、全部16037行增删；5525项固定Git源码与快照、14份日志及两个留存二进制hash独立吻合，29native/429SDK终态核实。会话调用选择和REGEXP参数需求修复成立，Decimal乘法隐藏精度和SETVAR常量载体旁路仍待修复；最小M1不据此标为完成。完整Clippy中断并如实列为未完成；审查未独立重跑产品测试，完整范围及性能目标仍待证明。
 
 2026-11-13 checkpoint 7 更新：两项具体问题经固定源码和失败→通过记录关闭，最小机制验证通过设计审查。累计源码/测试5870行、全部16348行增删；5525项固定源码、七份日志hash及31native/429SDK终态吻合。下一轮优先落实245族完整迁移/兼容/退役成本，同时补参数重绑定、生命周期与完整检查；不得将这一局部规模外推为全项目10K证明。
+
+2026-11-13 成本复审更新：245族／18组及计数通过核对，但生产见证扫描的10条测试污染已由72fedb修复并独立复核；费用仍是工程区间，不是证实的最低成本。架构接续改为复用现有datatype所有者，先消除重复Decimal和数值解析，再讨论更广的时间／JSON边界。详见相邻成本复审；本轮仅文档与审计再生成，无产品构建、测试或性能结果。
