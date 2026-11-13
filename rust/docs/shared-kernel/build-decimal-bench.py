@@ -60,5 +60,6 @@ with (a.output/'harness.log').open('w') as log:
     if result.returncode:
         raise SystemExit(f'harness compilation failed ({result.returncode}); see {a.output}/harness.log')
 receipt = {'allocations': a.allocations, 'artifacts': artifacts, 'harness_command': command, 'profile': {'opt_level':3, 'lto':False, 'codegen_units':16}, 'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest()}
+receipt['libraries_sha256'] = {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in sorted(set(artifacts.values()) | set(rlibs.values()))}
 (a.output/'build-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
 print(binary)

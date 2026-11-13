@@ -5,7 +5,7 @@ use tidb_ast::CiString;
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, Decimal, FieldType, FieldTypeCode};
 use tidb_expr::{
-    constant::Constant, evaluator::EvaluatorSuite, expression::Expression,
+    column::Column, constant::Constant, evaluator::EvaluatorSuite, expression::Expression,
     scalar_function::ScalarFunction, shared_kernel::SharedProjection, NoColumns,
 };
 use tidb_query_datatype::expr::EvalContext;
@@ -127,20 +127,23 @@ fn binary(name: &str, left: Expression, right: Expression) -> Expression {
         vec![left, right],
     ))
 }
-fn parts(values: &[Datum]) -> Vec<(bool, String, u32, u32, Option<(i64, i64)>)> {
+fn parts(values: &[Datum]) -> Vec<Option<(bool, String, u32, u32, Option<(i64, i64)>)>> {
     values
         .iter()
         .map(|v| {
+            if v == &Datum::Null {
+                return None;
+            }
             let Datum::Decimal(v) = v else {
                 panic!("Decimal expected")
             };
-            (
+            Some((
                 v.is_negative(),
                 v.coefficient_digits().into(),
                 v.storage_scale(),
                 v.scale(),
                 v.declared_shape(),
-            )
+            ))
         })
         .collect()
 }
@@ -182,6 +185,115 @@ fn measure<T>(
     let (calls, bytes, count) = (0, 0, 0);
     println!("{case},{width},{phase},{route},{iterations},{nanos},{calls},{bytes},{count}");
 }
+// One real-column full-entry scenario; keep the constant matrix unchanged.
+fn column_bench(iterations: usize) {
+    let ty = FieldType::new(FieldTypeCode::NewDecimal)
+        .with_flen(65)
+        .with_decimal(-1);
+    let column = |index| {
+        let mut c = Column::new(index + 1, ty.clone());
+        c.index = index;
+        Expression::Column(c)
+    };
+    let expression = binary("mul", column(0), column(1));
+    let shared = SharedProjection::compile(std::slice::from_ref(&expression)).unwrap();
+    let native = EvaluatorSuite::new(vec![expression.clone()], false);
+    let width = 64;
+    let rows = (0..width).collect::<Vec<_>>();
+    let mut input = Chunk::new(&[ty.clone(), ty.clone()], width, width);
+    for r in 0..width {
+        input.append_datum(
+            0,
+            &if r % 11 == 0 {
+                Datum::Null
+            } else {
+                Datum::Decimal(Decimal::from_signed_literal(&format!(
+                    "{}{}.987654321",
+                    if r % 2 == 0 { "-" } else { "" },
+                    123456789 + r
+                )))
+            },
+        );
+        input.append_datum(1, &Datum::Decimal(Decimal::from_literal("1.000000000000")));
+    }
+    let mut ctx = EvalContext::default();
+    let expected = rows
+        .iter()
+        .map(|r| expression.eval(&NoColumns, input.physical_row(*r)).unwrap())
+        .collect::<Vec<_>>();
+    let mut output = Chunk::new(std::slice::from_ref(&ty), width, width);
+    native.run(&NoColumns, &mut input, &mut output).unwrap();
+    let native_chunk = (0..width)
+        .map(|r| output.physical_row(r).get_datum(0, &ty))
+        .collect::<Vec<_>>();
+    for effects in [&NoColumns as &dyn tidb_expr::Columns, &ScalarOnly] {
+        let actual = shared.evaluate(&input, &rows, &mut ctx, effects).unwrap();
+        assert_eq!(parts(&actual[0]), parts(&expected));
+        output.reset();
+        for v in &actual[0] {
+            output.append_datum(0, v);
+        }
+        let values = (0..width)
+            .map(|r| output.physical_row(r).get_datum(0, &ty))
+            .collect::<Vec<_>>();
+        assert_eq!(parts(&values), parts(&native_chunk));
+    }
+    output.reset();
+    for v in &expected {
+        output.append_datum(0, v);
+    }
+    assert_eq!(
+        parts(
+            &(0..width)
+                .map(|r| output.physical_row(r).get_datum(0, &ty))
+                .collect::<Vec<_>>()
+        ),
+        parts(&native_chunk)
+    );
+    measure(
+        "column_mul",
+        width,
+        "reuse",
+        "native_vector",
+        iterations,
+        || {
+            output.reset();
+            native.run(&NoColumns, &mut input, &mut output).unwrap();
+            black_box(&output);
+        },
+    );
+    measure(
+        "column_mul",
+        width,
+        "reuse",
+        "native_scalar",
+        iterations,
+        || {
+            output.reset();
+            for r in &rows {
+                output.append_datum(
+                    0,
+                    &expression.eval(&NoColumns, input.physical_row(*r)).unwrap(),
+                );
+            }
+            black_box(&output);
+        },
+    );
+    for (route, effects) in [
+        ("shared", &NoColumns as &dyn tidb_expr::Columns),
+        ("shared_scalar", &ScalarOnly),
+    ] {
+        measure("column_mul", width, "reuse", route, iterations, || {
+            output.reset();
+            let values = shared.evaluate(&input, &rows, &mut ctx, effects).unwrap();
+            for v in &values[0] {
+                output.append_datum(0, v);
+            }
+            black_box(&output);
+        });
+    }
+}
+
 fn main() {
     #[cfg(allocation_counting)]
     allocation::check_counter();
@@ -190,6 +302,13 @@ fn main() {
         .parse::<usize>()
         .unwrap();
     assert!(iterations > 0 && !cfg!(debug_assertions));
+    if std::env::var_os("DECIMAL_BENCH_COLUMNS").is_some() {
+        println!(
+            "case,width,phase,route,iterations,nanos,alloc_calls,allocated_bytes,alloc_iterations"
+        );
+        column_bench(iterations);
+        return;
+    }
     // First operands reuse datatype/benches/decimal.rs rounding and codec inputs.
     let cases = [
         (

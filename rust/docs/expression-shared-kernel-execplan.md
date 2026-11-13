@@ -250,3 +250,45 @@ improves.24-digit inline Vector remains19.9–21.0% above the old copy; hidden-c
 64-row Vector is0.7–1.6% above the immediate baseline. Retain the bounded correction
 and report these remaining costs; no universal-performance acceptance. Evidence,
 source/test identity and complete counts are in shared-kernel/decimal-regression.zh.md.
+
+
+## Task38 — real Decimal columns and cross-Chunk calls
+
+
+Designer9355929a authorizes native Decimal column binding with complete original
+FieldType metadata. Retain the original field in SharedExpression, compare full
+fields for repeated bindings, and restore values through Row::get_datum before
+passing original Decimal values to the existing shared RPN arithmetic and IF.
+No callback to Expression evaluation and no copied conversion algorithm.
+
+First add native differential tests that fail with the current unsupported input.
+Then implement the existing binding/read boundary, checking complete Decimal
+parts and output Chunk values for NULL, signed/wide values, unspecified scale,
+unordered repeated rows, changed Chunk/context and recovery after errors.
+Reuse the existing benchmark with one real-column complete-entry scenario.
+Run shared native tests, SDK expression regression, scoped checks and root lint.
+Retain fixed inputs, failed attempts, complete two-repository counts and reports.
+Parameter rebinding and full lifecycle remain pending, as do default SDK builds
+and the existing constant/native-vector performance gaps.
+
+### Progress
+
+- [x] Claim task38 and inspect existing binding and original row conversion.
+- [x] Record failing native column regression and implement complete metadata binding.
+- [x] Verify cross-Chunk/context/error recovery and complete output values.
+- [ ] Measure one real-column complete entry and publish fixed review evidence.
+
+Task38 implementation uses the full native FieldType directly in each binding,
+rejects conflicting declarations for the same physical column, and converts only
+demanded Decimal cells with Row::get_datum. Existing Int/Real/Bytes admission and
+shared RPN are retained. New tests cover the native storage domain (including
+40-digit values),24/25-digit cells, NULL, sign/zero, declared/unspecified scale,
+scalar/one-row vector/multirow projection, IF demand, context precision4/8,
+strict-error recovery, reordered duplicate rows and output after dropping input.
+Unsigned bare columns retain their metadata; unsigned arithmetic remains rejected.
+33 shared-native and429 SDK expression tests pass; scopedClippy completes with
+warnings. One incorrect unsigned-arithmetic test expectation and an accidental
+root-cwd Cargo invocation are retained as failed attempts, not product failures.
+The one64-row real-column benchmark retains all four complete entry routes and
+separate allocation runs; see shared-kernel/decimal-columns.zh.md for measurements
+and remaining performance/default-build/full-M1 limitations.
