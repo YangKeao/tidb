@@ -13,19 +13,24 @@ import time
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--before', type=Path, required=True)
 p.add_argument('--after', type=Path, required=True)
+p.add_argument('--candidate', type=Path)
 p.add_argument('--output', type=Path, required=True)
 p.add_argument('--iterations', type=int, default=20000)
+p.add_argument('--allocations', action='store_true')
+p.add_argument('--rounds', type=int, default=4)
 a = p.parse_args()
 assert a.iterations > 0
 a.output.mkdir(parents=True, exist_ok=True)
 cpu = max(os.sched_getaffinity(0))
 os.sched_setaffinity(0, {cpu})
 versions = {'before':a.before.resolve(), 'after':a.after.resolve()}
-receipt = {'cpu':cpu, 'iterations':a.iterations, 'binary_sha256':{k:hashlib.sha256(v.read_bytes()).hexdigest() for k,v in versions.items()}, 'runs':[]}
-expected = {(case,width,phase,route) for case in ('small_mul','wide_mul','wide_cancel','hidden_chain') for width,phase in ((0,'prepare'),(1,'reuse'),(64,'reuse')) for route in ('native','shared')}
+if a.candidate: versions['candidate'] = a.candidate.resolve()
+receipt = {'cpu':cpu, 'iterations':a.iterations, 'allocation_mode':a.allocations, 'rounds':a.rounds, 'binary_sha256':{k:hashlib.sha256(v.read_bytes()).hexdigest() for k,v in versions.items()}, 'runs':[]}
+expected = {(case,0,'prepare',route) for case in ('inline_mul','spill_mul','small_mul','wide_mul','wide_cancel','hidden_chain') for route in ('native','shared')}
+expected |= {(case,width,phase,route) for case in ('inline_mul','spill_mul','small_mul','wide_mul','wide_cancel','hidden_chain') for width in (1,64) for phase,route in (('reuse','native_scalar'),('reuse','native_vector'),('reuse','shared'),('evaluate','native_scalar'),('evaluate','shared'),('write','shared'),('arithmetic','native'),('reuse','shared_scalar'),('evaluate','shared_scalar'))}
 rows = []
-for round_number in range(4):
-    for version in (('before','after') if round_number % 2 == 0 else ('after','before')):
+for round_number in range(a.rounds):
+    for version in (list(versions) if round_number % 2 == 0 else list(reversed(versions))):
         stem = f'{round_number+1}-{version}'
         started = time.time_ns()
         run = subprocess.run([str(versions[version])], env=dict(os.environ, DECIMAL_BENCH_ITERATIONS=str(a.iterations)), capture_output=True, text=True)
@@ -35,9 +40,9 @@ for round_number in range(4):
         (a.output/'run-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
         assert run.returncode == 0, stem
         data = list(csv.DictReader(io.StringIO(run.stdout)))
-        assert len(data) == 24 and {(r['case'],int(r['width']),r['phase'],r['route']) for r in data} == expected, stem
+        assert len(data) == 120 and {(r['case'],int(r['width']),r['phase'],r['route']) for r in data} == expected, stem
         for r in data:
-            assert int(r['iterations']) == a.iterations and int(r['alloc_iterations']) == 100 and int(r['nanos']) > 0
+            assert int(r['iterations']) == a.iterations and int(r['alloc_iterations']) == (100 if a.allocations else 0) and int(r['nanos']) > 0
             rows.append({'round':round_number+1,'version':version,**r})
         print(stem+' complete', flush=True)
 with (a.output/'all-rounds.csv').open('w') as f:

@@ -61,6 +61,11 @@ impl DecimalDigits {
     }
 
     fn from_unsigned(mut value: u128) -> Self {
+        // Spilled coefficients already need a heap allocation. Use the standard
+        // integer formatter instead of growing and reversing the inline buffer.
+        if value >= 10_u128.pow(INLINE_DECIMAL_DIGITS as u32) {
+            return value.to_string().into();
+        }
         let mut digits = SmallVec::<[u8; INLINE_DECIMAL_DIGITS]>::new();
         if value == 0 {
             digits.push(b'0');

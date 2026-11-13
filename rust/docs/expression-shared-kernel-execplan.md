@@ -211,3 +211,35 @@ SDK default Jan30 toolchain fails MSRV before compilation; successful builds use
 the adjacent fixed pair and Aug22 wrapper. See shared-kernel/datatype-reuse-performance.zh.md
 for raw data, exact build limits, failed attempts and updated complete counts.
 No broad performance, independent SDK build or completeM1 acceptance claim.
+
+
+## Task37 — isolate the small Decimal regression
+
+
+Designer01f727b4 authorizes the existing Decimal path only. Add unwrapped timing
+to the existing harness, keep instrumented allocations, compare fixed before/after
+inputs and separate native vector projection from explicit scalar evaluation.
+EvaluatorSuite tries its Decimal fast path before the session vector switch, so
+the scalar control must directly call Expression::eval per row in the harness.
+Measure arithmetic, shared values and final Chunk writing separately or sample
+their stacks. End-to-end projection always retains Chunk costs. Only change
+evidenced dominant work; retain original datatype ownership and native fast path.
+Do not clone algorithms, add a product evaluator loop or expand time/JSON/lifecycle.
+SDK default-toolchain incompatibility remains a separate known limit.
+
+### Progress
+
+- [x] Claim task37 and identify native vector-switch measurement boundary.
+- [x] Build unwrapped/instrumented harness and isolate fixed-pair costs.
+- [ ] Apply only justified minimum correction and validate complete values.
+- [ ] Recompute comparisons, complete counts and publish reviewable fixed pair.
+
+Preliminary unwrapped measurements reproduce small_mul64 regression (11.3 to
+16.0 microseconds); separate Chunk writing stays near2.1 microseconds. Independent
+user-cycle sampling attributes43.24% self samples to DecimalDigits::from_unsigned.
+The five-line trial in that existing owner uses the standard integer formatter
+only above24 inline digits; shorter coefficients retain the existing loop.
+No RPN validation, invocation, native vector path or Chunk conversion changes.
+89 datatype Decimal tests,31 native shared probes,429 SDK tests, scopedClippy and
+rootlint pass. Final three-version four-round full-entry comparison is running,
+including24/25-digit products and explicit shared/native Scalar controls.

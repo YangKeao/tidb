@@ -12,6 +12,7 @@ p.add_argument('--repo', type=Path, required=True)
 p.add_argument('--cargo', type=Path, required=True)
 p.add_argument('--rustc', type=Path, required=True)
 p.add_argument('--output', type=Path, required=True)
+p.add_argument('--allocations', action='store_true', help='link allocation wrappers; omit for plain timing')
 a = p.parse_args()
 a.output.mkdir(parents=True, exist_ok=True)
 env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='false', CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
@@ -49,13 +50,15 @@ for directory in sorted(search_paths):
     command += ['-L', directory]
 for name, path in sorted(artifacts.items()):
     command += ['--extern', name+'='+path, '--extern', name+'='+rlibs[name]]
-for name in ('malloc','calloc','realloc','aligned_alloc','posix_memalign'):
-    command += ['-C', 'link-arg=-Wl,--wrap='+name]
+if a.allocations:
+    command += ['--cfg', 'allocation_counting']
+    for name in ('malloc','calloc','realloc','aligned_alloc','posix_memalign'):
+        command += ['-C', 'link-arg=-Wl,--wrap='+name]
 # Wrap the existing System allocator; product code and allocator choice stay unchanged.
 with (a.output/'harness.log').open('w') as log:
     result = subprocess.run(command, cwd=a.repo/'rust', stdout=log, stderr=log)
     if result.returncode:
         raise SystemExit(f'harness compilation failed ({result.returncode}); see {a.output}/harness.log')
-receipt = {'artifacts': artifacts, 'harness_command': command, 'profile': {'opt_level':3, 'lto':False, 'codegen_units':16}, 'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest()}
+receipt = {'allocations': a.allocations, 'artifacts': artifacts, 'harness_command': command, 'profile': {'opt_level':3, 'lto':False, 'codegen_units':16}, 'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(), 'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest()}
 (a.output/'build-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
 print(binary)
