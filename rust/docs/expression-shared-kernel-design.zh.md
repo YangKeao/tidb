@@ -1,7 +1,7 @@
 # 用一个表达式内核替换任务协议：Expression Reuse 设计与实施计划
 
 
-本文件按仓库根目录 `PLANS.md` 维护。它是待评审的工程设计，尚未实现；`Progress`、`Surprises & Discoveries`、`Decision Log`、`Outcomes & Retrospective` 随后续验证更新。作者 ExpressionReuseDesigner，2026-11-13，讨论为 Raft `#tidb-expression-reuse:1dc6ca2b`，task #32。
+本文件按仓库根目录 `PLANS.md` 维护。完整方案尚未实现；2026-11-13 已开始独立候选，首个局部实现的审查见 [checkpoint 1 review](expression-shared-kernel-checkpoint1-review.zh.md)。`Progress`、`Surprises & Discoveries`、`Decision Log`、`Outcomes & Retrospective` 随后续验证更新。作者 ExpressionReuseDesigner，2026-11-13，讨论为 Raft `#tidb-expression-reuse:1dc6ca2b`，设计 task #32、实现 task #33、设计审查 task #34。
 
 ## Purpose / Big Picture
 
@@ -18,7 +18,8 @@
 - [x] (2026-11-13) 读取人类的体积、共享表达式内核和本次设计指令；阅读现有复审及源码。
 - [x] (2026-11-13) 分别审查原始 RPN 内核、数据/上下文边界、改动量和兼容风险。
 - [x] (2026-11-13) 给出模块边界、拟新增接口、执行规则、预算及分阶段验收；经三个独立方向复核，修正 PB eager、RAND/root 顺序、状态实例及完整体积核算。
-- [ ] 在原始基线上实现最小贯通验证；本次设计任务不宣称完成此项。
+- [x] (2026-11-13) 按人类6a0aeef4授权指导独立候选；只读审查 TiDB7e3a636 / TiKV52d7be2 的 native/PB MD5、完整标量透传和常量IF初步实现。
+- [ ] 完成M1：动态需求、复杂值运算、坏JSON/regexp分支、状态/重复执行与行批量合同仍待贯通；首个局部实现不代表M1完成。
 - [ ] 证明全部函数与入口覆盖、总改动量和性能目标；未证明前不推广到默认路径。
 
 ## Context and Orientation
@@ -322,6 +323,8 @@ warning/error 的相对顺序已被人类 `2979a576` 放宽，保留实际执行
 
 regex 常量准备本身可以失败；将所有验证移到 prepare 会破坏死分支行为。因此“一次验证”只指不可变结构和绑定完整性，不指提前执行所有潜在 SQL 计算。
 
+首个候选的 optional feature 没有隔离 workspace Cargo patch：已有 flate2、protobuf 和 cmake 依赖发生变化。默认构建需独立验证。只按 EvalType 判断 IF 分支兼容也不足以保持 FLOAT/DOUBLE 的实际结果形状；程序出口类型不能从平坦指令的最后一个 else 推断。
+
 ## Decision Log
 
 
@@ -353,3 +356,5 @@ Date/Author: 2026-11-13 / ExpressionReuseDesigner。
 本方案相较上一版“一个共享内核”的方向，补齐了如何复用原始 RPN、按需子段、行/批量合同、输入借用/解码、完整值域、错误准备时机、作用域和具体行数预算。若 M1/M2 的实际兼容成本超过预算，必须明确报告冲突并修改设计，不能继续用未经验证的“薄适配”承诺完成。
 
 本次文档核验：用 `git cat-file -e REV:PATH` 检查九个固定源码链接对应的对象存在；检查两个相对报告链接、ExecPlan 必需章节及 `git diff --cached --check`。没有产品代码改动，未运行 make lint、构建、产品测试或性能测试；这些留给实际候选的相应里程碑。
+
+2026-11-13 checkpoint 1 更新：两个原始基线候选已形成第一份可运行提交，核心沿用原RPN循环。审查核算源码及测试818行、所有文件9585行增删；数值均只代表局部候选。下一阶段先修复当前接纳范围内的结果类型问题、清单漏项及预算记录，补默认依赖验证，再继续同循环内的按需输入/分支汇合。审查不替代完整兼容、测试或性能验收；详见相邻review文档。
