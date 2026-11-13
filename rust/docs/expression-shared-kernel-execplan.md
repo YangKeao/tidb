@@ -164,7 +164,7 @@ remains subject to review; these fixes do not extend the admitted type families.
 
 
 The fixed checkpoint7 pair is the input for shared-kernel/cost-report.zh.md and
-cost-inventory.py. All245 identities reference18 deduplicated work packages;
+cost-inventory.py. All245 identities reference18 work packages, each budget summed once;
 five exceptions are within245, not additional families. Include algorithm
 migration/semantic revisions, original-code retirement, new/modified tests and
 parameter/column/lifecycle integration. Distinguish observed current size from
@@ -172,5 +172,10 @@ conditional estimates and unbounded dependencies; no10K feasibility claim.
 The largest five packages split semantic additions from module-boundary wiring,
 old-code deletion and tests, with explicit overlap against checkpoint7's16348
 changed lines. No product code changes or M2 rollout in this audit. Next work
-selection prioritizes the remaining input/lifecycle contract before broadening
-function coverage. FullM1 and product validation remain open.
+selection is under design review: reuse existing lower-level value algorithms
+before deciding whether to expand input/lifecycle implementation. FullM1 and product validation remain open.
+
+Review correction: Rust escaped-newline strings desynchronized the lexical mask,
+misclassifying10 test references in4 files. Regression assertions fail before the
+fix and pass after it; full regeneration leaves327 witnesses. Budget grouping
+does not establish disjoint actual line edits; those require final Git diffs.

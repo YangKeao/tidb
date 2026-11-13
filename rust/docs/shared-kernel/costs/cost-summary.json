@@ -9,7 +9,7 @@
     "tidb_encode_sql_digest",
     "validate_password_strength"
   ],
-  "caller_witness_count": 337,
+  "caller_witness_count": 327,
   "largest_add_split": {
     "temporal": {
       "semantic_add": [
@@ -940,5 +940,5 @@
       6760
     ]
   },
-  "note": "Planning interval only, conditional on reusing underlying storage/charset/service libraries. Non-test lines include comments/declarations; shared files are counted once in source exposure, not once per family. Unbounded items are in cost-report.zh.md."
+  "note": "Planning interval only, conditional on reusing underlying storage/charset/service libraries. Non-test lines include comments/declarations; shared files are counted once in source exposure, and each group budget is added once, not once per family. Future changed-line overlap is not proved. Unbounded items are in cost-report.zh.md."
 }

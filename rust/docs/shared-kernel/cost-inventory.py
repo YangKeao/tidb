@@ -22,7 +22,7 @@ def git(root, *args):
     return subprocess.check_output(['git', '-C', str(root), *args], text=True)
 
 # Families reference these shared work packages, rather than charging each helper
-# once per family. Units are planning ownership, not new runtime modules.
+# once per family. Units are planning ownership, not proof of disjoint future line edits.
 # add/delete/test-add/test-edit are remaining changed-line ranges after cp7.
 # test-edit counts BOTH sides of modified existing tests; tests are not discarded.
 GROUPS = {
@@ -146,8 +146,9 @@ ALIASES = {'ceil':'ceil_floor','floor':'ceil_floor','round':'round_or_truncate',
  'is_ipv4':'is_ipv4','is_ipv6':'is_ipv6','format':'format_num','convert_charset':'convert_using'}
 
 # A lexical mask removes comments/literals and cfg(test) items, preserving newlines.
-# This is a source-witness scanner, not a Rust name resolver or a call-graph proof.
-TOKEN = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|(?:br|r)(\#*)"[\s\S]*?"\1|b?"(?:\\.|[^"\\])*"|b?\'(?:\\.|[^\'\\\n])\'')
+# shortcut: lexical scanner, not Rust name resolution; require semantic analysis before deletion.
+# Escaped newlines are legal in Rust strings and must not desynchronize the mask.
+TOKEN = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|(?:br|r)(\#*)"[\s\S]*?"\1|b?"(?:\\[\s\S]|[^"\\])*"|b?\'(?:\\.|[^\'\\\n])\'')
 def mask(text):
     return TOKEN.sub(lambda m: ''.join('\n' if c=='\n' else ' ' for c in m[0]), text)
 def production(text):
@@ -168,8 +169,8 @@ def production(text):
         chars[start:end]=['\n' if c=='\n' else ' ' for c in chars[start:end]]
     return ''.join(chars)
 
-# Keep inline test stripping from truncating production after a test item.
-probe='fn before() {}\n#[cfg(test)]\nfn test_one() { let x = "}"; }\nfn after() {}\n#[cfg(test)]\nmod tests { fn nested() {} }\n'
+# Keep continued strings from hiding test markers; retain production after tests.
+probe='fn before() { let text = "continued\\\nstring"; }\n#[cfg(test)]\nfn test_one() { let x = "}"; }\nfn after() {}\n#[cfg(test)]\nmod tests { fn nested() {} }\n'
 filtered=production(probe)
 assert 'fn before' in filtered and 'fn after' in filtered
 assert 'fn test_one' not in filtered and 'fn nested' not in filtered
@@ -182,6 +183,10 @@ for repo,root,rev,prefix in [('tidb',a.tidb,TIDB,'rust/crates/tidb-expr/src'),('
         if not path.endswith('.rs') or '/tests/' in path or path.endswith(('_tests.rs','/tests.rs')) or Path(path).name.startswith('tests_'):continue
         text=git(root,'show',rev+':'+path)
         sources[repo+':'+path]=(text,production(text))
+# Reviewer regression: line-continued strings must not hide later test modules.
+rewriter = sources['tidb:rust/crates/tidb-expr/src/rewriter.rs'][1].splitlines()
+assert not rewriter[3716].strip() and not rewriter[3727].strip()
+
 ledger=json.loads(git(a.tidb,'show',TIDB+':rust/docs/shared-kernel/coverage-candidates.json'))
 assert ledger['denominator']==245 and len(set(ledger['exceptions']))==5
 rows=[]
@@ -270,6 +275,6 @@ summary={'tidb':TIDB,'tikv':TIKV,'denominator':245,'exceptions_included':ledger[
  'groups':{k:dict(zip(['add','delete','test_add','test_edit_both_sides','native_files','scope','tests'],v)) for k,v in GROUPS.items()},
  'deduplicated_source_units':units,
  'remaining_estimate':{k:[sum(v[i][j] for v in GROUPS.values()) for j in (0,1)] for i,k in enumerate(['add','delete','test_add','test_edit_both_sides'])},
- 'note':'Planning interval only, conditional on reusing underlying storage/charset/service libraries. Non-test lines include comments/declarations; shared files are counted once in source exposure, not once per family. Unbounded items are in cost-report.zh.md.'}
+ 'note':'Planning interval only, conditional on reusing underlying storage/charset/service libraries. Non-test lines include comments/declarations; shared files are counted once in source exposure, and each group budget is added once, not once per family. Future changed-line overlap is not proved. Unbounded items are in cost-report.zh.md.'}
 (a.output/'cost-summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2)+'\n')
 print(json.dumps({'families':len(rows),'exceptions':len(ledger['exceptions']),'groups':len(GROUPS),'deduplicated_files':len(units),'remaining':summary['remaining_estimate']}))

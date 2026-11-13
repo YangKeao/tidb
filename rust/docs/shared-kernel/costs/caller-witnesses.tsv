@@ -137,9 +137,6 @@ planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	1533	if constant.param_m
 planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	1536	if constant.param_marker.is_none() && constant.deferred_expr.is_none()
 planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	1541	if constant.param_marker.is_none() && constant.deferred_expr.is_none() {
 algorithm_dispatch	rust/crates/tidb-expr/src/rewriter.rs	2103	crate::builtin_ext::json::parse_path(&path_text)
-planner_lifecycle	rust/crates/tidb-expr/src/rewriter.rs	2646	assert_eq!(constant.param_marker.unwrap().order, order as i64);
-service_dependencies	rust/crates/tidb-expr/src/rewriter.rs	3717	"let encoded = tidb_util::plancodec::compress(b""0\t1\t0\t1\teq(a, 1)\n"");"
-service_dependencies	rust/crates/tidb-expr/src/rewriter.rs	3728	let binary_discarded = tidb_util::plancodec::BINARY_PLAN_DISCARDED_ENCODED.as_str();
 algorithm_dispatch	rust/crates/tidb-expr/src/rewriter/result_type.rs	33	use crate::builtin_ext::{GlCmpStringMode, GlSignature};
 algorithm_dispatch	rust/crates/tidb-expr/src/rewriter/result_type.rs	1022	let fsp = i64::from(crate::time_fn::calendar::date_add_result_fsp(
 algorithm_dispatch	rust/crates/tidb-expr/src/rewriter/result_type.rs	1079	crate::cast::cast_arg_as_int(
@@ -278,9 +275,6 @@ planner_lifecycle	rust/crates/tidb-planner/src/joinorder.rs	2001	function.invali
 planner_lifecycle	rust/crates/tidb-planner/src/logical/functional_dependencies.rs	232	&& constant.param_marker.is_none()
 native_entry	rust/crates/tidb-planner/src/logical/rewrite.rs	3208	tidb_expr::eval_expression_once(expression, self.eval_context)
 native_entry	rust/crates/tidb-planner/src/logical/rewrite.rs	3567	tidb_expr::eval_expression_once(expression, self.eval_context)
-planner_lifecycle	rust/crates/tidb-planner/src/logical/rewrite.rs	4414	value.param_marker = Some(ParamMarker { order });
-planner_lifecycle	rust/crates/tidb-planner/src/logical/rewrite.rs	4499	value.param_marker = Some(ParamMarker { order });
-planner_lifecycle	rust/crates/tidb-planner/src/logical/rewrite.rs	4559	missing.param_marker = Some(ParamMarker { order: 2 });
 planner_lifecycle	rust/crates/tidb-planner/src/logical/rule.rs	882	if constant.deferred_expr.is_some() || constant.param_marker.is_some() {
 planner_lifecycle	rust/crates/tidb-planner/src/logical/rule_generate_column_substitute.rs	185	function.invalidate_cached_arguments();
 planner_lifecycle	rust/crates/tidb-planner/src/logical/rule_join_reorder.rs	1131	rewritten.invalidate_cached_arguments();
@@ -317,16 +311,12 @@ planner_lifecycle	rust/crates/tidb-planner/src/ranger/detacher.rs	493	let mutabl
 planner_lifecycle	rust/crates/tidb-planner/src/residual_condition.rs	155	"category: ""param_marker"","
 planner_lifecycle	rust/crates/tidb-planner/src/residual_condition.rs	229	"category: ""param_marker"","
 planner_lifecycle	rust/crates/tidb-planner/src/residual_condition.rs	264	"Expr::ParamMarker { .. } => ""param_marker"","
-planner_lifecycle	rust/crates/tidb-planner/src/task.rs	1282	parameter.param_marker = Some(ParamMarker { order: 0 });
-planner_lifecycle	rust/crates/tidb-planner/src/task.rs	1329	Expression::Constant(value) if value.param_marker.is_some() => Ok(Datum::Int(3)),
 service_dependencies	rust/crates/tidb-server/src/cluster_session_node/mod.rs	235	tidb_parser::normalize_digest(sql)
 service_dependencies	rust/crates/tidb-server/src/sql_node.rs	626	let digest = tidb_parser::normalize_digest(&sql).1.to_string();
 service_dependencies	rust/crates/tidb-server/src/sql_node.rs	644	digest: tidb_parser::normalize_digest(prepared_ast.sql())
 service_dependencies	rust/crates/tidb-session/src/account.rs	25	use tidb_util::password_validation::{self, GlobalVarAccessor, PasswordUser, PwdError};
 service_dependencies	rust/crates/tidb-session/src/account.rs	270	password_validation::validate_password(&password, user.as_ref(), &globals)
 service_dependencies	rust/crates/tidb-session/src/lib.rs	832	tidb_parser::normalize_digest(sql)
-service_dependencies	rust/crates/tidb-session/src/lib.rs	2349	tidb_parser::normalize_digest(sql).0
-service_dependencies	rust/crates/tidb-session/src/lib.rs	2367	tidb_parser::normalize_digest(sql).0
 service_dependencies	rust/crates/tidb-stmtsummary/src/reader.rs	1128	let plan = tidb_util::plancodec::decode_plan(stats.sample_plan.as_bytes())
 service_dependencies	rust/crates/tidb-stmtsummary/src/statement_summary.rs	27	use tidb_util::plancodec::{BINARY_PLAN_DISCARDED_ENCODED, PLAN_DISCARDED_ENCODED};
 service_dependencies	rust/crates/tidb-stmtsummary/src/v2/column.rs	71	use tidb_util::plancodec::decode_plan;
