@@ -256,6 +256,10 @@ fs2 = { git = "https://github.com/tikv/fs2-rs", branch = "tikv" }
 cmake = { git = "https://github.com/rust-lang/cmake-rs" }
 sysinfo = { git = "https://github.com/tikv/sysinfo", branch = "0.26-fix-cpu" }
 
+# The SDK Git dependency and native expressions must share one datatype identity.
+[patch."https://github.com/YangKeao/tidb"]
+tidb-datatype = { path = "crates/tidb-datatype" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"        # Phase 0 is safe Rust end-to-end.
 missing_docs = "warn"
