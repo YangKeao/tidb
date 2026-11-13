@@ -1,3 +1,5 @@
 [submodule "extension/enterprise"]
 	path = pkg/extension/enterprise
 	url = git@github.com:pingcap-inc/enterprise-extensions.git
+	# Rust Git dependencies do not use the optional enterprise extension.
+	update = none
