@@ -150,12 +150,14 @@ impl CompactDecimal {
 #[derive(Clone, Debug)]
 pub struct DecimalArithmeticValue {
     value: ArithmeticValue,
-    declared_shape: Option<(i64, i64)>,
 }
 
 #[derive(Clone, Debug)]
 enum ArithmeticValue {
-    Compact(CompactDecimal),
+    Compact {
+        value: CompactDecimal,
+        declared_shape: Option<(i64, i64)>,
+    },
     Wide(Decimal),
 }
 
@@ -168,8 +170,13 @@ impl From<Decimal> for DecimalArithmeticValue {
             None
         };
         Self {
-            value: compact.map_or_else(|| ArithmeticValue::Wide(value), ArithmeticValue::Compact),
-            declared_shape,
+            value: compact.map_or_else(
+                || ArithmeticValue::Wide(value),
+                |value| ArithmeticValue::Compact {
+                    value,
+                    declared_shape,
+                },
+            ),
         }
     }
 }
@@ -196,48 +203,52 @@ pub(super) fn column_shape(value: &MyDecimal, field: &FieldType) -> (i64, i64) {
 impl DecimalArithmeticValue {
     /// The same column shape conversion used by the ordinary Datum reader.
     pub fn from_column(value: &MyDecimal, field: &FieldType) -> Self {
-        let declared_shape = Some(column_shape(value, field));
         let value = CompactDecimal::from_my_decimal(value)
             .filter(|v| v.storage_scale <= 38 && v.coefficient != i128::MIN)
             .map_or_else(
-                || ArithmeticValue::Wide(Decimal::from_my_decimal(value)),
-                ArithmeticValue::Compact,
+                || ArithmeticValue::Wide(Decimal::from_column(value, field)),
+                |compact| ArithmeticValue::Compact {
+                    value: compact,
+                    declared_shape: Some(column_shape(value, field)),
+                },
             );
-        Self {
-            value,
-            declared_shape,
-        }
+        Self { value }
     }
 
     /// Compact values are valid by construction; no coefficient text is needed.
     pub fn is_valid(&self) -> bool {
         match &self.value {
-            ArithmeticValue::Compact(_) => true,
+            ArithmeticValue::Compact { .. } => true,
             ArithmeticValue::Wide(v) => valid_decimal(v),
         }
     }
 
     pub fn into_decimal(self) -> Decimal {
-        let value = match self.value {
-            ArithmeticValue::Compact(v) => v.into_decimal(),
-            ArithmeticValue::Wide(v) => v,
-        };
-        match self.declared_shape {
-            Some((flen, frac)) => value.with_declared_shape(flen, frac),
-            None => value,
+        match self.value {
+            ArithmeticValue::Compact {
+                value,
+                declared_shape,
+            } => {
+                let value = value.into_decimal();
+                match declared_shape {
+                    Some((flen, frac)) => value.with_declared_shape(flen, frac),
+                    None => value,
+                }
+            }
+            ArithmeticValue::Wide(value) => value,
         }
     }
 
     fn decimal(&self) -> std::borrow::Cow<'_, Decimal> {
         match &self.value {
             ArithmeticValue::Wide(value) => std::borrow::Cow::Borrowed(value),
-            ArithmeticValue::Compact(_) => std::borrow::Cow::Owned(self.clone().into_decimal()),
+            ArithmeticValue::Compact { .. } => std::borrow::Cow::Owned(self.clone().into_decimal()),
         }
     }
 
     pub fn is_zero(&self) -> bool {
         match &self.value {
-            ArithmeticValue::Compact(v) => v.coefficient == 0,
+            ArithmeticValue::Compact { value, .. } => value.coefficient == 0,
             ArithmeticValue::Wide(v) => v.is_zero(),
         }
     }
@@ -251,14 +262,18 @@ impl DecimalArithmeticValue {
         (v.into(), w)
     }
     pub fn mul_mysql(&self, other: &Self) -> (Self, Option<DecimalCodecWarning>) {
-        if let (ArithmeticValue::Compact(a), ArithmeticValue::Compact(b)) =
-            (&self.value, &other.value)
+        if let (
+            ArithmeticValue::Compact { value: a, .. },
+            ArithmeticValue::Compact { value: b, .. },
+        ) = (&self.value, &other.value)
         {
             if let Some(value) = a.mul_decimal(*b).filter(|v| v.storage_scale <= 38) {
                 return (
                     Self {
-                        value: ArithmeticValue::Compact(value),
-                        declared_shape: None,
+                        value: ArithmeticValue::Compact {
+                            value,
+                            declared_shape: None,
+                        },
                     },
                     None,
                 );
@@ -279,8 +294,8 @@ impl DecimalArithmeticValue {
 
     /// Matches the ordinary Datum-to-Chunk boundary including wide truncation.
     pub fn to_chunk_my_decimal_lossy(&self) -> MyDecimal {
-        if let ArithmeticValue::Compact(v) = self.value {
-            if let Some(value) = v.to_my_decimal() {
+        if let ArithmeticValue::Compact { value, .. } = self.value {
+            if let Some(value) = value.to_my_decimal() {
                 return value;
             }
         }
