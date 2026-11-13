@@ -513,11 +513,11 @@ Designer180bc037 authorizes moving declared shape into the private Compact varia
 ### Progress
 
 
-- [ ] Record baseline actual carrier/Option/embedded node sizes and alignment; seal twelve direct library inputs before measurement.
-- [ ] Change only private storage, publish original owner revision, synchronize SDK Git pin/lock and verify both dependency graphs.
-- [ ] Run existing shared, prepared, Decimal, Chunk, native-vector and independent SDK regressions; retain every failure.
-- [ ] Compare both five-route binaries with four alternating rounds (40 timing cells), plus 10 separately counted allocation cells; preserve old four-route runner mode.
-- [ ] Publish fixed result, all cost categories and full-base counts for review, even if negative; end this Decimal single-case optimization window.
+- [x] Record baseline actual carrier/Option/embedded node sizes and alignment; seal twelve direct library inputs before measurement.
+- [x] Change only private storage, publish original owner revision, synchronize SDK Git pin/lock and verify both dependency graphs.
+- [x] Run existing shared, prepared, Decimal, Chunk, native-vector and independent SDK regressions; retain every failure.
+- [x] Compare both five-route binaries with four alternating rounds (40 timing cells), plus 10 separately counted allocation cells; preserve old four-route runner mode.
+- [x] Publish fixed result, all cost categories and full-base counts for review, even if negative; end this Decimal single-case optimization window.
 
 Use rust/docs/shared-kernel/build-decimal-bench.py with --direct-chunk for both versions. Link plain/counting harnesses against the same twelve copied libraries per version, verify hashes before measurement. Use run-decimal-bench.py --columns --direct-chunk --before-direct-chunk with 20000 iterations and four rounds for timing; --allocations --iterations 100 --rounds 1 for separate counters. DECIMAL_BENCH_LAYOUT=1 prints actual Rust type sizes without running measurements. Existing tests and make lint remain required. SDK tests use the standalone checkout, with no adjacent TiDB and a fixed Git dependency. Preserve existing numerical tests rather than invent new semantics. Receipt/scripts/raw records live in evidence/carrier-layout; never overwrite task43 evidence. All support material counts in the final diff.
 
@@ -529,4 +529,4 @@ One layout trial only; a negative result is a complete bounded deliverable. Same
 ### Outcomes & Retrospective
 
 
-Pending fixed measurements and regression evidence.
+The fixed result is in shared-kernel/carrier-layout.zh.md with 40 timing and 10 allocation cells. Carrier/Option/ExpressionScalar shrink from112 to80 bytes; RpnExpressionNode240 to208, RpnStackNode160 unchanged. Owned Vector and direct each request8064 fewer bytes per call, with unchanged allocation counts. Direct paired timing ranges−2.33% to+1.88%; no stable speedup claim. All original regressions and scoped checks pass; full SDK Clippy remains the inherited19-advisory failure, not rerun. End this Decimal single-case window; broader lifecycle and migration budgets remain open. Final report, receipt and publication are tracked by task44 review handoff.
