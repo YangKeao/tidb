@@ -271,7 +271,7 @@ server_failpoint: failpoint-enable ## Build TiDB server binary with failpoints e
 
 .PHONY: init-submodule
 init-submodule:
-	git submodule init && git submodule update --force
+	git submodule init && git submodule update --force --checkout
 
 .PHONY: enterprise-prepare
 enterprise-prepare:
