@@ -308,3 +308,24 @@ SDK `rust-toolchain.toml`优先与已测Aug22对齐，不降低原库MSRV。该�
 如果嵌套包发现、单一类型身份或工具链升级暴露具体障碍，保留最小失败和确切依赖链，调整声明接线，不回退到算法副本或扩大为整套执行器重写。该批不接默认SQL后端、worker、跨EXECUTE缓存，不增加新性能矩阵；仓库声明工具链的表达式测试通过也不能冒称整个TiKV或全部CI通过。完整共享内核目标及诊断顺序放宽不变。
 
 本轮仅更新两份设计文档，验证链接对象、相对链接、ExecPlan结构和diff；没有运行新的产品检查。
+
+
+## 独立SDK构建首版复审：包级构建成立，两处接线遗漏待修正
+
+本轮固定TiDB源码`542d31a7978f7bbee4a6a13dc89cf790b7ef5f7f`、[报告710740e1](https://github.com/YangKeao/tidb/blob/710740e193a31c4434ce6519e551ffec97ebcf3c/rust/docs/shared-kernel/independent-sdk-build.zh.md)，SDK为`41c56427b68ce7518415d22f6d14e9f410b8c2e0`；本批起点dece8367／05130ce8。独立SDK表达式库按声明工具链构建的证据成立，但本轮接线尚未通过完整限定复审：改变子模块默认行为及新增Git来源时，遗漏了两个原有入口。两处都是构建配置修正，不需要改变共享求值内核。
+
+SDK固定引用原TiDB的`8abb688c80bd48de688bfc792bc735682404e4dd`，没有算法副本。独立SDK图中datatype及error／hack／kvcache／mysql各只有一个Git包；TiDB图中native与SDK指向同一本地datatype package ID，其余四个原叶子也一致。两个独立图的Git与path身份不要求字面相同。172个原所有者文件与资源逐项同于固定Git、本地源码及Cargo检出；该清单覆盖五包及aggregate-tests.rs，不代表全部workspace继承项、外部测试输入和第三方依赖的封闭清单。清单之外的collation_key_vectors.tsv和json_vectors.hex两份集成测试fixture也已单独比较一致；它们不构成本轮已运行所有datatype集成测试的证据。实际编译补足了嵌套workspace、构建脚本及内含排序规则资源可用的证据，没有新增expr反向依赖。 首次Git失败的具体错误是`invalid submodule URL: relative URL without a base`，不能据此断言enterprise访问凭据被拒绝；后续日志确实记录跳过该子模块。
+
+**子模块初始化回归。** 新`.gitmodules`把enterprise的默认更新策略设为`none`，让Cargo下载datatype时跳过无关的SSH仓库，目的合理。但原[Makefile初始化](https://github.com/YangKeao/tidb/blob/710740e193a31c4434ce6519e551ffec97ebcf3c/Makefile#L274)仍为`git submodule init && git submodule update --force`，`--force`并不选择checkout策略。因此干净企业版检出即便拥有访问权也会跳过该目录；enterprise-server／enterprise-docker随后运行enterprise-prepare时缺少generate目录。报告的手动`--checkout`指令不能代替修正既有入口。最小修正是在原初始化目标显式指定`--checkout`，保留普通Cargo的默认跳过行为；Designer已用Git2.55.0的本地临时子模块独立复现：原命令exit0、显示Skipping且无payload；加`--checkout`后同一gitlink文件出现，日志SHA256为`eb9cb57ff4276bebc005a3d4a726bf8b5a204d062b50e533f2efc38ea1ea6d50`。这也符合[Git对子模块更新策略的说明](https://git-scm.com/docs/git-submodule)。没有访问enterprise代码或运行企业版构建。
+
+**新增来源未进入现有检查配置。** SDK的[deny.toml](https://github.com/YangKeao/tikv/blob/41c56427b68ce7518415d22f6d14e9f410b8c2e0/deny.toml)设置`unknown-git = "deny"`，允许的GitHub所有者只有tikv／pingcap／rust-lang，缺少此次明确选择的YangKeao/tidb。正式make clippy尚停在工具安装，未运行到这一来源检查，不能把未完成结果视为仅剩等待。应在同一sources节为该仓库加入精确URL的allow-git，保留unknown-git及其余来源策略，不扩大到整个账号。保留sources检查前后结果；其他workspace、许可证或安全公告问题按实际输出分别记录，不能用放宽全局检查来关闭本次遗漏。这一判断来自固定配置、[cargo-deny来源规则](https://embarkstudios.github.io/cargo-deny/checks/sources/cfg.html)与脚本所用0.18.9版本源码；Designer没有安装或运行cargo-deny，不能将静态判定写成已执行的失败结果。
+
+独立普通Cargo构建及SDK429项、TiDB41项共享和8项prepared通过的实际范围是表达式库与列明配置。声明的Aug22工具链替代Jan30，原1.95与MSRV1.97不兼容有实跑记录；旧路径与MSRV失败日志没有独立命令／退出头，不提升为完整失败复现包；未降低MSRV或隐式替换RUSTC。全SDK工具链、Docker与macOS工作流声明受到影响，不能从这些包级结果推断全部TiKV／CI兼容。标准缓存目录和下载缓存复用也不是全冷、封闭或独立机器复现。正式make clippy由运行者在deny安装达到120秒时主动SIGTERM终止，退出−15；与限定Clippy完成有警告及静态检查通过分别报告。
+
+独立核对33份原始记录哈希及5525项固定Git源码记录，摘要为`5842cd9ad21356f089cc144a6fbdd520ec155dc345257b46a9afc33d4b0e2697`；独立SDK的1421项记录也与固定提交及复审当次干净检出一致；随后实现者开始修改deny.toml，后续工作树状态不替代这次固定版本证据。429项两次、native41／8、限定Clippy及lint均有成功终态和退出0证据。5525／1421是指定文件后缀的记录，不是整个构建输入闭包；初始target为空来自实现者报告，没有单独留存目录快照；固定SDK重复日志缺少命令及工作目录头，结合前次命令记录、固定输入比较与当次检出状态认定，不把这些重复日志单独称作全封闭重建。正式make clippy在主SDK检出执行而非独立目录，工具安装中断不影响上述包级测试事实，也未证明完整检查成功。
+
+本批生产Rust和测试逻辑增删均为0；构建`+14/−3`，文档证据`+364/−1`，全部`+378/−4`，增删382、净增374。相对原始基线，源码测试`+6911/−119`、增删**7030**；全部`+24861/−221`、增删**25082**。以上包含构建、工具链、锁文件、报告和审计脚本，独立按固定Git对象重算；没有把不改算法理解成零项目成本。
+
+下一步依据Designer消息5caea732-21bd-4178-bada-bfde751ba924和227514d5-18e3-48d0-9ae5-4e5dfd2f34c2，在task #41内修正两处接线；范围由Designer负责，到修正固定版本复审结束。保留最小失败到成功证据、lint／格式／diff和完整计数。若编译输入及依赖声明未变，已有429／41／8结果按对应版本复用，明确说明未重跑；不把这一配置补丁扩成新函数、默认SQL入口或性能工作。后续完整M1、生命周期、真实列向量成本和245族体积仍未完成。
+
+Designer本轮只独立检查固定源码、记录与统计，另用本地临时Git子模块复现初始化行为；未重跑产品构建、测试或性能。设计文档检查固定链接、相对链接、ExecPlan格式与diff后发布。
