@@ -1,0 +1,335 @@
+{
+  "source_commits": {
+    "before_tidb": "72fedb911c2079ca821b66dae276095f3caaf84d",
+    "before_tikv": "3ad4dc75eec6af91b77f2c36f3d10ee61073b942",
+    "after_tidb_product": "f5daddcbdb39d91d20b99b012f29c1cdf4df1ae5",
+    "after_tikv": "d822fbf9fbee8e0b635974a8d38e42f9e73f067a"
+  },
+  "source_inputs": {
+    "count": 5525,
+    "sha256": "e389bb4f12a93a6fc28a7590d2b611313ddb48f96b8951f45ac79605a4a6d92a"
+  },
+  "before_inputs": {
+    "count": 5525,
+    "sha256": "2116f19b78a8ced4eb84b2ccad052c0191320560054a83f89c7026323a2498f1"
+  },
+  "after_product_inputs": {
+    "count": 5524,
+    "sha256": "3aae7e1a62867bd83ba9bfb1d44aadc9a58c6c884373517b00bdd9f30db09e4e"
+  },
+  "harness_sha256": "2237919864f2791fa2ea145c468e66a864f1c7611791ccf912dd344cdb9fb91d",
+  "profile": {
+    "opt_level": 3,
+    "lto": false,
+    "codegen_units": 16,
+    "debug_assertions": false
+  },
+  "toolchain": "nightly-2026-08-22 rustc 1.100.0-nightly c656540d6",
+  "measurement": {
+    "cpu": 23,
+    "iterations": 20000,
+    "binary_sha256": {
+      "before": "fd994798dd02722fcb9b36b7533bed82ea7bfa9ed14422d69116a1f327de03bf",
+      "after": "1a1094e0b78571f19f0303eddf6aeca8b3b6c865011013cde8b701961fd53083"
+    },
+    "runs": [
+      {
+        "round": 1,
+        "version": "before",
+        "exit": 0,
+        "started_unix_ns": 1794588797456948545,
+        "duration_ns": 18212508494
+      },
+      {
+        "round": 1,
+        "version": "after",
+        "exit": 0,
+        "started_unix_ns": 1794588815669615549,
+        "duration_ns": 3022068813
+      },
+      {
+        "round": 2,
+        "version": "after",
+        "exit": 0,
+        "started_unix_ns": 1794588818691889122,
+        "duration_ns": 3017988602
+      },
+      {
+        "round": 2,
+        "version": "before",
+        "exit": 0,
+        "started_unix_ns": 1794588821710062853,
+        "duration_ns": 18278441774
+      },
+      {
+        "round": 3,
+        "version": "before",
+        "exit": 0,
+        "started_unix_ns": 1794588839988697797,
+        "duration_ns": 18226042554
+      },
+      {
+        "round": 3,
+        "version": "after",
+        "exit": 0,
+        "started_unix_ns": 1794588858214920161,
+        "duration_ns": 3012480793
+      },
+      {
+        "round": 4,
+        "version": "after",
+        "exit": 0,
+        "started_unix_ns": 1794588861227590694,
+        "duration_ns": 3018393085
+      },
+      {
+        "round": 4,
+        "version": "before",
+        "exit": 0,
+        "started_unix_ns": 1794588864246150078,
+        "duration_ns": 18215890885
+      }
+    ]
+  },
+  "release_invalid_test": {
+    "exit": 0,
+    "passed": 1,
+    "failed": 0,
+    "filtered": 1353
+  },
+  "default_feature_check": {
+    "exit": 0
+  },
+  "sdk_declared_toolchain_check": {
+    "exit": 101,
+    "reason": "rustc1.95 below native packages MSRV1.97"
+  },
+  "datatype_control": {
+    "cpu": 23,
+    "runs": [
+      {
+        "version": "before",
+        "exit": 0,
+        "duration_ns": 1245296201,
+        "binary_sha256": "ccdc41be140396c55824fe00964ab48e5d48f7005b4723d9e8223215fd1b7cae"
+      },
+      {
+        "version": "after",
+        "exit": 0,
+        "duration_ns": 1038111030,
+        "binary_sha256": "201a6a6b751fa3e9e3a74777b271cd82550674cd9d353acb1190734fe4787e74"
+      }
+    ]
+  },
+  "logs": [
+    {
+      "name": "after-preflight.csv",
+      "sha256": "55eba26f7772828e018d4cc04afb2419443157d91a60e50b940e87ac08ec80d2"
+    },
+    {
+      "name": "after-preflight.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "before-preflight.csv",
+      "sha256": "eecd5d35fc03b589b92013e4c88070dc18e48964d054daa1cb69f8aabd95db7a"
+    },
+    {
+      "name": "before-preflight.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "bench-check.log",
+      "sha256": "80e9ea8923e48db8800dcc6e607b3cb14e903eab40be18168dcd94cb1605ba65"
+    },
+    {
+      "name": "bench-first.rs",
+      "sha256": "be1d11550c4d913f61be296686773fa7c61c1ac060d6255ff7b764d3ca6fb809"
+    },
+    {
+      "name": "datatype-after-build.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "datatype-after-command.json",
+      "sha256": "ddefbc66f36c86da5a6bf6b57e08862c10bcf3a28ee32da54dfd8c61030eb277"
+    },
+    {
+      "name": "datatype-after.log",
+      "sha256": "edc896fa68813b480c4876b750aa01d678336ec6ce0f63dca3668c271d05f0b5"
+    },
+    {
+      "name": "datatype-before-build.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "datatype-before-command.json",
+      "sha256": "21cf10b02b84203811631cb5aa923613f71b090da193af0882bf9b1d449770bc"
+    },
+    {
+      "name": "datatype-before.log",
+      "sha256": "5c03889d09901b27be928923429f92a90c27d9ee3fb48f40b121f75be4d7cc71"
+    },
+    {
+      "name": "datatype-control-receipt.json",
+      "sha256": "2b727c703a4bba6cbe95bce053c8a8bceec847bffb0defc5cf909b1bb234b0d4"
+    },
+    {
+      "name": "default-check.log",
+      "sha256": "7800d6961eca07059de96e36bb0881239dd4c20abd6c89b32d0ffcc2db212a83"
+    },
+    {
+      "name": "paired/1-after.csv",
+      "sha256": "83f4e34469c8c4333f47425226953a67618ca4facaec8d1a5f1d3aec3d172bd0"
+    },
+    {
+      "name": "paired/1-after.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "paired/1-before.csv",
+      "sha256": "8157997dd2c594403dd330eceffd9dfb8339caaba4b2435d13447edcce2a678d"
+    },
+    {
+      "name": "paired/1-before.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "paired/2-after.csv",
+      "sha256": "cd329d922f1c181cf10443f373eb9d3483dca8dbed5b1ceff5fc52fa73b2d9d1"
+    },
+    {
+      "name": "paired/2-after.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "paired/2-before.csv",
+      "sha256": "52bcce223cda6521bc2895c81631978c19982e6c3e47ae562d595aab9903ee12"
+    },
+    {
+      "name": "paired/2-before.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "paired/3-after.csv",
+      "sha256": "2172eecb79288ffd52505b05c259b5104ff73cd9e5a0676302bf41e841bc4a2d"
+    },
+    {
+      "name": "paired/3-after.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "paired/3-before.csv",
+      "sha256": "3f6bc1964e5cf792a1587248d38d64c203601f7807007f0f1c070f3acffe1f85"
+    },
+    {
+      "name": "paired/3-before.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "paired/4-after.csv",
+      "sha256": "7cc7215004100191ecddefc085c3d4482cf91c7f28ede2bd7a629fbc39e6b0ad"
+    },
+    {
+      "name": "paired/4-after.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "paired/4-before.csv",
+      "sha256": "d4fd2a613fe183c854697f6d5e272388f4545d0a0cb7879a2c6935de95e00503"
+    },
+    {
+      "name": "paired/4-before.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "paired/all-rounds.csv",
+      "sha256": "bc92de924045012cb6c7d0ef904c5bf862e476f7d7617323b28089292cb90a04"
+    },
+    {
+      "name": "paired/run-receipt.json",
+      "sha256": "9447a8f9bb5156fa0ad6b531cb55960e1dfb0b44167a615dbec49ec880c3acfa"
+    },
+    {
+      "name": "release-after/build-receipt.json",
+      "sha256": "47a9d9505f546412e88d4d353374d3d4e8a4a852ae5e2198a9c1d595f49aac4d"
+    },
+    {
+      "name": "release-after/build.jsonl",
+      "sha256": "8781cea864a9c4c07a62adaa0c08154ac77e125594253b9e3af3053ba8e47a5b"
+    },
+    {
+      "name": "release-after/harness.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "release-before/build.jsonl",
+      "sha256": "2d22788f8208b8c8ba1405f4d2dc99837d93404a38f3c3aa73d97f6f30deeeb1"
+    },
+    {
+      "name": "release-before/termination.json",
+      "sha256": "e0443151fb383b2dd198233f9e6ff8be08c0559650d5b2ee56a8bd05206fda27"
+    },
+    {
+      "name": "release-before-final/build.jsonl",
+      "sha256": "4de9184318632eea9e34a05b2ad00eec82b144e567f985609be97171cb26cec0"
+    },
+    {
+      "name": "release-before-final/harness.log",
+      "sha256": "8a5b033e5a3e0ea869392c19540dde5cb7a804ef4bb9bf744f557533f46f0447"
+    },
+    {
+      "name": "release-before-linked/build-receipt.json",
+      "sha256": "751c7e25776c09fd111be5890e838e5266ef6351534c2ce082fa67ee84715456"
+    },
+    {
+      "name": "release-before-linked/build.jsonl",
+      "sha256": "ccc27d8c70adc13b2251763f60e961963f5d12fd57dbb0316c3eac7060634612"
+    },
+    {
+      "name": "release-before-linked/harness.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "release-before-ready/build.jsonl",
+      "sha256": "3f209de9fb3d9f09675b2e67053100ee24eecf7dfc7f1ccde71574d4df2412be"
+    },
+    {
+      "name": "release-before-ready/harness.log",
+      "sha256": "f7a3573593579516cc7a55a83e53c081f9a9a77752648f1470aadec36af50902"
+    },
+    {
+      "name": "release-before-wrap/build.jsonl",
+      "sha256": "639858a386f9f814e74e0e7b4462a81ed77db17edd30a0fbc424315ee85ddedd"
+    },
+    {
+      "name": "release-before-wrap/harness.log",
+      "sha256": "c8935075c51677f3badfd1d6011c45e5abdb72ff6ce8642f17f382843e6bfe67"
+    },
+    {
+      "name": "release-docs-lint.log",
+      "sha256": "3c9cdcdb891d8a258e9f104bb5cff6a70653e24a34588796552f8fb94383d671"
+    },
+    {
+      "name": "release-invalid.log",
+      "sha256": "8d6ce6673129b8da394c4fca5785149cd77da9d8bf84c646ab7ab69774b9ec91"
+    },
+    {
+      "name": "sdk-default-toolchain.log",
+      "sha256": "bb83546fd8cc53c39daa6301631c00f15417996a8308a0cfa4688f21634aa4dd"
+    },
+    {
+      "name": "cargo-tidb-wrapper.sh",
+      "sha256": "68398ca709b19371d308689b20ce98e43db23dd3a596f33d4be7fa10518c07b8"
+    }
+  ],
+  "build_environment": {
+    "CARGO_BUILD_JOBS": "4",
+    "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+    "CC": "/usr/bin/gcc-14",
+    "CXX": "/usr/bin/g++-14",
+    "CXXFLAGS": "-include cstdint",
+    "CARGO_HOME": "/home/agent/tidb/expression-unification/cargo-home",
+    "CARGO_TARGET_DIR": "/home/agent/tidb/expression-shared-kernel/target-tidb"
+  }
+}

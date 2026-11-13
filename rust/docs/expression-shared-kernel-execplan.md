@@ -200,3 +200,14 @@ root lint; record incomplete formal gates separately. Compare both repos against
 the original bases, including manifests/locks and docs. If a real cycle or
 per-node carrier conversion is necessary, report evidence before widening the
 boundary. No time/JSON/lifecycle expansion or default frontend activation.
+
+
+Release follow-up complete: four paired rounds (192 cells), separate preparation
+and reuse timings plus allocation counts, full-value preflight, and the existing
+release invalid-Decimal test. Original datatype benchmark also ran unchanged.
+Production reduction remains812 lines; small-value64-row reuse regresses35–38%,
+while wide multiplication and the hidden-precision chain improve locally.
+SDK default Jan30 toolchain fails MSRV before compilation; successful builds use
+the adjacent fixed pair and Aug22 wrapper. See shared-kernel/datatype-reuse-performance.zh.md
+for raw data, exact build limits, failed attempts and updated complete counts.
+No broad performance, independent SDK build or completeM1 acceptance claim.

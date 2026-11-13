@@ -1,5 +1,7 @@
 # 直接复用原有Decimal与字符串解析
 
+此页保留功能阶段的固定结果与计数。后续release测量、非法值检查、默认工具链实际失败及最新全量计数见[补证报告](datatype-reuse-performance.zh.md)。下文“未实跑release”及旧计数仅描述该功能阶段。
+
 限定试验完成：共享RPN直接持有并调用原`tidb-datatype::Decimal`，删除676行复制的Decimal模块及另一个字符串前缀扫描实现。生产代码相对此前净减812行。已有31项原生对照和429项SDK表达式测试通过；没有扩大接纳范围，也没有证明完整项目约10K目标或性能目标成立。
 
 固定源码为TiDB `f5daddcbdb39d91d20b99b012f29c1cdf4df1ae5`、SDK `d822fbf9fbee8e0b635974a8d38e42f9e73f067a`。本轮起点为TiDB72fedb911c／SDK3ad4dc75；原始对照仍为364aef2／548812e。此文及验证收据的增删也计入下表。
