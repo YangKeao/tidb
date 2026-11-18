@@ -28,3 +28,4 @@
 - [混合 IF 的 release 求值成本](mixed-if-cost.zh.md)
 - [混合 IF 的批量分支](mixed-if-batch.zh.md)
 - [固定函数族与调用入口的迁移差距](migration-gap.zh.md)
+- [BIGINT 位运算与无符号输出](bigint-bits.zh.md)
