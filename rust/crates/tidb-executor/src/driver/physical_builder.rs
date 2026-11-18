@@ -4839,7 +4839,7 @@ fn build_with_state(
                     as Box<dyn Executor>,
             )
         }
-        PhysicalPlan::Projection(projection) => {
+        PhysicalPlan::Projection(projection) => 'projection: {
             let mut child = build_with_state(only_child(plan)?, catalog, ctx, state)?;
             // Go keeps a direct-column cop projection inside the reader and
             // sends it as `DAGRequest.output_offsets`; a computed projection
@@ -4882,33 +4882,36 @@ fn build_with_state(
                 use tidb_expr::shared_kernel::SharedProjection;
 
                 let batch_range = 1..=SharedProjection::MAX_BATCH_SIZE;
-                if ctx.shared_projection.is_some()
+                if !state.in_reader
+                    && ctx.shared_projection.is_some()
                     && ctx.statement_class() == crate::stmt_context::StatementClass::Select
                     && workers == 0
                     && batch_range.contains(&meta.max_chunk_size())
                     && batch_range.contains(&child.max_chunk_size())
                     && !expressions.is_empty()
-                    && expressions
-                        .iter()
-                        .all(|expr| matches!(expr, Expression::ScalarFunction(_)))
+                    && expressions.iter().all(|expr| {
+                        // GETVAR's stored bytes and collation can vary between calls.
+                        matches!(expr, Expression::ScalarFunction(_))
+                            && !tidb_expr::expr_util::check_func_in_expr(expr, "getvar_string")
+                    })
                 {
                     if let Some(shared) = SharedProjection::compile(&expressions)
                         .ok()
                         .filter(|shared| shared.matches_output_types(meta.ret_field_types()))
                     {
-                        return Ok(Box::new(ProjectionExec::with_shared_projection(
+                        break 'projection Ok(Box::new(ProjectionExec::with_shared_projection(
                             meta,
                             child,
                             ctx.clone(),
                             shared,
-                        )));
+                        )) as Box<dyn Executor>);
                     }
                 }
             }
             let executor: Box<dyn Executor> = Box::new(
                 ProjectionExec::new(meta, expressions, child, ctx.clone()).with_workers(workers),
             );
-            Ok(executor)
+            break 'projection Ok(executor);
         }
         PhysicalPlan::Selection(selection) => {
             let mut child = build_with_state(only_child(plan)?, catalog, ctx, state)?;

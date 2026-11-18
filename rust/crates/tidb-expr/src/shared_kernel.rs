@@ -500,26 +500,42 @@ impl SharedExpression {
                     let eval_type = f.ret_type.as_ref().unwrap().eval_type();
                     let real = eval_type == tidb_datatype::EvalType::Real;
                     let integer = eval_type == tidb_datatype::EvalType::Int;
-                    if integer && has_lazy_integer_diagnostic_operand(&f.args) {
-                        return Err(
-                            "integer overflow diagnostic requires execution-time operands".into(),
-                        );
-                    }
-                    let class = match eval_type {
-                        tidb_datatype::EvalType::Real => "DOUBLE",
-                        tidb_datatype::EvalType::Int => "BIGINT",
-                        _ => "DECIMAL",
+                    let (class, refusal) = match eval_type {
+                        tidb_datatype::EvalType::Real => (
+                            "DOUBLE",
+                            "DOUBLE overflow diagnostic requires execution-time operands",
+                        ),
+                        tidb_datatype::EvalType::Int => (
+                            "BIGINT",
+                            "integer overflow diagnostic requires execution-time operands",
+                        ),
+                        _ => (
+                            "DECIMAL",
+                            "DECIMAL overflow diagnostic requires execution-time operands",
+                        ),
                     };
-                    let source = crate::scalar_function::arithmetic_overflow_expression(
-                        f,
-                        native_op,
-                        real,
-                        &crate::context::NoColumns,
-                    );
-                    let overflow = source.map_or_else(
-                        || format!("{class} value is out of range"),
-                        |source| format!("{class} value is out of range in '{source}'"),
-                    );
+                    let needs_binding = numeric_diagnostic_needs_binding(&f.args).ok_or(refusal)?;
+                    let (overflow, diagnostic) = if needs_binding {
+                        if real || integer {
+                            return Err(refusal.into());
+                        }
+                        (
+                            format!("{class} value is out of range"),
+                            decimal_diagnostic(f).ok_or(refusal)?,
+                        )
+                    } else {
+                        let source = crate::scalar_function::arithmetic_overflow_expression(
+                            f,
+                            native_op,
+                            real,
+                            &crate::context::NoColumns,
+                        );
+                        let overflow = source.map_or_else(
+                            || format!("{class} value is out of range"),
+                            |source| format!("{class} value is out of range in '{source}'"),
+                        );
+                        (overflow, Vec::new())
+                    };
                     if integer {
                         nodes.push(RpnExpressionNode::FnCall {
                             func_meta: if f.func_name.lowercase() == "plus" {
@@ -535,11 +551,7 @@ impl SharedExpression {
                         nodes.push(RpnExpressionNode::NativeArithmetic {
                             op,
                             overflow,
-                            diagnostic: if real {
-                                Vec::new()
-                            } else {
-                                decimal_diagnostic(f).unwrap_or_default()
-                            },
+                            diagnostic,
                             field_type: control_type(f)?,
                         });
                     }
@@ -1388,17 +1400,25 @@ impl InputColumns for NativeInput<'_> {
 
 // Native overflow text can inspect a hidden column's source even when
 // the value comes from a materialized chunk column.
-fn has_lazy_integer_diagnostic_operand(args: &[Expression]) -> bool {
+fn numeric_diagnostic_needs_binding(args: &[Expression]) -> Option<bool> {
+    let mut needs_binding = false;
     let mut pending: Vec<_> = args.iter().collect();
     while let Some(expression) = pending.pop() {
         match expression {
-            Expression::Constant(c) if c.literal_value().is_none() => return true,
+            Expression::Constant(c) if c.deferred_expr.is_some() => return None,
+            Expression::Constant(c) if c.param_marker.is_some() => needs_binding = true,
             Expression::Column(c) if c.is_hidden => pending.extend(c.virtual_expr.as_deref()),
-            Expression::ScalarFunction(f) => pending.extend(&f.args),
+            Expression::ScalarFunction(f)
+                if f.func_name.lowercase() == "cast_json"
+                    || crate::scalar_function::named_arithmetic_symbol(f.func_name.lowercase())
+                        .is_some() =>
+            {
+                pending.extend(f.get_args());
+            }
             _ => {}
         }
     }
-    false
+    Some(needs_binding)
 }
 
 fn decimal_diagnostic(
@@ -3734,6 +3754,75 @@ mod tests {
     }
 
     #[test]
+    fn shared_kernel_declines_unsupported_numeric_diagnostic_sources() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::{Decimal, FieldTypeCode};
+
+        let real = FieldType::new(FieldTypeCode::Double);
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal).with_decimal(-1);
+        let mut parameter = Constant::new(Datum::Real(99.0), real.clone());
+        parameter.param_marker = Some(ParamMarker { order: 0 });
+        let mut deferred = Constant::new(Datum::Decimal(Decimal::from_int(99)), decimal.clone());
+        deferred.deferred_expr = Some(Box::new(numeric_literal(
+            Datum::Decimal(Decimal::from_int(19)),
+            &decimal,
+        )));
+        for (ty, source, stored, multiplier, expected) in [
+            (
+                real,
+                parameter,
+                Datum::Real(f64::MAX),
+                Datum::Real(2.0),
+                "(17 * 2)",
+            ),
+            (
+                decimal,
+                deferred,
+                Datum::Decimal(Decimal::from_int(100)),
+                Datum::Decimal(Decimal::from_literal(&"9".repeat(80))),
+                "(19 * ",
+            ),
+        ] {
+            let mut column = Column::new(1, ty.clone());
+            column.index = 0;
+            column.is_hidden = true;
+            column.virtual_expr = Some(Box::new(Expression::Constant(source)));
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("mul"),
+                ty.clone(),
+                vec![Expression::Column(column), numeric_literal(multiplier, &ty)],
+            ));
+            let mut input = Chunk::new_empty(std::slice::from_ref(&ty));
+            input.append_datum(0, &stored);
+            let context = ParameterProbe::new(Some(Datum::Int(17)), 4);
+            let error = expression.eval(&context, input.get_row(0)).unwrap_err();
+            let crate::EvalError::DataOutOfRange {
+                expression: text, ..
+            } = &error
+            else {
+                panic!("unexpected native diagnostic: {error:?}");
+            };
+            assert!(text.starts_with(expected), "{text}");
+            let roots = [numeric_literal(stored, &ty), expression];
+            assert_eq!(
+                SharedProjection::compile(&roots).unwrap_err(),
+                format!(
+                    "{} overflow diagnostic requires execution-time operands",
+                    if ty.code() == FieldTypeCode::Double {
+                        "DOUBLE"
+                    } else {
+                        "DECIMAL"
+                    }
+                )
+            );
+            assert_eq!(
+                context.reads.get(),
+                usize::from(ty.code() == FieldTypeCode::Double)
+            );
+        }
+    }
+
+    #[test]
     fn shared_kernel_parameter_review_hidden_diagnostic() {
         use crate::constant::ParamMarker;
         use tidb_datatype::{Decimal, FieldTypeCode};
@@ -3754,10 +3843,16 @@ mod tests {
         ));
         let shared = SharedProjection::compile(std::slice::from_ref(&expression)).unwrap();
         let suite = crate::evaluator::EvaluatorSuite::new(vec![expression.clone()], false);
-        for vectorized_off in [false, true] {
-            let mut native = ParameterProbe::new(None, 4);
+        for (vectorized_off, binding) in [
+            (false, None),
+            (true, None),
+            (false, Some(17)),
+            (true, Some(23)),
+        ] {
+            let binding = binding.map(Datum::Int);
+            let mut native = ParameterProbe::new(binding.clone(), 4);
             native.session.vectorized_off = vectorized_off;
-            let mut current = ParameterProbe::new(None, 4);
+            let mut current = ParameterProbe::new(binding.clone(), 4);
             current.session.vectorized_off = vectorized_off;
             let mut input = Chunk::new_empty(std::slice::from_ref(&ty));
             input.append_datum(0, &Datum::Decimal(Decimal::from_int(100)));
@@ -3772,14 +3867,19 @@ mod tests {
                 };
                 error
             };
-            assert_eq!(expected, crate::EvalError::DecimalOverflow);
             let actual = shared
                 .start_execution(&current)
                 .evaluate(&input, &[0], &mut EvalContext::default())
                 .unwrap_err();
             eprintln!("hidden diagnostic: native={expected:?}, shared={actual:?}");
-            assert_eq!(actual.code, Some(1690));
-            assert_eq!(actual.message, "DECIMAL value is out of range");
+            assert_eq!(current.reads.get(), 1);
+            if binding.is_some() {
+                assert_native_error(actual, expected);
+            } else {
+                assert_eq!(expected, crate::EvalError::DecimalOverflow);
+                assert_eq!(actual.code, Some(1690));
+                assert_eq!(actual.message, "DECIMAL value is out of range");
+            }
         }
     }
 

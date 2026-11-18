@@ -328,6 +328,10 @@ fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> {
     })
 }
 
+pub(crate) fn named_arithmetic_symbol(name: &str) -> Option<&'static str> {
+    arithmetic_symbol(binary_op_for_name(name)?)
+}
+
 pub(crate) fn numeric_expression_text(
     expression: &Expression,
     go_float_format: bool,
@@ -366,7 +370,7 @@ pub(crate) fn numeric_expression_text(
                     function.get_static_type()?.source_string(),
                 ));
             }
-            let op = arithmetic_symbol(binary_op_for_name(function.func_name.lowercase())?)?;
+            let op = named_arithmetic_symbol(function.func_name.lowercase())?;
             let [left, right] = function.args.as_slice() else {
                 return None;
             };

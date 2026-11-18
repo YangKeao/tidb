@@ -334,3 +334,132 @@ fn shared_projection_chunk_bridge_preserves_selected_rows_on_reopen() {
         }
     }
 }
+
+#[test]
+fn shared_sql_projection_reports_original_runtime_counters() {
+    use tidb_ast::{QueryStmt, Stmt};
+    use tidb_executor::{explain_analyze_select_stmt, Catalog, ExplainFormat, DEFAULT_DATABASE};
+
+    let Stmt::Query(query) = tidb_parser::parse("SELECT RAND(7)").unwrap() else {
+        unreachable!();
+    };
+    let QueryStmt::Select(select) = query.as_ref() else {
+        unreachable!();
+    };
+    let catalog = Catalog::default();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let explain = |ctx| {
+        let (columns, rows) = explain_analyze_select_stmt(
+            select,
+            &catalog,
+            DEFAULT_DATABASE,
+            ctx,
+            ExplainFormat::Row,
+        )
+        .unwrap();
+        let row = rows.first().unwrap();
+        assert!(row[0].sql_string().unwrap().starts_with("Projection_"));
+        let field = |name| {
+            let i = columns.iter().position(|(label, _)| label == name).unwrap();
+            row[i].sql_string().unwrap()
+        };
+        let rows = field("actRows");
+        let info = field("execution info");
+        eprintln!("projection runtime: actRows {rows}, {info}");
+        (rows, info)
+    };
+    let (native_rows, native_info) = explain(&native);
+    let (shared_rows, shared_info) = explain(&shared);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    assert_eq!(native_rows, "1");
+    assert!(native_info.contains("loops:2"), "{native_info}");
+    assert_eq!(shared_rows, native_rows);
+    assert!(shared_info.contains("loops:2"), "{shared_info}");
+}
+
+#[test]
+fn shared_projection_declines_reader_child_plan() {
+    use tidb_ast::Stmt;
+    use tidb_executor::driver::open_query_meta_stmt_with_physical;
+    use tidb_executor::{plan_query_meta_stmt, Catalog, DEFAULT_DATABASE};
+    use tidb_planner::physical::{BasePhysicalPlan, PhysicalPlan, PhysicalTableReader};
+    use tidb_planner::physical_table_reader::{ReadReqType, StoreType};
+
+    let Stmt::Query(query) = tidb_parser::parse("SELECT RAND(7)").unwrap() else {
+        unreachable!();
+    };
+    let catalog = Catalog::default();
+    let outer = StmtContext::for_query().with_shared_projection();
+    let inner = StmtContext::for_query().with_shared_projection();
+    let mut projection = plan_query_meta_stmt(&query, &catalog, DEFAULT_DATABASE, &outer).unwrap();
+    assert!(matches!(projection, PhysicalPlan::Projection(_)));
+    let mut base = BasePhysicalPlan::with_id(100, "TableReader", 0);
+    base.base.set_schema(projection.schema().cloned());
+    let mut reader = PhysicalPlan::TableReader(PhysicalTableReader {
+        base,
+        table_plan: Some(Box::new(projection.clone())),
+        store_type: StoreType::TiKv,
+        is_common_handle: false,
+        read_req_type: ReadReqType::Cop,
+    });
+    let run = |ctx, plan| {
+        open_query_meta_stmt_with_physical(&query, Some(plan), &catalog, DEFAULT_DATABASE, ctx)
+            .unwrap()
+            .collect()
+            .unwrap()
+    };
+    assert_eq!(run(&outer, &mut projection), run(&inner, &mut reader));
+    eprintln!(
+        "manual reader fixture: outside {:?}, inside {:?}",
+        outer.shared_projection_counts(),
+        inner.shared_projection_counts()
+    );
+    assert_eq!(outer.shared_projection_counts(), Some((1, 1)));
+    assert_eq!(inner.shared_projection_counts(), Some((0, 0)));
+}
+
+#[test]
+fn shared_sql_projection_declines_nested_string_variable_reads() {
+    use tidb_datatype::Collation;
+    use tidb_executor::{run_select_meta_on, Catalog};
+
+    // getvar_string is the read emitted by the session binder for both carriers.
+    let sql = "SELECT RAND(), @copy := getvar_string('v')";
+    let catalog = Catalog::default();
+    for value in [
+        Datum::new_bytes(b"abc"),
+        Datum::new_collation_string(b"abc", Collation::Binary),
+    ] {
+        let run = |opt_in| {
+            let vars = Arc::new(Mutex::new(HashMap::from([("v".to_owned(), value.clone())])));
+            let rng = Arc::new(MysqlRng::new_with_seed(1));
+            let mut ctx = StmtContext::for_query()
+                .with_user_vars(Arc::clone(&vars))
+                .with_rand_session(Arc::clone(&rng));
+            if opt_in {
+                ctx = ctx.with_shared_projection();
+            }
+            let result = run_select_meta_on(sql, &catalog, &ctx);
+            let copied = ctx.get_uservar("copy");
+            (result, copied, rng.gen(), ctx.shared_projection_counts())
+        };
+        let (expected, stored, next, _) = run(false);
+        let expected = expected.unwrap();
+        assert_eq!(stored, Some(value.clone()));
+        let rng = MysqlRng::new_with_seed(1);
+        rng.gen();
+        assert_eq!(next, rng.gen());
+        let (actual, copied, next_shared, counters) = run(true);
+        eprintln!(
+            "string variable copy of {value:?}: {actual:?}, stored {copied:?}, path {counters:?}"
+        );
+        assert_eq!(counters, Some((0, 0)));
+        assert_eq!(actual.unwrap(), expected);
+        assert_eq!(copied, Some(value));
+        assert_eq!(next_shared, next);
+    }
+    let shared = StmtContext::for_query().with_shared_projection();
+    run_select_meta_on("SELECT RAND(7)", &catalog, &shared).unwrap();
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
