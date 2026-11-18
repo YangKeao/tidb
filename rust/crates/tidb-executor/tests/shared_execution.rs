@@ -1790,8 +1790,12 @@ fn shared_sql_ip_conversions_keep_typed_values_and_fields() {
     let sql = "SELECT IS_IPV4(ip) FROM ip_values WHERE id = 4";
     let expected = run_select_meta_on(sql, &catalog, &native).unwrap_err();
     let actual = run_select_meta_on(sql, &catalog, &fallback).unwrap_err();
-    assert_eq!(actual.to_string(), expected.to_string());
-    assert!(actual.to_string().contains("invalid UTF-8 string datum"));
+    let actual = actual.to_mysql_error();
+    let expected = expected.to_mysql_error();
+    assert_eq!(actual.code, expected.code);
+    assert_eq!(actual.state, expected.state);
+    assert_eq!(actual.message, expected.message);
+    assert_eq!(actual.message, "invalid UTF-8 string datum");
 }
 
 #[test]
@@ -1838,4 +1842,72 @@ fn shared_sql_ipv4_prefix_predicates_preserve_null_and_raw_bytes() {
     let route = shared.shared_projection_counts();
     eprintln!("IP prefix projection={route:?}");
     assert_eq!(route, Some((1, 1)));
+}
+
+#[test]
+fn shared_sql_ip_text_functions_keep_legacy_parse_and_diagnostics() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE ip_text (id BIGINT PRIMARY KEY, b VARBINARY(64))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO ip_text VALUES
+         (1,'001.002.003.004'),(2,'127.1'),(3,'::ffff:127.0.0.1'),(4,'255.255.255.255'),
+         (5,'1..2.3'),(6,'256.1.1.1'),(7,NULL),(8,''),(9,X'FF00')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,INET_ATON(b),IS_IPV4(b),IS_IPV6(b)
+        FROM ip_text ORDER BY id LIMIT 8";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    use Datum::{Int, Null, UInt};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Int(1), UInt(0x01020304), Int(1), Int(0)],
+            vec![Int(2), UInt(0x7F000001), Int(0), Int(0)],
+            vec![Int(3), Null, Int(0), Int(1)],
+            vec![Int(4), UInt(u32::MAX.into()), Int(1), Int(0)],
+            vec![Int(5), UInt(0x01000203), Int(0), Int(0)],
+            vec![Int(6), Null, Int(0), Int(0)],
+            vec![Int(7), Null, Null, Null],
+            vec![Int(8), Null, Int(0), Int(0)],
+        ]
+    );
+    let route = shared.shared_projection_counts();
+    eprintln!("text IP projection={route:?}");
+    assert_eq!(route, Some((1, 1)));
+
+    for function in ["INET_ATON", "IS_IPV4", "IS_IPV6"] {
+        let native = StmtContext::for_query();
+        let shared = StmtContext::for_query().with_shared_projection();
+        let sql = format!("SELECT {function}(b) FROM ip_text WHERE id=9");
+        let expected = run_select_meta_on(&sql, &catalog, &native)
+            .unwrap_err()
+            .to_mysql_error();
+        let actual = run_select_meta_on(&sql, &catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(actual.code, expected.code);
+        assert_eq!(actual.state, expected.state);
+        assert_eq!(actual.message, "invalid UTF-8 string datum");
+        assert_eq!(actual.message, expected.message);
+        assert_eq!(actual.is_from_evaluation(), expected.is_from_evaluation());
+        assert_eq!(
+            shared.shared_projection_counts(),
+            Some((1, 1)),
+            "{function}"
+        );
+        assert_eq!(shared.take_warnings(), native.take_warnings());
+    }
 }

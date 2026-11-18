@@ -1142,29 +1142,44 @@ impl SharedExpression {
                     if f.pb_signature().is_none()
                         && matches!(
                             f.func_name.lowercase(),
-                            "is_ipv4_compat" | "is_ipv4_mapped"
+                            "inet_aton"
+                                | "is_ipv4"
+                                | "is_ipv6"
+                                | "is_ipv4_compat"
+                                | "is_ipv4_mapped"
                         ) =>
                 {
                     use tidb_query_expr::impl_miscellaneous::{
-                        is_ipv4_compat_or_null_fn_meta, is_ipv4_mapped_or_null_fn_meta,
+                        inet_aton_utf8_fn_meta, is_ipv4_compat_or_null_fn_meta,
+                        is_ipv4_mapped_or_null_fn_meta, is_ipv4_utf8_fn_meta, is_ipv6_utf8_fn_meta,
                     };
                     let [operand] = f.args.as_slice() else {
-                        return Err("IP prefix predicate requires one operand".into());
+                        return Err("IP function requires one operand".into());
                     };
+                    let (meta, unsigned, strict_utf8) = match f.func_name.lowercase() {
+                        "inet_aton" => (inet_aton_utf8_fn_meta(), true, true),
+                        "is_ipv4" => (is_ipv4_utf8_fn_meta(), false, true),
+                        "is_ipv6" => (is_ipv6_utf8_fn_meta(), false, true),
+                        "is_ipv4_compat" => (is_ipv4_compat_or_null_fn_meta(), false, false),
+                        "is_ipv4_mapped" => (is_ipv4_mapped_or_null_fn_meta(), false, false),
+                        _ => unreachable!(),
+                    };
+                    // Strict kernels carry the original string-datum diagnostic.
+                    // Byte literals can require a different diagnostic.
                     if !is_ip_string_operand(operand)
-                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                        || (strict_utf8
+                            && matches!(operand, Expression::Constant(c) if matches!(c.literal_value(), Some(Datum::Bytes(_)))))
+                        || !f.ret_type.as_ref().is_some_and(|ty| {
+                            ty.code() == tidb_datatype::FieldTypeCode::LongLong
+                                && !ty.is_array()
+                                && ty.is_unsigned() == unsigned
+                        })
                     {
                         return Err(
-                            "IP prefix predicate requires a string leaf and signed BIGINT result"
-                                .into(),
+                            "IP function requires matching string and BIGINT declarations".into(),
                         );
                     }
-                    let meta = if f.func_name.lowercase() == "is_ipv4_compat" {
-                        is_ipv4_compat_or_null_fn_meta()
-                    } else {
-                        is_ipv4_mapped_or_null_fn_meta()
-                    };
-                    work.push(Visit::IntCall(meta, 1, false));
+                    work.push(Visit::IntCall(meta, 1, unsigned));
                     work.push(Visit::ByteOperand(operand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
@@ -8790,6 +8805,52 @@ mod tests {
         ] {
             assert!(SdkDecimal::from_parts(invalid).is_err());
             assert!(MyDecimal::from_parts(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn shared_kernel_pb_ip_text_policies_are_unchanged() {
+        use tipb::ScalarFuncSig::{InetAton, IsIPv4, IsIPv6};
+        let cases = [
+            (IsIPv4, Some(&b"001.002.003.004"[..]), Datum::Int(0)),
+            (IsIPv4, None, Datum::Int(0)),
+            (IsIPv6, None, Datum::Int(0)),
+            (IsIPv6, Some(&[0xff][..]), Datum::Int(0)),
+            (
+                InetAton,
+                Some(&b"001.002.003.004"[..]),
+                Datum::Int(0x01020304),
+            ),
+            (InetAton, Some(&[0xff][..]), Datum::Null),
+        ];
+        for (signature, bytes, expected) in cases {
+            let mut input = tipb::Expr::default();
+            input.set_field_type(FieldTypeTp::VarString.into());
+            if let Some(bytes) = bytes {
+                input.set_tp(tipb::ExprType::Bytes);
+                input.set_val(bytes.to_vec());
+            } else {
+                input.set_tp(tipb::ExprType::Null);
+            }
+            let mut pb = tipb::Expr::default();
+            pb.set_tp(tipb::ExprType::ScalarFunc);
+            pb.set_sig(signature);
+            pb.set_field_type(FieldTypeTp::LongLong.into());
+            pb.mut_children().push(input);
+            let mut ctx = EvalContext::default();
+            let program =
+                tidb_query_expr::RpnExpressionBuilder::build_from_expr_tree(pb, &mut ctx, 0)
+                    .unwrap();
+            let columns = LazyBatchColumnVec::empty();
+            let result = program
+                .eval_decoded(&mut ctx, &[], &columns, &[0], 1)
+                .unwrap();
+            assert_eq!(
+                native_output(result, 1).unwrap(),
+                [expected],
+                "{signature:?}"
+            );
+            assert_eq!(ctx.warnings.warning_cnt, 0);
         }
     }
 
