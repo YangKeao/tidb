@@ -1398,3 +1398,67 @@ fn shared_sql_double_comparisons_run_in_projection_and_selection() {
     assert_eq!(projection, Some((1, 1)));
     assert_eq!(selection, Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_decimal_comparisons_keep_precision_in_selection() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE compare_decimals (id BIGINT PRIMARY KEY, a DECIMAL(60,8), b DECIMAL(65,10))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO compare_decimals VALUES
+          (1,1.5,1.50),(2,NULL,NULL),
+          (3,184467440737095516160000000000000000000001.26,184467440737095516160000000000000000000001.25),
+          (4,-2,6),(5,NULL,0)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,a=b,a<>b,a<b,a<=b,a>b,a>=b,a<=>b
+        FROM (SELECT id,a,b FROM compare_decimals ORDER BY id LIMIT 5) AS kept
+        WHERE a>=b OR a<=>b ORDER BY id";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query()
+        .with_shared_projection()
+        .with_shared_selection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.1,
+        [
+            vec![
+                Int(1),
+                Int(1),
+                Int(0),
+                Int(0),
+                Int(1),
+                Int(0),
+                Int(1),
+                Int(1)
+            ],
+            vec![Int(2), Null, Null, Null, Null, Null, Null, Int(1)],
+            vec![
+                Int(3),
+                Int(0),
+                Int(1),
+                Int(0),
+                Int(0),
+                Int(1),
+                Int(1),
+                Int(0)
+            ],
+        ]
+    );
+    let projection = shared.shared_projection_counts();
+    let selection = shared.shared_selection_counts();
+    eprintln!("decimal compare projection={projection:?}, selection={selection:?}");
+    assert_eq!(projection, Some((1, 1)));
+    assert_eq!(selection, Some((1, 1)));
+}

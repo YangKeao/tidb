@@ -700,23 +700,6 @@ impl SharedExpression {
                     work.extend(f.args.iter().rev().map(Visit::BigIntOperand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
-                    if is_native_comparison(f)
-                        && f.args.iter().all(is_double_comparison_operand) =>
-                {
-                    if f.args.len() != 2 || !f.ret_type.as_ref().is_some_and(is_signed_bigint) {
-                        return Err(
-                            "DOUBLE comparison requires two operands and signed BIGINT result"
-                                .into(),
-                        );
-                    }
-                    work.push(Visit::Compare(
-                        f.func_name.lowercase(),
-                        ComparisonOperands::Double,
-                        None,
-                    ));
-                    work.extend(f.args.iter().rev().map(Visit::Enter));
-                }
-                Visit::Enter(Expression::ScalarFunction(f))
                     if wire_integer_comparison(f).is_some()
                         || is_native_comparison(f)
                         || matches!(f.func_name.lowercase(), "and" | "or") =>
@@ -727,6 +710,31 @@ impl SharedExpression {
                     let name = f.func_name.lowercase();
                     let wire = wire_integer_comparison(f);
                     let logical = matches!(name, "and" | "or");
+                    if !logical && wire.is_none() {
+                        use tidb_datatype::FieldTypeCode::{Double, NewDecimal};
+                        let operands = if [left, right]
+                            .into_iter()
+                            .all(|arg| matches_typed_operand(arg, Double))
+                        {
+                            Some(ComparisonOperands::Double)
+                        } else if [left, right]
+                            .into_iter()
+                            .all(|arg| matches_typed_operand(arg, NewDecimal))
+                        {
+                            Some(ComparisonOperands::Decimal)
+                        } else {
+                            None
+                        };
+                        if let Some(operands) = operands {
+                            if !f.ret_type.as_ref().is_some_and(is_signed_bigint) {
+                                return Err("comparison requires a signed BIGINT result".into());
+                            }
+                            work.push(Visit::Compare(name, operands, None));
+                            work.push(Visit::Enter(right));
+                            work.push(Visit::Enter(left));
+                            continue;
+                        }
+                    }
                     let [Some(lhs_unsigned), Some(rhs_unsigned)] =
                         [left, right].map(bigint_operand_signedness)
                     else {
@@ -847,7 +855,7 @@ impl SharedExpression {
                         if condition {
                             bigint_operand_signedness(arg) != Some(false)
                         } else {
-                            !string_result && !matches_conditional_value(arg, declared.code())
+                            !string_result && !matches_typed_operand(arg, declared.code())
                         }
                     }) {
                         return Err("conditional arguments require matching typed values".into());
@@ -2209,13 +2217,16 @@ enum ComparisonOperands {
         rhs_unsigned: bool,
     },
     Double,
+    Decimal,
 }
 
 fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNode {
     use tidb_query_expr::impl_compare::{
         CmpOp, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq,
     };
-    use tidb_query_expr::{integer_comparison_fn_meta, native_real_comparison_node};
+    use tidb_query_expr::{
+        integer_comparison_fn_meta, native_decimal_comparison_node, native_real_comparison_node,
+    };
     fn select<F: CmpOp>(operands: ComparisonOperands) -> RpnExpressionNode {
         match operands {
             ComparisonOperands::BigInt {
@@ -2228,6 +2239,7 @@ fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNod
                 metadata: Box::new(()),
             },
             ComparisonOperands::Double => native_real_comparison_node::<F>(),
+            ComparisonOperands::Decimal => native_decimal_comparison_node::<F>(),
         }
     }
     let select = match name {
@@ -2241,15 +2253,6 @@ fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNod
         _ => unreachable!(),
     };
     select(operands)
-}
-
-fn is_double_comparison_operand(arg: &Expression) -> bool {
-    arg.static_type().is_some_and(|ty| {
-        ty.code() == tidb_datatype::FieldTypeCode::Double && !ty.is_array() && !ty.is_unsigned()
-    }) && match arg {
-        Expression::Constant(c) => matches!(c.literal_value(), Some(Datum::Real(_) | Datum::Null)),
-        _ => true,
-    }
 }
 
 fn bigint_operand_signedness(expression: &Expression) -> Option<bool> {
@@ -2351,7 +2354,7 @@ fn string_conditional_collation(
     Some(common.unwrap_or(result.collation()))
 }
 
-fn matches_conditional_value(expression: &Expression, code: tidb_datatype::FieldTypeCode) -> bool {
+fn matches_typed_operand(expression: &Expression, code: tidb_datatype::FieldTypeCode) -> bool {
     use tidb_datatype::FieldTypeCode;
     if expression
         .static_type()
@@ -3464,6 +3467,124 @@ mod tests {
                 [expected[1].clone()]
             );
         }
+    }
+
+    #[test]
+    fn shared_kernel_decimal_comparison_retains_wide_exact_order() {
+        use tidb_datatype::{Decimal, FieldTypeCode};
+
+        let mut lhs_type = FieldType::new(FieldTypeCode::NewDecimal);
+        lhs_type.set_flen(65);
+        lhs_type.set_decimal(8);
+        let mut rhs_type = lhs_type.clone();
+        rhs_type.set_decimal(10);
+        let int = FieldType::new(FieldTypeCode::LongLong);
+        let values = [
+            Datum::Null,
+            Datum::Decimal(Decimal::from_literal("1.5")),
+            Datum::Decimal(Decimal::from_literal("1.5000000000")),
+            Datum::Decimal(Decimal::from_literal("-1.50000000")),
+            Datum::Decimal(Decimal::from_literal(
+                "184467440737095516160000000000000000000001.25",
+            )),
+            Datum::Decimal(Decimal::from_literal(
+                "184467440737095516160000000000000000000001.26",
+            )),
+        ];
+        let width = values.len() * values.len();
+        let mut input = Chunk::new(&[lhs_type.clone(), rhs_type.clone()], width, width);
+        for lhs in &values {
+            for rhs in &values {
+                input.append_datum(0, lhs);
+                input.append_datum(1, rhs);
+            }
+        }
+        let mut rows: Vec<_> = (0..width).rev().collect();
+        rows.push(values.len() + 2);
+        let column = |index, ty: &FieldType| {
+            let mut c = Column::new(index, ty.clone());
+            c.index = index;
+            Expression::Column(c)
+        };
+        for name in ["eq", "ne", "lt", "le", "gt", "ge", "nulleq"] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                int.clone(),
+                vec![column(0, &lhs_type), column(1, &rhs_type)],
+            ));
+            let expected = rows
+                .iter()
+                .map(
+                    |&row| match (&values[row / values.len()], &values[row % values.len()]) {
+                        (Datum::Decimal(lhs), Datum::Decimal(rhs)) => {
+                            Datum::Int(i64::from(match name {
+                                "eq" | "nulleq" => lhs == rhs,
+                                "ne" => lhs != rhs,
+                                "lt" => lhs < rhs,
+                                "le" => lhs <= rhs,
+                                "gt" => lhs > rhs,
+                                "ge" => lhs >= rhs,
+                                _ => unreachable!(),
+                            }))
+                        }
+                        (lhs, rhs) if name == "nulleq" => {
+                            Datum::Int(i64::from(lhs.is_null() && rhs.is_null()))
+                        }
+                        _ => Datum::Null,
+                    },
+                )
+                .collect::<Vec<_>>();
+            let native = rows
+                .iter()
+                .map(|&row| {
+                    expression
+                        .eval(&crate::NoColumns, input.physical_row(row))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(native, expected, "{name}");
+            let program = SharedExpression::compile(&expression).unwrap();
+            assert_eq!(
+                program
+                    .evaluate(&input, &rows, &mut EvalContext::default())
+                    .unwrap(),
+                expected,
+                "{name}",
+            );
+            assert_eq!(
+                program
+                    .evaluate_mode(
+                        &input,
+                        &[values.len() + 2],
+                        &mut EvalContext::default(),
+                        InvocationMode::Scalar
+                    )
+                    .unwrap(),
+                [expected.last().unwrap().clone()],
+                "{name}",
+            );
+        }
+        let literal = |value, ty| Expression::Constant(Constant::new(value, ty));
+        let compare = |rhs| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("lt"),
+                int.clone(),
+                vec![literal(values[4].clone(), lhs_type.clone()), rhs],
+            ))
+        };
+        let exact_literals = compare(literal(values[5].clone(), rhs_type));
+        assert_eq!(
+            SharedExpression::compile(&exact_literals)
+                .unwrap()
+                .evaluate(&input, &[0], &mut EvalContext::default())
+                .unwrap(),
+            [Datum::Int(1)]
+        );
+        let mixed = compare(literal(
+            Datum::Real(1.5),
+            FieldType::new(FieldTypeCode::Double),
+        ));
+        assert!(SharedExpression::compile(&mixed).is_err());
     }
 
     #[test]
