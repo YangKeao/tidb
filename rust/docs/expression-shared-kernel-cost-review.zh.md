@@ -502,7 +502,7 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 ## 完整预算前提更新：保留原所有者，未完成部分仍需定价
 
 
-以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45更新执行状态，task46以dad1610309／00106bee更新类型化DATE触及的temporal、cast、control及输入输出／engine事实，task 47（451c307f29／aafeec411c）更新 pattern 和 input_lifecycle 中严格字面正则的实际寿命。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。task 48 首版以真实 SQL 验证一条显式开启的投影，补充了 integration、pattern 与 engine 的证据。修正版 6ad11f6128 已补齐四项接线与接纳条件。task 49 首版补充了 control、engine 和 integration 的协议侧证据。修正版补齐了公开冻结接口与普通标量选行。当前实际源码测试 12,668／全部 35,345 行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
+以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45更新执行状态，task46以dad1610309／00106bee更新类型化DATE触及的temporal、cast、control及输入输出／engine事实，task 47（451c307f29／aafeec411c）更新 pattern 和 input_lifecycle 中严格字面正则的实际寿命。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。task 48 首版以真实 SQL 验证一条显式开启的投影，补充了 integration、pattern 与 engine 的证据。修正版 6ad11f6128 已补齐四项接线与接纳条件。task 49 首版补充了 control、engine 和 integration 的协议侧证据。修正版补齐了公开冻结接口与普通标量选行。task 50 验证了表数据上的协议 Endpoint，并保留普通 PB 向量的自定义字段声明。当前实际源码测试 12,909／全部 35,631 行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
 
 | 原组ID | 当前状态／改变的前提 | 已付事实与未闭合部分 | 本行唯一成本归属 |
 | --- | --- | --- | --- |
@@ -522,8 +522,8 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 | convert_charset | 原假设保留，未重估 | 旧表本来就保留字符集／collation表；不能再把“不复制表”算新节省 | CONVERT／binary政策及编码适配 |
 | exceptions | 原五项保留，未重估 | codec／parser／password库仍原所有者；schema尚含Expression求值和懒外部引用 | 五项具体服务能力／错误桥接，不搬服务本体 |
 | input_lifecycle | 列／typed参数／已接纳有种子执行状态已付 | 已证有种子 RAND 和严格字面正则的跨批状态／新执行重建；其他缓存寿命、correlation 和默认集成待完成 | 跨族绑定／状态寿命；task45实际端点已计，不重复估价 |
-| integration | 显式输入输出已付，默认与退役未付 | 含 Time 的 owned/direct 根输出和显式串行 SQL 计算投影均有验证，公共算子包装、reader、数值诊断及用户变量门控已复审。真实 PB 计算投影在生产批算子走通，Endpoint、默认 SQL 和 Unistore 入口及退役待完成 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
-| engine | 单RPN及分发依赖已付，剩余范围未定价 | 借用和执行器自有的程序／状态均短借用进入同一分组求值。类型化 NativeDate 与独立表达式包构建已证，现有 PB AND／OR 已移除嵌套运行程序，公开冻结及普通标量选行已通过复审，自定义向量声明和完整签名映射仍待验证 | 共享程序／验证／构建余项，不重复计各组算法 |
+| integration | 显式输入输出已付，默认与退役未付 | 含 Time 的 owned/direct 根输出和显式串行 SQL 计算投影均有验证，公共算子包装、reader、数值诊断及用户变量门控已复审。真实 PB 计算投影已通过带表数据的进程内存储 Endpoint，默认 SQL、Unistore 入口及退役待完成 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
+| engine | 单RPN及分发依赖已付，剩余范围未定价 | 借用和执行器自有的程序／状态均短借用进入同一分组求值。类型化 NativeDate 与独立表达式包构建已证，现有 PB AND／OR 已移除嵌套运行程序，公开冻结、普通标量选行及自定义普通向量的实际声明已通过复审，完整签名映射待验证 | 共享程序／验证／构建余项，不重复计各组算法 |
 
 状态“未重估”不表示零成本或接受旧区间为当前上限；一处未来帮助函数只有表中一个成本归属，其余行引用。没有逐行删除闭包前，不给原始代码退役额度。已有datatype源码原地被调用可以是零算法搬迁量；尚在expr的函数不能据此声称已是公共leaf。
 
@@ -790,3 +790,31 @@ TiDB 的 rust 目录运行 `cargo test -p tidb-executor --features shared-kernel
 ProductTable 夹具向测试 RocksEngine 提交数据，Endpoint 解码和执行 DAG。用 Projection 描述符、显式输出偏移和两侧不同的短路标志，保留请求和响应证明。可采用一行有无效整数文本但左侧已真、一行需要合法数值转换、一行需要 NULL 的数据。分别检查解码后的行顺序、值和 NULL，检查响应错误以及告警码、文本、条数。以旧版的实际告警与新版本同开关的结果对照。此前通过的生产批算子使用模拟子扫描；此处要取得的结果来自存储请求。Rust TiDB 的默认请求标志与远端网络链路另有入口。[有表数据的夹具](https://github.com/YangKeao/tikv/blob/df5dc56c9fa0222a3e065620d16715c734d62450/components/test_coprocessor/src/fixture.rs#L216) · [请求属性与偏移](https://github.com/YangKeao/tikv/blob/df5dc56c9fa0222a3e065620d16715c734d62450/components/test_coprocessor/src/dag.rs#L332) · [Endpoint 调用](https://github.com/YangKeao/tikv/blob/df5dc56c9fa0222a3e065620d16715c734d62450/components/test_coprocessor/src/util.rs#L15)
 
 **自定义向量声明。** 修正版已保留临时选行时的实际标量声明，默认向量分支仍使用 schema[offset]。旧递归入口在部分选行时直接使用 read 返回的向量声明。若该声明的 unsigned 标志与 schema 不同，MakeTime 会以不同方式解释同一小时原值 −1。可给左侧输入 [1,0]，令右侧判断 MakeTime(hour,0,0.0) 是否小于零，时间结果设为 FSP 0。小时数据始终为 −1，适配器返回 signed BIGINT 而 schema 标为 unsigned。源码预测旧递归版为 [1,1]、当前为 [1,0]，尚待运行。实际存储适配器从 schema 返回字段，两条验证线可独立推进。若见证成立，以真实返回的完整声明、选行需求、向量形状和旧结果检验修复；普通存储和公开标量回归继续通过。[临时向量选行](https://github.com/YangKeao/tikv/blob/df5dc56c9fa0222a3e065620d16715c734d62450/components/tidb_query_expr/src/types/expr_eval.rs#L87) · [读取小时符号策略](https://github.com/YangKeao/tikv/blob/df5dc56c9fa0222a3e065620d16715c734d62450/components/tidb_query_expr/src/impl_time.rs#L583)
+
+## task 50 存储 Endpoint 与普通向量声明复审
+
+**两项均通过限定复审。** SDK 为 872241c7a9，TiDB 调用方为 34dde9c1a0，随后 fe2e7b653d 仅增加报告。递归版 af3dcf96 与单循环版 df5dc56c 使用完全相同的 78 行测试和一处 BorrowedBuf 元素类型注解，两版对照补丁的 SHA256 为 ca3269598fe81cf351ecc64f815eecf2f98770ab48e629684af5da21ebcaa9f0。后一版加补丁后的树与中间提交 4e0dddb 的树一致。[固定报告](https://github.com/YangKeao/tidb/blob/fe2e7b653d69bc099873ca15261f3f401b38ded3/rust/docs/shared-kernel/pb-endpoint-vector.zh.md)
+
+| 运行入口 | 输入和观察结果 |
+|---|---|
+| 进程内存储 Endpoint | ProductTable 向测试 RocksEngine 提交三条记录。请求解码后含表扫描、计算投影和输出偏移 [0]。递归、单循环、最终三个版本各通过两项既有选择测试和一项新增投影。投影用请求标志 2 和 4098 均返回 [1,1,NULL]。标志 2 带回一条 1292，文本为 `evaluation failed: Truncated incorrect INTEGER value: 'invalid-int'`，4098 的告警数为零。两种响应均成功。已有 NULL 选择测试只启用短路。这里实际调用本机存储 Endpoint，网络部署和 TiDB 默认请求属于其他入口。[表投影与响应断言](https://github.com/YangKeao/tikv/blob/872241c7a98342db18b60ea603de838f749d6c8d/tests/integrations/coprocessor/test_select.rs#L2738) · [实际存储夹具](https://github.com/YangKeao/tikv/blob/872241c7a98342db18b60ea603de838f749d6c8d/components/test_coprocessor/src/fixture.rs#L149) |
+| 公开输入适配器 | 输入位置 [2,0,1,2]，部分行定值后右侧请求 [2,1,2]。有符号的 −1 小时经 MAKETIME 与零比较，递归版、单循环修前、最终版分别输出 [1,1,1,1]、[NULL,1,0,NULL]、[1,1,1,1]。自定义无符号和实际存储列在三版均为 [NULL,1,0,NULL]。终版直接检查了长度 19 的完整字段声明、向量形状和稠密位置 [0,1,2]；此前 1、0、NULL 标量广播也通过。[向量对照](https://github.com/YangKeao/tikv/blob/872241c7a98342db18b60ea603de838f749d6c8d/components/tidb_query_expr/src/types/expr_eval.rs#L1620) |
+
+公开 Vector 节点现在用 RpnVectorFieldType 包装字段声明，外部构造和直接解构该字段的调用者须适配。普通存储列指向同一 schema 字段时沿用借用。不同地址的自定义借用声明完整复制一次，已自有的声明移交给输出。引用向量按返回的行映射复制所需数据，已生成向量直接转移。TiDB 的生成向量构造点及 SDK 慢哈希读取处已适配；本批没有测量节点布局、分配或耗时。[声明选择](https://github.com/YangKeao/tikv/blob/872241c7a98342db18b60ea603de838f749d6c8d/components/tidb_query_expr/src/types/expr_eval.rs#L75) · [原生调用方](https://github.com/YangKeao/tidb/blob/34dde9c1a01db8d679491a20c48b88d5a251c946/rust/crates/tidb-expr/src/shared_kernel.rs#L1381)
+
+复算两组清单 31 与 60 项哈希，重建 7 与 13 对双仓跟踪源码树。20 次命令中 16 次退出 0、4 次退出 101，保留了解析接口编译失败、告警前缀漏写、有符号语义反例及夹具类型推断失败。十次最终产品检查对应固定实现，另有一次工具链查询。SDK 库 443 项表达式、122 项执行器、41 项聚合及 3 项 Endpoint 通过。TiDB 定向 60 项共享表达式、7 项共享 SQL、1 项默认 PREPARE 通过。SDK 三包限定 Clippy 有警告并通过，根 lint 通过。五个 SDK 文件的格式与父版对照只保留 slow-hash 原有 6 行差异。复审使用固定源码与保存的运行记录，构建使用过依赖缓存；没有新的完整依赖图、性能测量或全 SDK 公告检查，历史公告失败保留。
+
+| 两仓固定端点 | 生产 Rust 新增／删除 | 测试及测量 Rust | 构建 | 材料 | 总增删 |
+|---|---:|---:|---:|---:|---:|
+| 相对 task 49 修正版 | 61／21 | 186／3 | 0／0 | 45／0 | 316 |
+| 相对原始两仓 | 4,854／657 | 7,298／100 | 1,990／103 | 20,629／0 | 35,631 |
+
+相对原始两仓，源码与测试累计新增 12,152 行、删除 757 行，共 12,909 行。与工程师的分类相比，复算将 expr_builder.rs 中单独受 cfg(test) 约束的方法转入测试栏，涉及新增 2 行、删除 7 行；总量相符。全范围迁移和 10K 数量级目标仍待验证。
+
+## task 51 两端共用 AND／OR 逻辑指令
+
+按 984e81b5，先覆盖原生二元 AND／OR 的有符号非数组 BIGINT。两个操作数及结果须有可验证的类型与实际整数载体；已接纳的整数列、整数字面量、有类型的 NULL 和返回该载体的子表达式可组合。保留 SQL 原生布尔结果的长度、标志及外层输出声明。未覆盖的转换或输入使整组走原路径，继续由现有原生实现解释。[原生重写](https://github.com/YangKeao/tidb/blob/34dde9c1a01db8d679491a20c48b88d5a251c946/rust/crates/tidb-expr/src/rewriter.rs#L675) · [原生布尔类型](https://github.com/YangKeao/tidb/blob/34dde9c1a01db8d679491a20c48b88d5a251c946/rust/crates/tidb-expr/src/builtin_op.rs#L46)
+
+原生总是先取左值。AND 见假、OR 见真即结束，负数等非零值为真；左 NULL 仍需求右侧。编译器可在原有迭代遍历中发射 LogicalStart、LogicalNext、LogicalEnd，使用现有三值合并、父栈和目标校验。原生投影逐行进入操作数，PB 的操作数采用向量模式；当前逻辑帧会无条件切为向量。新接入须按调用合同选择模式，且插入 OrderedRows 后重定位逻辑终点。这样，活跃右侧中的 BENCHMARK 仍以标量执行，死分支不消费随机流。普通 PB 的请求开关、简单参数判断和预解码仍按既有入口执行。[原生短路](https://github.com/YangKeao/tidb/blob/34dde9c1a01db8d679491a20c48b88d5a251c946/rust/crates/tidb-expr/src/scalar_function.rs#L1601) · [当前帧入口](https://github.com/YangKeao/tikv/blob/872241c7a98342db18b60ea603de838f749d6c8d/components/tidb_query_expr/src/types/expr_eval.rs#L900) · [插入逐行区域](https://github.com/YangKeao/tidb/blob/34dde9c1a01db8d679491a20c48b88d5a251c946/rust/crates/tidb-expr/src/shared_kernel.rs#L793)
+
+以原生逐行执行核对真／假／NULL、负数、混合嵌套及乱序重复位置。分别观察活跃与跳过的错误或副作用和结果，并覆盖标量与向量入口。在实际保留本地串行投影的 SQL 中记录显式开关两侧的选中次数、跨批结果和字段声明，用不合签名的组验证回退。保留原有 PB 需求和存储用例，交付固定源码、受影响的回归、两仓增删及实际复用量。默认路径、完整签名覆盖和旧运行时退役仍属后续工作。
