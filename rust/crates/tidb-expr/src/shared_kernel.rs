@@ -111,6 +111,8 @@ impl SharedExpression {
                 usize,
                 Vec<usize>,
             ),
+            LogicalNext(&'a Expression, usize),
+            LogicalEnd(usize),
             IfCondition(&'a crate::scalar_function::ScalarFunction),
             IfThen(&'a crate::scalar_function::ScalarFunction, usize),
             IfElse(usize, usize),
@@ -563,6 +565,51 @@ impl SharedExpression {
                         *target = end;
                     }
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if matches!(f.func_name.lowercase(), "and" | "or") =>
+                {
+                    let signed_bigint = |t: &tidb_datatype::FieldType| {
+                        t.code() == tidb_datatype::FieldTypeCode::LongLong
+                            && !t.is_unsigned()
+                            && !t.is_array()
+                    };
+                    let [left, right] = f.args.as_slice() else {
+                        return Err("AND/OR require two operands".into());
+                    };
+                    if !f.ret_type.as_ref().is_some_and(signed_bigint)
+                        || f.args.iter().any(|arg| {
+                            !arg.static_type().is_some_and(signed_bigint)
+                                || matches!(arg, Expression::Constant(c)
+                                    if !matches!(c.literal_value(), Some(Datum::Int(_) | Datum::Null)))
+                        })
+                    {
+                        return Err("AND/OR require signed BIGINT operands and result".into());
+                    }
+                    let start = nodes.len();
+                    nodes.push(RpnExpressionNode::LogicalStart {
+                        and: f.func_name.lowercase() == "and",
+                        end: 0,
+                        preserve_mode: true,
+                    });
+                    work.push(Visit::LogicalNext(right, start));
+                    work.push(Visit::Enter(left));
+                }
+                Visit::LogicalNext(right, start) => {
+                    nodes.push(RpnExpressionNode::LogicalNext);
+                    work.push(Visit::LogicalEnd(start));
+                    work.push(Visit::Enter(right));
+                }
+                Visit::LogicalEnd(start) => {
+                    nodes.push(RpnExpressionNode::LogicalEnd {
+                        field_type: FieldTypeTp::LongLong.into(),
+                    });
+                    let end = nodes.len();
+                    let RpnExpressionNode::LogicalStart { end: target, .. } = &mut nodes[start]
+                    else {
+                        unreachable!()
+                    };
+                    *target = end;
+                }
                 Visit::Enter(Expression::ScalarFunction(f)) if f.func_name.lowercase() == "if" => {
                     if f.args.len() != 3 {
                         return Err("IF requires three arguments".into());
@@ -800,7 +847,8 @@ impl SharedExpression {
                     RpnExpressionNode::Jump { target, .. }
                     | RpnExpressionNode::RegexpArgument { target, .. }
                     | RpnExpressionNode::NullGuard { target, .. } => *target += 1,
-                    RpnExpressionNode::Repeat { end, .. } => *end += 1,
+                    RpnExpressionNode::Repeat { end, .. }
+                    | RpnExpressionNode::LogicalStart { end, .. } => *end += 1,
                     _ => {}
                 }
             }
@@ -2242,6 +2290,208 @@ mod tests {
             self.vars
                 .borrow_mut()
                 .insert(name.to_ascii_lowercase(), value);
+        }
+    }
+
+    #[test]
+    fn shared_kernel_native_logical_values_and_admission() {
+        use tidb_datatype::FieldTypeCode;
+
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let column = |index| {
+            let mut column = Column::new(index + 1, integer.clone());
+            column.index = index;
+            Expression::Column(column)
+        };
+        let logic = |name, lhs, rhs| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                crate::builtin_op::infer_op_type(name).unwrap(),
+                vec![lhs, rhs],
+            ))
+        };
+        let expression = logic("and", logic("or", column(0), column(1)), column(2));
+        let mut input = Chunk::new(&[integer.clone(), integer.clone(), integer.clone()], 4, 4);
+        for row in [
+            [Some(-2), Some(0), Some(-3)],
+            [Some(0), None, Some(-1)],
+            [None, Some(0), Some(0)],
+            [Some(0), Some(2), None],
+        ] {
+            for (column, value) in row.into_iter().enumerate() {
+                match value {
+                    Some(value) => input.append_int64(column, value),
+                    None => input.append_null(column),
+                }
+            }
+        }
+        let rows = [3, 0, 2, 1, 0];
+        let expected = rows
+            .iter()
+            .map(|row| {
+                expression
+                    .eval(&crate::context::NoColumns, input.physical_row(*row))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            expected,
+            [
+                Datum::Null,
+                Datum::Int(1),
+                Datum::Int(0),
+                Datum::Null,
+                Datum::Int(1)
+            ]
+        );
+        eprintln!("native rows={rows:?}, expected={expected:?}");
+        let program = SharedExpression::compile(&expression).unwrap();
+        assert_eq!(program.result_type(), expression.static_type());
+        assert_eq!(
+            program
+                .evaluate(&input, &rows, &mut EvalContext::default())
+                .unwrap(),
+            expected,
+        );
+
+        for bad in [
+            Constant::new(Datum::Int(1), integer.clone().with_unsigned(true)),
+            Constant::new(Datum::Null, integer.clone().with_array(true)),
+            Constant::new(Datum::Real(1.0), integer.clone()),
+            Constant::new(Datum::Null, FieldType::new(FieldTypeCode::Null)),
+        ] {
+            assert!(
+                SharedExpression::compile(&logic("or", column(0), Expression::Constant(bad)))
+                    .is_err()
+            );
+        }
+        for result in [
+            integer.clone().with_unsigned(true),
+            integer.clone().with_array(true),
+            FieldType::new(FieldTypeCode::Double),
+        ] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("or"),
+                result,
+                vec![column(0), column(1)],
+            ));
+            assert!(SharedExpression::compile(&expression).is_err());
+        }
+    }
+
+    #[test]
+    fn shared_kernel_native_logical_delays_repeat_and_errors() {
+        use tidb_datatype::FieldTypeCode;
+
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let logic = |name, lhs, rhs| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                crate::builtin_op::infer_op_type(name).unwrap(),
+                vec![lhs, rhs],
+            ))
+        };
+        let literal = |datum| Expression::Constant(Constant::new(datum, integer.clone()));
+        let benchmark = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("benchmark"),
+            integer.clone(),
+            vec![
+                literal(Datum::Int(2)),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("rand"),
+                    FieldType::new(FieldTypeCode::Double),
+                    vec![],
+                )),
+            ],
+        ));
+        let mut condition = Column::new(1, integer.clone());
+        condition.index = 0;
+        let mut input = Chunk::new(&[integer.clone()], 3, 3);
+        input.append_int64(0, -1);
+        input.append_int64(0, 0);
+        input.append_null(0);
+        let rows = [2, 0, 1, 0, 2];
+        for (name, draws) in [("or", 6), ("and", 8)] {
+            let expression = logic(
+                name,
+                Expression::Column(condition.clone()),
+                benchmark.clone(),
+            );
+            let baseline = Session::default();
+            let expected = rows
+                .iter()
+                .map(|row| {
+                    expression
+                        .eval(&baseline, input.physical_row(*row))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(baseline.draws.get(), draws);
+            eprintln!("native {name}: values={expected:?}, draws={draws}");
+            let program = SharedExpression::compile(&expression).unwrap();
+            let session = Session::default();
+            let mut execution = program.start_execution(&session);
+            let mut ctx = EvalContext::default();
+            let mut actual = execution
+                .evaluate(&input, &rows[..2], &mut ctx, InvocationMode::Vector)
+                .unwrap();
+            actual.extend(
+                execution
+                    .evaluate(&input, &rows[2..], &mut ctx, InvocationMode::Vector)
+                    .unwrap(),
+            );
+            assert_eq!(actual, expected);
+            assert_eq!(session.draws.get(), draws);
+            let scalar = Session::default();
+            let mut execution = program.start_execution(&scalar);
+            for (&row, expected) in rows.iter().zip(expected) {
+                assert_eq!(
+                    execution
+                        .evaluate(&input, &[row], &mut ctx, InvocationMode::Scalar)
+                        .unwrap(),
+                    [expected],
+                );
+            }
+            assert_eq!(scalar.draws.get(), draws);
+        }
+
+        let overflow = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("plus"),
+            integer.clone(),
+            vec![literal(Datum::Int(i64::MAX)), literal(Datum::Int(1))],
+        ));
+        for (name, dead, live) in [("and", 0, -1), ("or", -1, 0)] {
+            for (left, expected) in [
+                (
+                    Datum::Int(dead),
+                    Some(Datum::Int(if dead == 0 { 0 } else { 1 })),
+                ),
+                (Datum::Int(live), None),
+                (Datum::Null, None),
+            ] {
+                let expression = logic(name, literal(left), overflow.clone());
+                let native = expression.eval(&crate::context::NoColumns, input.physical_row(0));
+                let actual = SharedExpression::compile(&expression).unwrap().evaluate(
+                    &input,
+                    &rows,
+                    &mut EvalContext::default(),
+                );
+                if let Some(expected) = expected {
+                    assert_eq!(native.unwrap(), expected);
+                    assert_eq!(actual.unwrap(), vec![expected; rows.len()]);
+                } else {
+                    let Err(crate::EvalError::DataOutOfRange { value, expression }) = native else {
+                        panic!("expected original overflow, got {native:?}");
+                    };
+                    let actual = actual.unwrap_err();
+                    assert_eq!(actual.code, Some(1690));
+                    assert_eq!(
+                        actual.message,
+                        format!("{value} value is out of range in '{expression}'")
+                    );
+                    eprintln!("{name} live error: {actual:?}");
+                }
+            }
         }
     }
 

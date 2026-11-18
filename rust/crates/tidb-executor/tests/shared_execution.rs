@@ -463,3 +463,99 @@ fn shared_sql_projection_declines_nested_string_variable_reads() {
     run_select_meta_on("SELECT RAND(7)", &catalog, &shared).unwrap();
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_projection_runs_signed_logic_and_declines_unsigned_group() {
+    use tidb_ast::Stmt;
+    use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
+    use tidb_executor::{
+        driver::open_query_meta_stmt_with_physical, run_create_table_on, run_insert_on,
+        run_select_meta_on, Catalog, DEFAULT_DATABASE,
+    };
+
+    let mut catalog = Catalog::default();
+    let context = || StmtContext::for_query().with_executor_chunk_sizes(2, 8);
+    run_create_table_on(
+        "CREATE TABLE logic_samples (
+            id BIGINT PRIMARY KEY, a BIGINT, b BIGINT, c BIGINT, u BIGINT UNSIGNED
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO logic_samples VALUES
+         (1,-2,0,-3,0),(2,0,NULL,-1,1),(3,NULL,0,0,1),(4,0,2,NULL,0),(5,-1,NULL,-9,0)",
+        &mut catalog,
+        &context(),
+    )
+    .unwrap();
+
+    let sql = "SELECT (a OR b) AND c, RAND(7) FROM logic_samples ORDER BY id LIMIT 5";
+    let native = context();
+    let (columns, expected) = run_select_meta_on(sql, &catalog, &native).unwrap();
+    assert_eq!(native.shared_projection_counts(), None);
+    let field = &columns[0].1;
+    assert_eq!(field.code(), FieldTypeCode::LongLong);
+    assert_eq!(field.flen(), 1);
+    assert_ne!(field.flags() & FieldTypeFlags::IS_BOOLEAN, 0);
+    assert!(!field.is_unsigned());
+    assert!(!field.is_array());
+    assert_eq!(
+        expected
+            .iter()
+            .map(|row| row[0].clone())
+            .collect::<Vec<_>>(),
+        [
+            Datum::Int(1),
+            Datum::Null,
+            Datum::Int(0),
+            Datum::Null,
+            Datum::Int(1)
+        ],
+    );
+
+    let Stmt::Query(query) = tidb_parser::parse(sql).unwrap() else {
+        unreachable!();
+    };
+    let shared = context().with_shared_projection();
+    let mut records =
+        open_query_meta_stmt_with_physical(&query, None, &catalog, DEFAULT_DATABASE, &shared)
+            .unwrap();
+    assert_eq!(records.columns(), columns);
+    let types: Vec<_> = columns.iter().map(|(_, field)| field.clone()).collect();
+    let mut request = records.new_chunk();
+    let mut actual = Vec::new();
+    let mut batches = Vec::new();
+    loop {
+        request.set_required_rows(2, 8);
+        records.next(&mut request).unwrap();
+        if request.num_rows() == 0 {
+            break;
+        }
+        batches.push(request.num_rows());
+        actual.extend((0..request.num_rows()).map(|i| request.get_row(i).get_datum_row(&types)));
+    }
+    records.finish().unwrap();
+    assert_eq!(actual, expected);
+    assert!(batches.len() >= 2);
+    eprintln!(
+        "batches={batches:?}, route={:?}, rows={actual:?}, field={field:?}",
+        shared.shared_projection_counts()
+    );
+    assert_eq!(
+        shared.shared_projection_counts(),
+        Some((1, batches.len() as u64))
+    );
+
+    let declined = context().with_shared_projection();
+    let mixed = "SELECT a OR u, RAND(7) FROM logic_samples ORDER BY id LIMIT 5";
+    assert_eq!(
+        run_select_meta_on(mixed, &catalog, &declined).unwrap(),
+        run_select_meta_on(mixed, &catalog, &context()).unwrap(),
+    );
+    assert_eq!(declined.shared_projection_counts(), Some((0, 0)));
+    eprintln!(
+        "unsigned group route={:?}",
+        declined.shared_projection_counts()
+    );
+}
