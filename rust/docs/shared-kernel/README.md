@@ -24,3 +24,4 @@
 - [有符号 BIGINT 减法](bigint-subtraction.zh.md)
 - [字符串条件值的字节与排序规则](string-conditionals.zh.md)
 - [原生二进制 JSON 的 JSON_TYPE](typed-json-type.zh.md)
+- [IF 的 MD5 和 JSON_TYPE 共享分支](mixed-string-if.zh.md)
