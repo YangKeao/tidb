@@ -131,6 +131,7 @@ impl SharedExpression {
         let mut work = vec![Visit::Enter(expression)];
         let mut nodes = Vec::new();
         let mut columns = Vec::new();
+        let batch_mixed_string_if = can_batch_mixed_string_if(expression);
         let mut row_fallback = false;
         let bytes_type = || tipb::FieldType::from(FieldTypeTp::VarString);
         let result_operand = |value, field_type: &tipb::FieldType| {
@@ -153,7 +154,8 @@ impl SharedExpression {
                     && f.args
                         .iter()
                         .all(|arg| matches!(arg, Expression::Constant(_) | Expression::Column(_)));
-                row_fallback |= !pure_call
+                row_fallback |= !batch_mixed_string_if
+                    && !pure_call
                     && !matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div");
             }
             match visit {
@@ -2183,6 +2185,29 @@ fn bigint_type(unsigned: bool) -> tipb::FieldType {
     field_type
 }
 
+// MD5 over a raw column has no SQL data-dependent failure. JSON_TYPE
+// reads and reports errors only within the chosen rows. Neither branch
+// performs host effects, so the existing vector IF can group their reads.
+fn can_batch_mixed_string_if(expression: &Expression) -> bool {
+    let Expression::ScalarFunction(condition) = expression else {
+        return false;
+    };
+    let [Expression::Column(flag), Expression::ScalarFunction(hash), Expression::ScalarFunction(kind)] =
+        condition.args.as_slice()
+    else {
+        return false;
+    };
+    condition.func_name.lowercase() == "if"
+        && [condition, hash, kind]
+            .iter()
+            .all(|f| f.pb_signature().is_none())
+        && flag.ret_type.as_ref().is_some_and(is_signed_bigint)
+        && hash.func_name.lowercase() == "md5"
+        && kind.func_name.lowercase() == "json_type"
+        && matches!(hash.args.as_slice(), [Expression::Column(_)])
+        && matches!(kind.args.as_slice(), [Expression::Column(_)])
+}
+
 // Native conditional values retain the chosen branch's collation even when
 // the SQL output declaration uses a different collation.
 fn string_conditional_collation(
@@ -2982,6 +3007,30 @@ mod tests {
         assert_eq!(actual(&output), expected);
 
         let compiled = SharedExpression::compile(&expr).unwrap();
+        assert!(!matches!(
+            compiled.program[0],
+            RpnExpressionNode::OrderedRows { .. }
+        ));
+        let Expression::ScalarFunction(mut compound) = expr else {
+            unreachable!();
+        };
+        compound.args[0] = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("benchmark"),
+            FieldType::new(FieldTypeCode::LongLong),
+            vec![
+                numeric_literal(Datum::Int(1), &FieldType::new(FieldTypeCode::LongLong)),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("rand"),
+                    FieldType::new(FieldTypeCode::Double),
+                    vec![],
+                )),
+            ],
+        ));
+        let ordered = SharedExpression::compile(&Expression::ScalarFunction(compound)).unwrap();
+        assert!(matches!(
+            ordered.program[0],
+            RpnExpressionNode::OrderedRows { .. }
+        ));
         assert_eq!(
             compiled
                 .evaluate_mode(
