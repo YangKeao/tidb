@@ -98,6 +98,18 @@ impl ExecError {
     }
 }
 
+#[cfg(feature = "shared-kernel")]
+impl From<tidb_expr::shared_kernel::SharedEvaluationError> for ExecError {
+    fn from(error: tidb_expr::shared_kernel::SharedEvaluationError) -> Self {
+        match error.code.and_then(|code| u16::try_from(code).ok()) {
+            Some(code) => {
+                Self::Mysql(crate::MysqlError::new(code, error.message).from_evaluation())
+            }
+            None => Self::internal(error.message),
+        }
+    }
+}
+
 impl From<crate::kv_table::KvTableError> for ExecError {
     fn from(error: crate::kv_table::KvTableError) -> Self {
         match error {

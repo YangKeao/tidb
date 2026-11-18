@@ -9,7 +9,7 @@
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::Datum;
 use tidb_query_datatype::{
-    codec::data_type::{ChunkRef, ScalarValue, VectorValue},
+    codec::data_type::{ChunkRef, ScalarValue, ScalarValueRef, VectorValue},
     expr::EvalContext,
     EvalType, FieldTypeAccessor, FieldTypeFlag, FieldTypeTp,
 };
@@ -111,6 +111,7 @@ impl SharedExpression {
                 usize,
                 Vec<usize>,
             ),
+            IntComparison(tidb_query_expr::RpnFnMeta),
             LogicalNext(&'a Expression, usize),
             LogicalEnd(usize),
             IfCondition(&'a crate::scalar_function::ScalarFunction),
@@ -566,34 +567,58 @@ impl SharedExpression {
                     }
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
-                    if matches!(f.func_name.lowercase(), "and" | "or") =>
+                    if matches!(
+                        f.func_name.lowercase(),
+                        "and" | "or" | "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq"
+                    ) =>
                 {
-                    let signed_bigint = |t: &tidb_datatype::FieldType| {
-                        t.code() == tidb_datatype::FieldTypeCode::LongLong
-                            && !t.is_unsigned()
-                            && !t.is_array()
-                    };
                     let [left, right] = f.args.as_slice() else {
-                        return Err("AND/OR require two operands".into());
+                        return Err("logical operators and comparisons require two operands".into());
                     };
-                    if !f.ret_type.as_ref().is_some_and(signed_bigint)
+                    if !f.ret_type.as_ref().is_some_and(is_signed_bigint)
                         || f.args.iter().any(|arg| {
-                            !arg.static_type().is_some_and(signed_bigint)
+                            !arg.static_type().is_some_and(is_signed_bigint)
                                 || matches!(arg, Expression::Constant(c)
                                     if !matches!(c.literal_value(), Some(Datum::Int(_) | Datum::Null)))
                         })
                     {
-                        return Err("AND/OR require signed BIGINT operands and result".into());
+                        return Err("logical operators and comparisons require signed BIGINT operands and result".into());
                     }
-                    let start = nodes.len();
-                    nodes.push(RpnExpressionNode::LogicalStart {
-                        and: f.func_name.lowercase() == "and",
-                        end: 0,
-                        preserve_mode: true,
-                    });
-                    work.push(Visit::LogicalNext(right, start));
+                    let name = f.func_name.lowercase();
+                    if matches!(name, "and" | "or") {
+                        let start = nodes.len();
+                        nodes.push(RpnExpressionNode::LogicalStart {
+                            and: name == "and",
+                            end: 0,
+                            preserve_mode: true,
+                        });
+                        work.push(Visit::LogicalNext(right, start));
+                    } else {
+                        use tidb_query_expr::impl_compare::{
+                            compare_fn_meta, BasicComparer, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe,
+                            CmpOpLt, CmpOpNe, CmpOpNullEq,
+                        };
+                        let func = match name {
+                            "eq" => compare_fn_meta::<BasicComparer<i64, CmpOpEq>>(),
+                            "ne" => compare_fn_meta::<BasicComparer<i64, CmpOpNe>>(),
+                            "lt" => compare_fn_meta::<BasicComparer<i64, CmpOpLt>>(),
+                            "le" => compare_fn_meta::<BasicComparer<i64, CmpOpLe>>(),
+                            "gt" => compare_fn_meta::<BasicComparer<i64, CmpOpGt>>(),
+                            "ge" => compare_fn_meta::<BasicComparer<i64, CmpOpGe>>(),
+                            "nulleq" => compare_fn_meta::<BasicComparer<i64, CmpOpNullEq>>(),
+                            _ => unreachable!(),
+                        };
+                        work.push(Visit::IntComparison(func));
+                        work.push(Visit::Enter(right));
+                    }
                     work.push(Visit::Enter(left));
                 }
+                Visit::IntComparison(func_meta) => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta,
+                    args_len: 2,
+                    field_type: FieldTypeTp::LongLong.into(),
+                    metadata: Box::new(()),
+                }),
                 Visit::LogicalNext(right, start) => {
                     nodes.push(RpnExpressionNode::LogicalNext);
                     work.push(Visit::LogicalEnd(start));
@@ -979,6 +1004,31 @@ impl SharedProjection {
             },
         })
     }
+    /// Compile all predicates against the bound child schema, before reading rows.
+    pub fn compile_selection(
+        filters: &[Expression],
+        input_types: &[tidb_datatype::FieldType],
+    ) -> Result<Self, String> {
+        if filters.is_empty()
+            || !crate::evaluator::vectorizable(filters)
+            || filters
+                .iter()
+                .any(|filter| !filter.static_type().is_some_and(is_signed_bigint))
+        {
+            return Err("shared selection requires vectorizable signed BIGINT predicates".into());
+        }
+        let program = Self::compile(filters)?;
+        if program.expressions.iter().any(|expression| {
+            expression
+                .columns
+                .iter()
+                .any(|(column, field_type)| input_types.get(*column) != Some(field_type))
+        }) {
+            return Err("selection input declarations differ from the child schema".into());
+        }
+        Ok(program)
+    }
+
     /// Largest number of selected rows supported in one child batch.
     pub const MAX_BATCH_SIZE: usize = tidb_query_datatype::codec::data_type::BATCH_MAX_SIZE;
 
@@ -1111,6 +1161,54 @@ impl<C: crate::Columns> OwnedSharedProjection<C> {
         for root in &mut self.roots {
             root.execution.reset(supports_seeded_rand);
         }
+    }
+
+    /// Evaluate a compiled predicate group with the native filter's live-row rules.
+    pub fn evaluate_selection_mask(
+        &mut self,
+        filters: &[Expression],
+        input: &Chunk,
+        selected: &mut Vec<bool>,
+    ) -> Result<(), SharedEvaluationError> {
+        let width = input.physical_rows();
+        if width > SharedProjection::MAX_BATCH_SIZE || filters.len() != self.roots.len() {
+            return Err("invalid shared selection input".into());
+        }
+        selected.clear();
+        selected.resize(width, false);
+        let mut nulls = vec![false; width];
+        let mut ctx = EvalContext::default();
+        crate::evaluator::select_live_rows(
+            filters,
+            selected,
+            &mut nulls,
+            |index, _, rows, truth| {
+                let root = &mut self.roots[index];
+                let columns = NativeInput {
+                    chunk: input,
+                    columns: &root.columns,
+                    effects: &self.effects,
+                };
+                let result = root.execution.borrow_execution().eval_input_mode(
+                    &mut ctx,
+                    &root.schema,
+                    &columns,
+                    rows,
+                    rows.len(),
+                    InvocationMode::Vector,
+                )?;
+                truth.clear();
+                for logical in 0..rows.len() {
+                    let ScalarValueRef::Int(value) = result.get_logical_scalar_ref(logical) else {
+                        return Err(SharedEvaluationError::from("expected integer predicate"));
+                    };
+                    truth.push(value.map_or(-1, |value| i8::from(*value != 0)));
+                }
+                Ok(())
+            },
+        )?;
+        crate::evaluator::apply_input_selection(input, selected);
+        Ok(())
     }
 
     /// Evaluate a child chunk's logical rows into an independently owned chunk.
@@ -1534,6 +1632,10 @@ fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_e
         }
     };
     EvaluateError::Custom { code, msg }.into()
+}
+
+fn is_signed_bigint(tp: &tidb_datatype::FieldType) -> bool {
+    tp.code() == tidb_datatype::FieldTypeCode::LongLong && !tp.is_unsigned() && !tp.is_array()
 }
 
 fn is_time_type(tp: &tidb_datatype::FieldType) -> bool {
@@ -2290,6 +2392,141 @@ mod tests {
             self.vars
                 .borrow_mut()
                 .insert(name.to_ascii_lowercase(), value);
+        }
+    }
+
+    #[test]
+    fn shared_kernel_selection_retains_native_null_and_physical_demand() {
+        use tidb_datatype::FieldTypeCode;
+
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let types = [integer.clone(), integer.clone()];
+        let mut input = Chunk::new(&types, 5, 5);
+        for (left, right) in [
+            (Some(0), 0),
+            (None, 1),
+            (Some(1), 0),
+            (Some(1), 1),
+            (Some(1), 1),
+        ] {
+            match left {
+                Some(value) => input.append_int64(0, value),
+                None => input.append_null(0),
+            }
+            input.append_int64(1, right);
+        }
+        input.set_sel(Some(vec![3, 3, 0]));
+        let function = |name, args| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                integer.clone(),
+                args,
+            ))
+        };
+        let literal =
+            |value| Expression::Constant(Constant::new(Datum::Int(value), integer.clone()));
+        for (in_operand, expected_draws) in [(false, 6), (true, 8)] {
+            let mut left = Column::new(1, integer.clone());
+            left.index = 0;
+            left.in_operand = in_operand;
+            let mut right = Column::new(2, integer.clone());
+            right.index = 1;
+            let filters = [
+                function("eq", vec![Expression::Column(left), literal(1)]),
+                function(
+                    "gt",
+                    vec![
+                        Expression::Column(right),
+                        function(
+                            "benchmark",
+                            vec![
+                                literal(2),
+                                Expression::ScalarFunction(ScalarFunction::new(
+                                    CiString::new("rand"),
+                                    FieldType::new(FieldTypeCode::Double),
+                                    vec![],
+                                )),
+                            ],
+                        ),
+                    ],
+                ),
+            ];
+            let native = Session::default();
+            let (expected, _) = crate::evaluator::vectorized_filter_consider_null(
+                &native,
+                true,
+                &filters,
+                &input,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+            let program = SharedProjection::compile_selection(&filters, &types).unwrap();
+            let mut shared = program.into_owned_execution(Session::default());
+            let mut actual = Vec::new();
+            shared
+                .evaluate_selection_mask(&filters, &input, &mut actual)
+                .unwrap();
+            eprintln!(
+                "from IN={in_operand}, physical mask={actual:?}, draws={}",
+                shared.effects.draws.get()
+            );
+            assert_eq!(expected, [false, false, false, true, false]);
+            assert_eq!(actual, expected);
+            assert_eq!(native.draws.get(), expected_draws);
+            assert_eq!(shared.effects.draws.get(), expected_draws);
+        }
+    }
+
+    #[test]
+    fn shared_kernel_native_signed_comparisons_match_original() {
+        use tidb_datatype::FieldTypeCode;
+
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let mut input = Chunk::new(&[integer.clone(), integer.clone()], 5, 5);
+        for (left, right) in [
+            (Some(i64::MIN), Some(i64::MAX)),
+            (Some(-1), Some(-1)),
+            (Some(i64::MAX), Some(i64::MIN)),
+            (None, Some(0)),
+            (None, None),
+        ] {
+            for (index, value) in [left, right].into_iter().enumerate() {
+                match value {
+                    Some(value) => input.append_int64(index, value),
+                    None => input.append_null(index),
+                }
+            }
+        }
+        let rows = [4, 0, 3, 1, 2, 0];
+        for name in ["eq", "ne", "lt", "le", "gt", "ge", "nulleq"] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                integer.clone(),
+                (0..2)
+                    .map(|index| {
+                        let mut col = Column::new(index + 1, integer.clone());
+                        col.index = index;
+                        Expression::Column(col)
+                    })
+                    .collect(),
+            ));
+            let expected = rows
+                .iter()
+                .map(|row| {
+                    expression
+                        .eval(&crate::context::NoColumns, input.physical_row(*row))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            eprintln!("{name}: rows={rows:?}, expected={expected:?}");
+            let program = SharedExpression::compile(&expression).unwrap();
+            assert_eq!(
+                program
+                    .evaluate(&input, &rows, &mut EvalContext::default())
+                    .unwrap(),
+                expected,
+            );
         }
     }
 

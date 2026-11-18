@@ -166,12 +166,6 @@ fn filter_physical_rows<C: Columns>(
         return Ok((selected, nulls));
     }
 
-    // Go `VecEvalBool`: `sel` is the live physical row set. Each filter runs
-    // over it and removes the rows it rejects, so a later filter never
-    // evaluates a row an earlier one dropped.
-    let mut sel: Vec<usize> = (0..physical_rows).collect();
-    // Go's `isZero`: -1 NULL, 0 false, 1 true, one entry per row of `sel`.
-    let mut is_zero: Vec<i8> = Vec::new();
     let truth_code = |value: &Datum| -> Result<i8, EvalError> {
         Ok(match crate::truthy_of(value)? {
             None => -1,
@@ -179,10 +173,7 @@ fn filter_physical_rows<C: Columns>(
             Some(true) => 1,
         })
     };
-    for filter in filters {
-        if sel.is_empty() {
-            break;
-        }
+    let evaluate = |_, filter: &Expression, sel: &[usize], is_zero: &mut Vec<i8>| {
         let column_wise = if !vec_enabled {
             false
         } else {
@@ -202,7 +193,7 @@ fn filter_physical_rows<C: Columns>(
                     true
                 }
                 Expression::ScalarFunction(function) => {
-                    function.vec_eval_bool(input, &sel, &mut is_zero)?
+                    function.vec_eval_bool(input, sel, is_zero)?
                 }
                 Expression::Column(_) | Expression::Constant(_) => false,
             }
@@ -211,12 +202,35 @@ fn filter_physical_rows<C: Columns>(
             // The scalar evaluator is the documented fallback for every
             // other shape, over the live rows only.
             is_zero.clear();
-            for &physical in &sel {
+            for &physical in sel {
                 is_zero.push(truth_code(
                     &filter.eval(ctx, input.physical_row(physical))?,
                 )?);
             }
         }
+        Ok(())
+    };
+    select_live_rows::<EvalError>(filters, &mut selected, &mut nulls, evaluate)?;
+    Ok((selected, nulls))
+}
+
+pub(crate) fn select_live_rows<E>(
+    filters: &[Expression],
+    selected: &mut [bool],
+    nulls: &mut [bool],
+    mut eval: impl FnMut(usize, &Expression, &[usize], &mut Vec<i8>) -> Result<(), E>,
+) -> Result<(), E> {
+    // Go `VecEvalBool`: `sel` is the live physical row set. Each filter runs
+    // over it and removes the rows it rejects, so a later filter never
+    // evaluates a row an earlier one dropped.
+    let mut sel: Vec<usize> = (0..selected.len()).collect();
+    // Go's `isZero`: -1 NULL, 0 false, 1 true, one entry per row of `sel`.
+    let mut is_zero: Vec<i8> = Vec::new();
+    for (index, filter) in filters.iter().enumerate() {
+        if sel.is_empty() {
+            break;
+        }
+        eval(index, filter, &sel, &mut is_zero)?;
         let mut kept = 0;
         let eq_from_in = is_eq_cond_from_in(filter);
         for index in 0..sel.len() {
@@ -242,10 +256,10 @@ fn filter_physical_rows<C: Columns>(
     for &physical in &sel {
         selected[physical] = !nulls[physical];
     }
-    Ok((selected, nulls))
+    Ok(())
 }
 
-fn apply_input_selection(input: &Chunk, selected: &mut [bool]) {
+pub(crate) fn apply_input_selection(input: &Chunk, selected: &mut [bool]) {
     if let Some(sel) = input.sel() {
         let mut in_selection = vec![false; selected.len()];
         for &physical in sel {

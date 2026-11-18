@@ -34,6 +34,8 @@ use tidb_datatype::{Datum, FieldType};
 use tidb_expr::evaluator::{vectorizable, vectorized_filter_consider_null};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
+#[cfg(feature = "shared-kernel")]
+use tidb_expr::shared_kernel::{OwnedSharedProjection, SharedProjection};
 use tidb_expr::{truthy_of, Columns};
 use tidb_util::memory::Tracker;
 
@@ -45,6 +47,11 @@ pub struct SelectionExec<C: Columns> {
     filters: Vec<Expression>,
     fast_filters: Vec<Option<FastSelectionFilter>>,
     batched: bool,
+    #[cfg(feature = "shared-kernel")]
+    shared: Option<(
+        OwnedSharedProjection<C>,
+        Arc<crate::stmt_context::SharedProgramCounts>,
+    )>,
     child: Box<dyn Executor>,
     ctx: C,
     child_chunk: Option<Chunk>,
@@ -94,6 +101,8 @@ impl<C: Columns> SelectionExec<C> {
             filters,
             fast_filters,
             batched,
+            #[cfg(feature = "shared-kernel")]
+            shared: None,
             child,
             ctx,
             child_chunk: None,
@@ -135,6 +144,15 @@ impl<C: Columns> SelectionExec<C> {
             .child_chunk
             .as_ref()
             .expect("selection child chunk exists while open");
+        #[cfg(feature = "shared-kernel")]
+        if let Some((program, counts)) = &mut self.shared {
+            counts
+                .batches
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return program
+                .evaluate_selection_mask(&self.filters, child_chunk, &mut self.selected)
+                .map_err(ExecError::from);
+        }
         let (selected, _) = vectorized_filter_consider_null(
             &self.ctx,
             true,
@@ -151,6 +169,33 @@ impl<C: Columns> SelectionExec<C> {
         self.child_chunk = None;
         self.selected.clear();
         self.tracker.replace_bytes_used(0);
+    }
+}
+
+#[cfg(feature = "shared-kernel")]
+impl SelectionExec<crate::StmtContext> {
+    pub(crate) fn with_shared_selection(mut self) -> Self {
+        let Some(counts) = &self.ctx.shared_selection else {
+            return self;
+        };
+        if self.ctx.statement_class() != crate::stmt_context::StatementClass::Select
+            || !self.ctx.enable_vectorized_expression()
+            || !(1..=SharedProjection::MAX_BATCH_SIZE).contains(&self.child.max_chunk_size())
+        {
+            return self;
+        }
+        if let Ok(program) =
+            SharedProjection::compile_selection(&self.filters, self.child.ret_field_types())
+        {
+            counts
+                .programs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.shared = Some((
+                program.into_owned_execution(self.ctx.clone()),
+                Arc::clone(counts),
+            ));
+        }
+        self
     }
 }
 
@@ -259,6 +304,10 @@ impl<C: Columns + Send> Executor for SelectionExec<C> {
     fn open(&mut self) -> Result<(), ExecError> {
         self.release_child_chunk();
         self.child.open()?;
+        #[cfg(feature = "shared-kernel")]
+        if let Some((program, _)) = &mut self.shared {
+            program.reset();
+        }
         let child_chunk = self.child.new_chunk();
         self.tracker.replace_bytes_used(child_chunk.memory_usage());
         self.child_chunk = Some(child_chunk);
@@ -349,6 +398,10 @@ impl<C: Columns + Send> Executor for SelectionExec<C> {
 
     fn close(&mut self) -> Result<(), ExecError> {
         self.release_child_chunk();
+        #[cfg(feature = "shared-kernel")]
+        if let Some((program, _)) = &mut self.shared {
+            program.reset();
+        }
         self.child.close()
     }
 

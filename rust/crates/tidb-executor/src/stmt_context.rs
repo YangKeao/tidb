@@ -39,9 +39,19 @@ static NEXT_STATEMENT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(feature = "shared-kernel")]
 #[derive(Debug, Default)]
-pub(crate) struct SharedProjectionCounts {
+pub(crate) struct SharedProgramCounts {
     pub(crate) programs: AtomicU64,
     pub(crate) batches: AtomicU64,
+}
+
+#[cfg(feature = "shared-kernel")]
+impl SharedProgramCounts {
+    fn get(&self) -> (u64, u64) {
+        (
+            self.programs.load(Ordering::Relaxed),
+            self.batches.load(Ordering::Relaxed),
+        )
+    }
 }
 
 /// Which of Go's mutually exclusive `StatementContext` statement-kind
@@ -813,7 +823,9 @@ pub struct StmtContextData {
     memory: StatementMemory,
     executor_chunk_sizes: ExecutorChunkSizes,
     #[cfg(feature = "shared-kernel")]
-    pub(crate) shared_projection: Option<Arc<SharedProjectionCounts>>,
+    pub(crate) shared_projection: Option<Arc<SharedProgramCounts>>,
+    #[cfg(feature = "shared-kernel")]
+    pub(crate) shared_selection: Option<Arc<SharedProgramCounts>>,
     /// Go `SessionVars.EnableVectorizedExpression`, captured for executor workers.
     enable_vectorized_expression: bool,
     /// The scanner flags of `@@sql_mode` -- Go's `Parser.SetSQLMode` input.
@@ -1007,6 +1019,14 @@ context_configuration! {
     #[must_use]
     pub fn with_shared_projection(mut self) -> Self {
         self.shared_projection = Some(Arc::default());
+        self
+    }
+
+    /// Enables shared evaluation of admitted local selection predicates.
+    #[cfg(feature = "shared-kernel")]
+    #[must_use]
+    pub fn with_shared_selection(mut self) -> Self {
+        self.shared_selection = Some(Arc::default());
         self
     }
 
@@ -1992,6 +2012,8 @@ impl StmtContext {
             executor_chunk_sizes: ExecutorChunkSizes::default(),
             #[cfg(feature = "shared-kernel")]
             shared_projection: None,
+            #[cfg(feature = "shared-kernel")]
+            shared_selection: None,
             enable_vectorized_expression: true,
             sql_mode: tidb_parser::SqlMode::default(),
             ddl_sql_mode: session.ddl_sql_mode,
@@ -2071,15 +2093,20 @@ impl StmtContext {
         self.statement_class
     }
 
-    /// Returns the number of shared programs selected and nonempty batches attempted.
+    /// Returns the number of shared projection programs selected and batches attempted.
     #[cfg(feature = "shared-kernel")]
     pub fn shared_projection_counts(&self) -> Option<(u64, u64)> {
-        self.shared_projection.as_ref().map(|counts| {
-            (
-                counts.programs.load(Ordering::Relaxed),
-                counts.batches.load(Ordering::Relaxed),
-            )
-        })
+        self.shared_projection
+            .as_deref()
+            .map(SharedProgramCounts::get)
+    }
+
+    /// Returns the number of shared selection programs selected and batches attempted.
+    #[cfg(feature = "shared-kernel")]
+    pub fn shared_selection_counts(&self) -> Option<(u64, u64)> {
+        self.shared_selection
+            .as_deref()
+            .map(SharedProgramCounts::get)
     }
 
     /// Rebuilding an already-compiled predicate for statistics must not

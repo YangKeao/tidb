@@ -4958,13 +4958,20 @@ fn build_with_state(
                 Ok(child)
             } else {
                 let schema = unary_schema(plan, child.as_ref());
-                Ok::<Box<dyn Executor>, DriverError>(Box::new(SelectionExec::new(
+                let executor = SelectionExec::new(
                     meta(ctx, plan, schema),
                     filters,
                     child,
                     ctx.clone(),
                     ctx.statement_memory(),
-                )))
+                );
+                #[cfg(feature = "shared-kernel")]
+                let executor = if state.in_reader {
+                    executor
+                } else {
+                    executor.with_shared_selection()
+                };
+                Ok::<Box<dyn Executor>, DriverError>(Box::new(executor))
             }
         }
         PhysicalPlan::Limit(limit) => {

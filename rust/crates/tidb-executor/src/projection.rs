@@ -112,7 +112,7 @@ enum ProjectionEvaluator {
     #[cfg(feature = "shared-kernel")]
     Shared {
         projection: OwnedSharedProjection<crate::StmtContext>,
-        counts: Arc<crate::stmt_context::SharedProjectionCounts>,
+        counts: Arc<crate::stmt_context::SharedProgramCounts>,
     },
 }
 
@@ -452,14 +452,7 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 projection
                     .evaluate_into_chunk(&self.child_chunk, req)
-                    .map_err(
-                        |error| match error.code.and_then(|code| u16::try_from(code).ok()) {
-                            Some(code) => ExecError::Mysql(
-                                crate::MysqlError::new(code, error.message).from_evaluation(),
-                            ),
-                            None => ExecError::internal(error.message),
-                        },
-                    )
+                    .map_err(ExecError::from)
             }
         }
     }

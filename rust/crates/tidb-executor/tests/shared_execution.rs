@@ -559,3 +559,57 @@ fn shared_sql_projection_runs_signed_logic_and_declines_unsigned_group() {
         declined.shared_projection_counts()
     );
 }
+
+#[test]
+fn shared_sql_selection_keeps_filter_demand_and_declines_unsigned() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE filter_samples (
+          id BIGINT PRIMARY KEY, a BIGINT, b BIGINT, u BIGINT UNSIGNED
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO filter_samples VALUES
+          (1,-5,-7,0),(2,-1,1,1),(3,NULL,NULL,2),(4,3,1,3),(5,4,5,4),(6,7,3,5)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let sql = "SELECT id FROM
+        (SELECT id,a,b,u FROM filter_samples ORDER BY id LIMIT 6) AS retained
+        WHERE (a >= b OR a <=> b) AND b > BENCHMARK(2, RAND()) ORDER BY id";
+    let compare = |sql: &str, expected_selected| {
+        let original_rng = Arc::new(MysqlRng::new_with_seed(1));
+        let shared_rng = Arc::new(MysqlRng::new_with_seed(1));
+        let context = |rng| {
+            StmtContext::for_query()
+                .with_executor_chunk_sizes(2, 2)
+                .with_rand_session(rng)
+        };
+        let original = context(Arc::clone(&original_rng));
+        let shared = context(Arc::clone(&shared_rng)).with_shared_selection();
+        let expected = run_select_meta_on(sql, &catalog, &original).unwrap();
+        let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(shared.take_warnings(), original.take_warnings());
+        assert_eq!(original.shared_selection_counts(), None);
+        let counts = shared.shared_selection_counts().unwrap();
+        eprintln!("filter rows={:?}, route={counts:?}", actual.1);
+        assert_eq!(counts.0, expected_selected);
+        if expected_selected == 0 {
+            assert_eq!(counts.1, 0);
+        } else {
+            assert!(counts.1 >= 2);
+        }
+        assert_eq!(shared_rng.gen(), original_rng.gen());
+        actual.1
+    };
+
+    assert_eq!(compare(sql, 1), [vec![Datum::Int(4)], vec![Datum::Int(6)]]);
+    compare(&sql.replace("AND b >", "AND u >"), 0);
+}
