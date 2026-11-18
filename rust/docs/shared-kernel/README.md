@@ -27,3 +27,4 @@
 - [IF 的 MD5 和 JSON_TYPE 共享分支](mixed-string-if.zh.md)
 - [混合 IF 的 release 求值成本](mixed-if-cost.zh.md)
 - [混合 IF 的批量分支](mixed-if-batch.zh.md)
+- [固定函数族与调用入口的迁移差距](migration-gap.zh.md)
