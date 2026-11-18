@@ -90,6 +90,7 @@ impl SharedExpression {
         enum Visit<'a> {
             Enter(&'a Expression),
             DecimalOperand(&'a Expression),
+            ComparisonOperand(&'a Expression),
             Md5,
             Date,
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
@@ -144,7 +145,10 @@ impl SharedExpression {
                     });
                 }
                 Visit::DecimalOperand(expression) => work.push(Visit::Enter(expression)),
-                Visit::Enter(Expression::Constant(c)) => {
+                Visit::ComparisonOperand(Expression::Constant(c))
+                | Visit::Enter(Expression::Constant(c)) => {
+                    let unsigned = matches!(visit, Visit::ComparisonOperand(_))
+                        && c.ret_type.as_ref().is_some_and(|tp| tp.is_unsigned());
                     let datum = c
                         .literal_value()
                         .ok_or("shared kernel requires a literal constant")?;
@@ -203,6 +207,7 @@ impl SharedExpression {
                         }
                         Datum::Null => ScalarValue::Bytes(None),
                         Datum::Int(v) => ScalarValue::Int(Some(*v)),
+                        Datum::UInt(v) if unsigned => ScalarValue::Int(Some(*v as i64)),
                         Datum::Bytes(v) => ScalarValue::Bytes(Some(v.clone())),
                         Datum::String(v) => ScalarValue::Bytes(Some(v.bytes().to_vec())),
                         _ => {
@@ -210,13 +215,15 @@ impl SharedExpression {
                         }
                     };
                     let field_type = if matches!(value, ScalarValue::Int(_)) {
-                        FieldTypeTp::LongLong.into()
+                        bigint_type(unsigned)
                     } else {
                         bytes_type()
                     };
                     nodes.push(RpnExpressionNode::Constant { value, field_type });
                 }
-                Visit::Enter(Expression::Column(c)) => {
+                Visit::ComparisonOperand(Expression::Column(c))
+                | Visit::Enter(Expression::Column(c)) => {
+                    let comparison_operand = matches!(visit, Visit::ComparisonOperand(_));
                     let index = usize::try_from(c.index).map_err(|_| "negative column index")?;
                     let tp = c.ret_type.as_ref().ok_or("column requires a field type")?;
                     let admitted =
@@ -225,7 +232,8 @@ impl SharedExpression {
                         tidb_datatype::FieldTypeCode::VarString
                             if tp.collation_name() == admitted.collation_name() => {}
                         tidb_datatype::FieldTypeCode::Double if !tp.is_unsigned() => {}
-                        tidb_datatype::FieldTypeCode::LongLong if !tp.is_unsigned() => {}
+                        tidb_datatype::FieldTypeCode::LongLong
+                            if !tp.is_unsigned() || comparison_operand => {}
                         tidb_datatype::FieldTypeCode::NewDecimal
                         | tidb_datatype::FieldTypeCode::Date
                         | tidb_datatype::FieldTypeCode::Datetime
@@ -249,6 +257,7 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::ColumnRef { offset });
                 }
+                Visit::ComparisonOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.func_name.lowercase() == "date" =>
                 {
@@ -577,31 +586,46 @@ impl SharedExpression {
                     let [left, right] = f.args.as_slice() else {
                         return Err("logical operators and comparisons require two operands".into());
                     };
+                    let name = f.func_name.lowercase();
+                    let wire = wire_integer_comparison(f);
+                    let logical = matches!(name, "and" | "or");
+                    let [Some(lhs_unsigned), Some(rhs_unsigned)] =
+                        [left, right].map(bigint_operand_signedness)
+                    else {
+                        return Err(
+                            "logical operators and comparisons require matching BIGINT operands"
+                                .into(),
+                        );
+                    };
                     if !f.ret_type.as_ref().is_some_and(is_signed_bigint)
-                        || f.args.iter().any(|arg| {
-                            !arg.static_type().is_some_and(is_signed_bigint)
-                                || matches!(arg, Expression::Constant(c)
-                                    if !matches!(c.literal_value(), Some(Datum::Int(_) | Datum::Null)))
-                        })
+                        || ((logical || wire.is_some()) && (lhs_unsigned || rhs_unsigned))
                     {
-                        return Err("logical operators and comparisons require signed BIGINT operands and result".into());
+                        return Err(
+                            "unsupported BIGINT declaration for logical operator or comparison"
+                                .into(),
+                        );
                     }
-                    if let Some(name) = wire_integer_comparison(f) {
-                        work.push(Visit::WireComparisonRight(integer_comparison(name), right));
-                    } else if matches!(f.func_name.lowercase(), "and" | "or") {
+                    if let Some(name) = wire {
+                        work.push(Visit::WireComparisonRight(
+                            integer_comparison(name, false, false),
+                            right,
+                        ));
+                    } else if logical {
                         let start = nodes.len();
                         nodes.push(RpnExpressionNode::LogicalStart {
-                            and: f.func_name.lowercase() == "and",
+                            and: name == "and",
                             end: 0,
                             preserve_mode: true,
                         });
                         work.push(Visit::LogicalNext(right, start));
                     } else {
                         work.push(Visit::IntComparison(
-                            integer_comparison(f.func_name.lowercase()),
+                            integer_comparison(name, lhs_unsigned, rhs_unsigned),
                             None,
                         ));
-                        work.push(Visit::Enter(right));
+                        work.push(Visit::ComparisonOperand(right));
+                        work.push(Visit::ComparisonOperand(left));
+                        continue;
                     }
                     work.push(Visit::Enter(left));
                 }
@@ -859,7 +883,7 @@ impl SharedExpression {
         let schema: Vec<tipb::FieldType> = columns
             .iter()
             .map(|(_, tp)| match tp.code() {
-                tidb_datatype::FieldTypeCode::LongLong => FieldTypeTp::LongLong.into(),
+                tidb_datatype::FieldTypeCode::LongLong => bigint_type(tp.is_unsigned()),
                 tidb_datatype::FieldTypeCode::Double => FieldTypeTp::Double.into(),
                 tidb_datatype::FieldTypeCode::NewDecimal => FieldTypeTp::NewDecimal.into(),
                 _ if is_time_type(tp) => time_type(tp),
@@ -1620,6 +1644,7 @@ impl InputColumns for NativeInput<'_> {
         for row in rows {
             match eval_type {
                 EvalType::Int => {
+                    // BIGINT comparison interprets the same raw word using its declaration.
                     values.push_int((!column.is_null(*row)).then(|| column.get_int64(*row)))
                 }
                 EvalType::Bytes => values
@@ -1737,21 +1762,58 @@ fn wire_integer_comparison(
     }
 }
 
-fn integer_comparison(name: &str) -> tidb_query_expr::RpnFnMeta {
+fn integer_comparison(
+    name: &str,
+    lhs_unsigned: bool,
+    rhs_unsigned: bool,
+) -> tidb_query_expr::RpnFnMeta {
     use tidb_query_expr::impl_compare::{
-        compare_fn_meta, BasicComparer, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe,
-        CmpOpNullEq,
+        CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq,
     };
-    match name {
-        "eq" => compare_fn_meta::<BasicComparer<i64, CmpOpEq>>(),
-        "ne" => compare_fn_meta::<BasicComparer<i64, CmpOpNe>>(),
-        "lt" => compare_fn_meta::<BasicComparer<i64, CmpOpLt>>(),
-        "le" => compare_fn_meta::<BasicComparer<i64, CmpOpLe>>(),
-        "gt" => compare_fn_meta::<BasicComparer<i64, CmpOpGt>>(),
-        "ge" => compare_fn_meta::<BasicComparer<i64, CmpOpGe>>(),
-        "nulleq" => compare_fn_meta::<BasicComparer<i64, CmpOpNullEq>>(),
+    use tidb_query_expr::integer_comparison_fn_meta;
+    let select = match name {
+        "eq" => integer_comparison_fn_meta::<CmpOpEq>,
+        "ne" => integer_comparison_fn_meta::<CmpOpNe>,
+        "lt" => integer_comparison_fn_meta::<CmpOpLt>,
+        "le" => integer_comparison_fn_meta::<CmpOpLe>,
+        "gt" => integer_comparison_fn_meta::<CmpOpGt>,
+        "ge" => integer_comparison_fn_meta::<CmpOpGe>,
+        "nulleq" => integer_comparison_fn_meta::<CmpOpNullEq>,
         _ => unreachable!(),
+    };
+    select(lhs_unsigned, rhs_unsigned)
+}
+
+fn bigint_operand_signedness(expression: &Expression) -> Option<bool> {
+    let ty = expression.static_type()?;
+    if ty.code() != tidb_datatype::FieldTypeCode::LongLong || ty.is_array() {
+        return None;
     }
+    let unsigned = ty.is_unsigned();
+    match expression {
+        Expression::Constant(c)
+            if !matches!(
+                (c.literal_value(), unsigned),
+                (Some(Datum::Int(_)), false)
+                    | (Some(Datum::UInt(_)), true)
+                    | (Some(Datum::Null), _)
+            ) =>
+        {
+            None
+        }
+        Expression::Constant(_) | Expression::Column(_) => Some(unsigned),
+        _ => (!unsigned).then_some(false),
+    }
+}
+
+fn bigint_type(unsigned: bool) -> tipb::FieldType {
+    let mut field_type: tipb::FieldType = FieldTypeTp::LongLong.into();
+    if unsigned {
+        field_type
+            .as_mut_accessor()
+            .set_flag(FieldTypeFlag::UNSIGNED);
+    }
+    field_type
 }
 
 fn is_signed_bigint(tp: &tidb_datatype::FieldType) -> bool {
@@ -2738,6 +2800,119 @@ mod tests {
                 expected,
             );
         }
+    }
+
+    #[test]
+    fn shared_kernel_native_mixed_integer_comparison_limits() {
+        use tidb_datatype::FieldTypeCode;
+
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let signed = [
+            Datum::Int(i64::MIN),
+            Datum::Int(-1),
+            Datum::Int(0),
+            Datum::Int(i64::MAX),
+            Datum::Null,
+        ];
+        let unsigned = [
+            Datum::UInt(0),
+            Datum::UInt(i64::MAX as u64),
+            Datum::UInt(i64::MAX as u64 + 1),
+            Datum::UInt(u64::MAX),
+            Datum::Null,
+        ];
+        let field = |unsigned| integer.clone().with_unsigned(unsigned);
+        let values = |is_unsigned| if is_unsigned { &unsigned } else { &signed };
+        for (left_unsigned, right_unsigned) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let types = [field(left_unsigned), field(right_unsigned)];
+            let mut input = Chunk::new(&types, 25, 25);
+            for left in values(left_unsigned) {
+                for right in values(right_unsigned) {
+                    for (index, datum) in [left, right].into_iter().enumerate() {
+                        match datum {
+                            Datum::Int(v) => input.append_int64(index, *v),
+                            Datum::UInt(v) => input.append_uint64(index, *v),
+                            Datum::Null => input.append_null(index),
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+            }
+            let mut rows = vec![24, 0, 24];
+            rows.extend((0..input.num_rows()).rev());
+            for name in ["eq", "ne", "lt", "le", "gt", "ge", "nulleq"] {
+                let expression = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new(name),
+                    integer.clone(),
+                    types
+                        .iter()
+                        .enumerate()
+                        .map(|(index, tp)| {
+                            let mut column = Column::new(index as i64 + 1, tp.clone());
+                            column.index = index as i64;
+                            Expression::Column(column)
+                        })
+                        .collect(),
+                ));
+                let expected = rows
+                    .iter()
+                    .map(|row| {
+                        expression
+                            .eval(&crate::context::NoColumns, input.physical_row(*row))
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                let program = SharedExpression::compile(&expression).unwrap_or_else(|error| {
+                    panic!("{name}, unsigned={left_unsigned}/{right_unsigned}: {error}")
+                });
+                assert_eq!(
+                    program
+                        .evaluate(&input, &rows, &mut EvalContext::default())
+                        .unwrap(),
+                    expected,
+                );
+            }
+            eprintln!(
+                "unsigned={left_unsigned}/{right_unsigned}, {} values per operator",
+                rows.len()
+            );
+        }
+        let literal = |datum, ty| Expression::Constant(Constant::new(datum, ty));
+        for (value, expected) in [
+            (Datum::UInt(u64::MAX), Datum::Int(1)),
+            (Datum::Null, Datum::Null),
+        ] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("gt"),
+                integer.clone(),
+                vec![
+                    literal(value, field(true)),
+                    literal(Datum::Int(i64::MAX), integer.clone()),
+                ],
+            ));
+            let mut input = Chunk::new(&[], 1, 1);
+            input.set_num_virtual_rows(1);
+            assert_eq!(
+                SharedExpression::compile(&expression)
+                    .unwrap()
+                    .evaluate(&input, &[0], &mut EvalContext::default())
+                    .unwrap(),
+                [expected],
+            );
+        }
+
+        let mismatched = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("eq"),
+            integer.clone(),
+            vec![
+                literal(Datum::Int(-1), field(true)),
+                literal(Datum::Int(1), integer.clone()),
+            ],
+        ));
+        assert!(SharedExpression::compile(&mismatched).is_err());
+        assert!(SharedExpression::compile(&literal(Datum::UInt(u64::MAX), field(true))).is_err());
     }
 
     #[test]

@@ -561,7 +561,7 @@ fn shared_sql_projection_runs_signed_logic_and_declines_unsigned_group() {
 }
 
 #[test]
-fn shared_sql_selection_keeps_filter_demand_and_declines_unsigned() {
+fn shared_sql_selection_keeps_filter_demand_and_declines_decimal() {
     use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
 
     let mut catalog = Catalog::default();
@@ -611,5 +611,13 @@ fn shared_sql_selection_keeps_filter_demand_and_declines_unsigned() {
     };
 
     assert_eq!(compare(sql, 1), [vec![Datum::Int(4)], vec![Datum::Int(6)]]);
-    compare(&sql.replace("AND b >", "AND u >"), 0);
+    assert_eq!(
+        compare(&sql.replace("AND b >", "AND u >"), 1),
+        [
+            vec![Datum::Int(3)],
+            vec![Datum::Int(4)],
+            vec![Datum::Int(6)]
+        ],
+    );
+    compare(&sql.replace("AND b >", "AND CAST(u AS DECIMAL) >"), 0);
 }
