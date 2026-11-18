@@ -789,9 +789,7 @@ impl SharedExpression {
                         .ok_or("conditional result requires matching BIGINT, DOUBLE, DECIMAL or string")?;
                     let string_result = is_raw_string_type(declared);
                     if string_result && string_conditional_collation(f).is_none() {
-                        return Err(
-                            "string conditional requires matching string result leaves".into()
-                        );
+                        return Err("string conditional requires matching string results".into());
                     }
                     if f.args.iter().enumerate().any(|(index, arg)| {
                         let condition =
@@ -863,7 +861,7 @@ impl SharedExpression {
                     if is_raw_string_type(declared) {
                         if string_conditional_collation(f).is_none() {
                             return Err(
-                                "string conditional requires matching string result leaves".into(),
+                                "string conditional requires matching string results".into()
                             );
                         }
                         work.push(Visit::Conditional(&f.args, control_type(f)?));
@@ -1047,8 +1045,19 @@ impl SharedExpression {
                                 .into(),
                         );
                     }
+                    let argument = &f.args[0];
                     work.push(Visit::Md5);
-                    work.push(Visit::Enter(&f.args[0]));
+                    if f.pb_signature().is_none()
+                        && matches!(argument, Expression::Column(_))
+                        && is_raw_string_operand(argument)
+                    {
+                        work.push(Visit::ByteOperand(argument));
+                    } else {
+                        work.push(Visit::Enter(argument));
+                    }
+                }
+                Visit::ByteOperand(value @ Expression::ScalarFunction(_)) => {
+                    work.push(Visit::Enter(value));
                 }
                 Visit::Enter(_) | Visit::ByteOperand(_) | Visit::JsonOperand(_) => {
                     return Err("expression is outside shared kernel admission".into())
@@ -2192,16 +2201,22 @@ fn string_conditional_collation(
             continue;
         }
         let ty = arg.static_type().filter(|ty| is_raw_string_type(ty))?;
-        let collation = ty.collation();
-        match arg {
-            Expression::Column(_) => {}
+        let collation = match arg {
+            Expression::Column(_) => ty.collation(),
             Expression::Constant(c) => match c.literal_value()? {
                 Datum::Null => continue,
-                Datum::String(value) if value.collation() == collation => {}
+                Datum::String(value) if value.collation() == ty.collation() => value.collation(),
                 _ => return None,
             },
+            Expression::ScalarFunction(value)
+                if value.pb_signature().is_none()
+                    && matches!(value.func_name.lowercase(), "md5" | "json_type") =>
+            {
+                // These native functions construct default-collation String datums.
+                tidb_datatype::Collation::DEFAULT
+            }
             _ => return None,
-        }
+        };
         if common
             .replace(collation)
             .is_some_and(|previous| previous != collation)
@@ -2896,6 +2911,88 @@ mod tests {
             vec![vec![Datum::Null; 2]]
         );
         assert!(session.warnings.borrow().is_empty());
+    }
+
+    #[test]
+    fn shared_kernel_mixed_string_if_reads_only_the_chosen_column() {
+        use tidb_datatype::{BinaryJSON, Collation, FieldTypeCode};
+
+        let int = FieldType::new(FieldTypeCode::LongLong);
+        let text = FieldType::new(FieldTypeCode::Varchar).with_collation(Collation::Binary);
+        let json = FieldType::new(FieldTypeCode::Json);
+        let result = native_type();
+        let mut input = Chunk::new(&[int.clone(), text.clone(), json.clone()], 8, 8);
+        for row in 0..8 {
+            input.append_int64(0, i64::from(row == 7));
+            input.append_bytes(1, b"abc");
+            input.append_json(
+                2,
+                &if row == 2 {
+                    BinaryJSON::from_encoded_parts(0x04, [0])
+                } else {
+                    BinaryJSON::from_encoded_parts(0xff, [])
+                },
+            );
+        }
+        let column = |index, ty| {
+            let mut c = Column::new(index, ty);
+            c.index = index;
+            Expression::Column(c)
+        };
+        let json_type = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("json_type"),
+            result.clone(),
+            vec![column(2, json)],
+        ));
+        let expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            result.clone(),
+            vec![column(0, int), md5(column(1, text)), json_type],
+        ));
+        let ctx = crate::NoColumns;
+        let rows = [7, 2, 7];
+        let digest = Datum::new_string(b"900150983cd24fb0d6963f7d28e17f72");
+        let expected = [digest.clone(), Datum::new_string(b"NULL"), digest.clone()];
+        assert_eq!(
+            rows.map(|row| expr.eval(&ctx, input.physical_row(row)).unwrap()),
+            expected
+        );
+        let projection = SharedProjection::compile(std::slice::from_ref(&expr)).unwrap();
+        let mut execution = projection.start_execution(&ctx);
+        let mut output = Chunk::new(std::slice::from_ref(&result), 3, 3);
+        let actual = |chunk: &Chunk| {
+            (0..chunk.num_rows())
+                .map(|row| chunk.get_row(row).get_datum(0, &result))
+                .collect::<Vec<_>>()
+        };
+        execution
+            .evaluate_into_chunk(&input, &rows, &mut EvalContext::default(), &mut output)
+            .unwrap();
+        assert_eq!(actual(&output), expected);
+        let invalid = crate::JsonError::InvalidText;
+        assert_eq!(
+            expr.eval(&ctx, input.physical_row(1)),
+            Err(crate::EvalError::Json(invalid.clone()))
+        );
+        let error = execution
+            .evaluate_into_chunk(&input, &[7, 1], &mut EvalContext::default(), &mut output)
+            .unwrap_err();
+        assert_eq!(error.code, Some(i32::from(invalid.code())));
+        assert_eq!(error.message, invalid.message());
+        assert_eq!(actual(&output), expected);
+
+        let compiled = SharedExpression::compile(&expr).unwrap();
+        assert_eq!(
+            compiled
+                .evaluate_mode(
+                    &input,
+                    &[7],
+                    &mut EvalContext::default(),
+                    InvocationMode::Scalar
+                )
+                .unwrap(),
+            [digest],
+        );
     }
 
     #[test]

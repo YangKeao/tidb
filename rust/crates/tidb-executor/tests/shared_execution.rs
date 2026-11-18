@@ -1225,3 +1225,46 @@ fn shared_sql_json_type_reads_binary_json_column() {
     eprintln!("JSON_TYPE route={route:?}");
     assert_eq!(route, Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_mixed_string_if_runs_md5_and_json_type() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE mixed_string_if (id BIGINT PRIMARY KEY, flag BIGINT, s VARBINARY(8), j JSON)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO mixed_string_if VALUES
+         (1,1,'abc','true'),(2,0,X'FF','18446744073709551615'),(3,NULL,'abc',NULL),(4,1,NULL,'true')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let sql = "SELECT id, IF(flag, MD5(s), JSON_TYPE(j)) FROM mixed_string_if ORDER BY id LIMIT 4";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let original = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, original);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    assert_eq!(
+        actual
+            .1
+            .iter()
+            .map(|row| row[1].as_raw_bytes())
+            .collect::<Vec<_>>(),
+        [
+            Some(&b"900150983cd24fb0d6963f7d28e17f72"[..]),
+            Some(&b"UNSIGNED INTEGER"[..]),
+            None,
+            None,
+        ]
+    );
+    let route = shared.shared_projection_counts();
+    eprintln!("mixed IF route={route:?}");
+    assert_eq!(route, Some((1, 1)));
+}
