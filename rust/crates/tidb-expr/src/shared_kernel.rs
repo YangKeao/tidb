@@ -1393,7 +1393,7 @@ impl InputColumns for NativeInput<'_> {
             value: RpnStackNodeVectorValue::Generated {
                 physical_value: values,
             },
-            field_type: &schema[offset],
+            field_type: (&schema[offset]).into(),
         })
     }
 }
