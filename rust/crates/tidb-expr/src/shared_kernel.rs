@@ -1142,6 +1142,35 @@ impl SharedExpression {
                     if f.pb_signature().is_none()
                         && matches!(
                             f.func_name.lowercase(),
+                            "is_ipv4_compat" | "is_ipv4_mapped"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_miscellaneous::{
+                        is_ipv4_compat_or_null_fn_meta, is_ipv4_mapped_or_null_fn_meta,
+                    };
+                    let [operand] = f.args.as_slice() else {
+                        return Err("IP prefix predicate requires one operand".into());
+                    };
+                    if !is_ip_string_operand(operand)
+                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err(
+                            "IP prefix predicate requires a string leaf and signed BIGINT result"
+                                .into(),
+                        );
+                    }
+                    let meta = if f.func_name.lowercase() == "is_ipv4_compat" {
+                        is_ipv4_compat_or_null_fn_meta()
+                    } else {
+                        is_ipv4_mapped_or_null_fn_meta()
+                    };
+                    work.push(Visit::IntCall(meta, 1, false));
+                    work.push(Visit::ByteOperand(operand));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
                             "inet_ntoa" | "inet6_aton" | "inet6_ntoa"
                         ) =>
                 {
@@ -8761,6 +8790,33 @@ mod tests {
         ] {
             assert!(SdkDecimal::from_parts(invalid).is_err());
             assert!(MyDecimal::from_parts(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn shared_kernel_pb_ipv4_prefix_predicates_keep_null_zero() {
+        for signature in [
+            tipb::ScalarFuncSig::IsIPv4Compat,
+            tipb::ScalarFuncSig::IsIPv4Mapped,
+        ] {
+            let mut arg = tipb::Expr::default();
+            arg.set_tp(tipb::ExprType::Null);
+            arg.set_field_type(FieldTypeTp::VarString.into());
+            let mut pb = tipb::Expr::default();
+            pb.set_tp(tipb::ExprType::ScalarFunc);
+            pb.set_sig(signature);
+            pb.set_field_type(FieldTypeTp::LongLong.into());
+            pb.mut_children().push(arg);
+            let mut ctx = EvalContext::default();
+            let program =
+                tidb_query_expr::RpnExpressionBuilder::build_from_expr_tree(pb, &mut ctx, 0)
+                    .unwrap();
+            let columns = LazyBatchColumnVec::empty();
+            let result = program
+                .eval_decoded(&mut ctx, &[], &columns, &[0], 1)
+                .unwrap();
+            assert_eq!(native_output(result, 1).unwrap(), [Datum::Int(0)]);
+            assert_eq!(ctx.warnings.warning_cnt, 0);
         }
     }
 

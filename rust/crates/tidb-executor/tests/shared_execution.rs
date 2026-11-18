@@ -1793,3 +1793,49 @@ fn shared_sql_ip_conversions_keep_typed_values_and_fields() {
     assert_eq!(actual.to_string(), expected.to_string());
     assert!(actual.to_string().contains("invalid UTF-8 string datum"));
 }
+
+#[test]
+fn shared_sql_ipv4_prefix_predicates_preserve_null_and_raw_bytes() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE ip_prefixes (id BIGINT PRIMARY KEY, b VARBINARY(20))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO ip_prefixes VALUES
+         (1,X'0000000000000000000000007F000001'),
+         (2,X'00000000000000000000FFFF7F000001'),
+         (3,X'7F000001'),(4,X'FF00000000000000000000007F000001'),
+         (5,NULL),(6,''),(7,X'00000000000000000000FFFF7F00000100')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,IS_IPV4_COMPAT(b),IS_IPV4_MAPPED(b)
+        FROM ip_prefixes ORDER BY id LIMIT 7";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Int(1), Int(1), Int(0)],
+            vec![Int(2), Int(0), Int(1)],
+            vec![Int(3), Int(0), Int(0)],
+            vec![Int(4), Int(0), Int(0)],
+            vec![Int(5), Null, Null],
+            vec![Int(6), Int(0), Int(0)],
+            vec![Int(7), Int(0), Int(0)],
+        ]
+    );
+    let route = shared.shared_projection_counts();
+    eprintln!("IP prefix projection={route:?}");
+    assert_eq!(route, Some((1, 1)));
+}
