@@ -35,3 +35,4 @@
 - [SHA、SHA1 和固定长度的 SHA2](sha-kernels.zh.md)
 - [HEX 和 UNHEX 的类型化执行](hex-kernels.zh.md)
 - [二进制字符串剪裁与反转](binary-string-operations.zh.md)
+- [剩余函数族的 SDK PB 注册入口](sdk-registry-inventory.zh.md)
