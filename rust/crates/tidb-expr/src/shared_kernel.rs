@@ -118,7 +118,7 @@ impl SharedExpression {
                 usize,
                 Vec<usize>,
             ),
-            IntCall(tidb_query_expr::RpnFnMeta, usize, Option<usize>),
+            IntCall(tidb_query_expr::RpnFnMeta, usize, Option<usize>, bool),
             WireComparisonRight(tidb_query_expr::RpnFnMeta, &'a Expression),
             LogicalNext(&'a Expression, usize),
             LogicalEnd(usize),
@@ -144,13 +144,16 @@ impl SharedExpression {
         while let Some(visit) = work.pop() {
             let mut truth_test = None;
             let mut byte_count = None;
+            let mut bit_operation = None;
             if let Visit::Enter(Expression::ScalarFunction(f)) = &visit {
                 truth_test = native_int_truth_test(f);
                 byte_count = native_byte_count(f);
+                bit_operation = native_bit_operation(f);
                 // Direct typed leaves never introduce per-row effects.
                 let pure_call = (is_native_integer_comparison(f)
                     || truth_test.is_some()
-                    || byte_count.is_some())
+                    || byte_count.is_some()
+                    || bit_operation.is_some())
                     && f.args
                         .iter()
                         .all(|arg| matches!(arg, Expression::Constant(_) | Expression::Column(_)));
@@ -653,7 +656,7 @@ impl SharedExpression {
                             "byte counts require a string leaf and signed BIGINT result".into()
                         );
                     }
-                    work.push(Visit::IntCall(byte_count.unwrap(), 1, None));
+                    work.push(Visit::IntCall(byte_count.unwrap(), 1, None, false));
                     work.push(Visit::ByteOperand(operand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f)) if truth_test.is_some() => {
@@ -673,10 +676,28 @@ impl SharedExpression {
                             tidb_query_expr::impl_op::unary_not_int_fn_meta(),
                             1,
                             None,
+                            false,
                         ));
                     }
-                    work.push(Visit::IntCall(func_meta, 1, None));
+                    work.push(Visit::IntCall(func_meta, 1, None, false));
                     work.push(Visit::BigIntOperand(operand));
+                }
+                Visit::Enter(Expression::ScalarFunction(f)) if bit_operation.is_some() => {
+                    let (func_meta, arity, unsigned) = bit_operation.unwrap();
+                    if f.args.len() != arity
+                        || f.args
+                            .iter()
+                            .any(|arg| bigint_operand_signedness(arg).is_none())
+                        || !f.ret_type.as_ref().is_some_and(|ty| {
+                            ty.code() == tidb_datatype::FieldTypeCode::LongLong
+                                && !ty.is_array()
+                                && ty.is_unsigned() == unsigned
+                        })
+                    {
+                        return Err("bit operations require matching BIGINT declarations".into());
+                    }
+                    work.push(Visit::IntCall(func_meta, arity, None, unsigned));
+                    work.extend(f.args.iter().rev().map(Visit::BigIntOperand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if wire_integer_comparison(f).is_some()
@@ -723,6 +744,7 @@ impl SharedExpression {
                             integer_comparison(name, lhs_unsigned, rhs_unsigned),
                             2,
                             None,
+                            false,
                         ));
                         work.push(Visit::BigIntOperand(right));
                         work.push(Visit::BigIntOperand(left));
@@ -736,14 +758,14 @@ impl SharedExpression {
                         target: 0,
                         field_type: FieldTypeTp::LongLong.into(),
                     });
-                    work.push(Visit::IntCall(func_meta, 2, Some(guard)));
+                    work.push(Visit::IntCall(func_meta, 2, Some(guard), false));
                     work.push(Visit::Enter(right));
                 }
-                Visit::IntCall(func_meta, args_len, guard) => {
+                Visit::IntCall(func_meta, args_len, guard, unsigned) => {
                     nodes.push(RpnExpressionNode::FnCall {
                         func_meta,
                         args_len,
-                        field_type: FieldTypeTp::LongLong.into(),
+                        field_type: bigint_type(unsigned),
                         metadata: Box::new(()),
                     });
                     let end = nodes.len();
@@ -2087,6 +2109,30 @@ fn is_raw_string_operand(expression: &Expression) -> bool {
     }
 }
 
+fn native_bit_operation(
+    function: &crate::scalar_function::ScalarFunction,
+) -> Option<(tidb_query_expr::RpnFnMeta, usize, bool)> {
+    use tidb_query_expr::impl_op::{
+        bit_and_fn_meta, bit_neg_fn_meta, bit_or_fn_meta, bit_xor_fn_meta, left_shift_fn_meta,
+        right_shift_fn_meta,
+    };
+    use tidb_query_expr::impl_other::bit_count_fn_meta;
+
+    if function.pb_signature().is_some() {
+        return None;
+    }
+    Some(match function.func_name.lowercase() {
+        "bitand" => (bit_and_fn_meta(), 2, true),
+        "bitor" => (bit_or_fn_meta(), 2, true),
+        "bitxor" => (bit_xor_fn_meta(), 2, true),
+        "bitneg" => (bit_neg_fn_meta(), 1, true),
+        "leftshift" => (left_shift_fn_meta(), 2, true),
+        "rightshift" => (right_shift_fn_meta(), 2, true),
+        "bit_count" => (bit_count_fn_meta(), 1, false),
+        _ => return None,
+    })
+}
+
 fn native_int_truth_test(
     function: &crate::scalar_function::ScalarFunction,
 ) -> Option<(tidb_query_expr::RpnFnMeta, bool)> {
@@ -2322,6 +2368,16 @@ fn native_output_with_collation(
     rows: usize,
     collation: tidb_datatype::Collation,
 ) -> Result<Vec<Datum>, String> {
+    let unsigned = result.field_type().is_unsigned();
+    let integer = |value: Option<i64>| {
+        value.map_or(Datum::Null, |value| {
+            if unsigned {
+                Datum::UInt(value as u64)
+            } else {
+                Datum::Int(value)
+            }
+        })
+    };
     let convert = |v: Option<&[u8]>| {
         v.map_or(Datum::Null, |v| {
             Datum::new_collation_string(v.to_vec(), collation)
@@ -2355,7 +2411,7 @@ fn native_output_with_collation(
         RpnStackNode::Scalar {
             value: ScalarValue::Int(v),
             ..
-        } => Ok(vec![v.map_or(Datum::Null, Datum::Int); rows]),
+        } => Ok(vec![integer(*v); rows]),
         RpnStackNode::Scalar {
             value: ScalarValue::Bytes(v),
             ..
@@ -2364,12 +2420,7 @@ fn native_output_with_collation(
             let values = value.as_ref();
             if let VectorValue::Int(values) = values {
                 return Ok((0..rows)
-                    .map(|r| {
-                        values
-                            .get_option_ref(value.logical_rows()[r])
-                            .copied()
-                            .map_or(Datum::Null, Datum::Int)
-                    })
+                    .map(|r| integer(values.get_option_ref(value.logical_rows()[r]).copied()))
                     .collect());
             }
             let VectorValue::Bytes(values) = values else {
@@ -3359,6 +3410,98 @@ mod tests {
                     .unwrap(),
                 [expected[1].clone()]
             );
+        }
+    }
+
+    #[test]
+    fn shared_kernel_bigint_bits_keep_unsigned_output_and_shift_bounds() {
+        use tidb_datatype::FieldTypeCode;
+
+        let int = FieldType::new(FieldTypeCode::LongLong);
+        let uint = int.clone().with_unsigned(true);
+        let rows = [4, 0, 3, 2, 1, 4];
+        for (left_unsigned, right_unsigned) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let left_type = int.clone().with_unsigned(left_unsigned);
+            let right_type = int.clone().with_unsigned(right_unsigned);
+            let mut input = Chunk::new(&[left_type.clone(), right_type.clone()], 5, 5);
+            input.append_int64(0, -1);
+            input.append_int64(0, i64::MIN);
+            input.append_null(0);
+            input.append_int64(0, 1);
+            input.append_int64(0, -1);
+            for shift in [63, 64, 1, -1, 0] {
+                input.append_int64(1, shift);
+            }
+            let column = |index, ty: &FieldType| {
+                let mut c = Column::new(index, ty.clone());
+                c.index = index;
+                Expression::Column(c)
+            };
+            for (name, arity, result) in [
+                ("bitand", 2, &uint),
+                ("bitor", 2, &uint),
+                ("bitxor", 2, &uint),
+                ("leftshift", 2, &uint),
+                ("rightshift", 2, &uint),
+                ("bitneg", 1, &uint),
+                ("bit_count", 1, &int),
+            ] {
+                let mut args = vec![column(0, &left_type)];
+                if arity == 2 {
+                    args.push(column(1, &right_type));
+                }
+                let expr = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new(name),
+                    result.clone(),
+                    args,
+                ));
+                let original = rows.map(|row| {
+                    expr.eval(&crate::NoColumns, input.physical_row(row))
+                        .unwrap()
+                });
+                assert!(original.iter().all(|value| value.is_null()
+                    || (if result.is_unsigned() {
+                        matches!(value, Datum::UInt(_))
+                    } else {
+                        matches!(value, Datum::Int(_))
+                    })));
+                match name {
+                    "leftshift" => assert_eq!(
+                        original,
+                        [
+                            Datum::UInt(u64::MAX),
+                            Datum::UInt(1 << 63),
+                            Datum::UInt(0),
+                            Datum::Null,
+                            Datum::UInt(0),
+                            Datum::UInt(u64::MAX),
+                        ]
+                    ),
+                    "rightshift" => assert_eq!(
+                        original,
+                        [
+                            Datum::UInt(u64::MAX),
+                            Datum::UInt(1),
+                            Datum::UInt(0),
+                            Datum::Null,
+                            Datum::UInt(0),
+                            Datum::UInt(u64::MAX),
+                        ]
+                    ),
+                    _ => {}
+                }
+                let compiled = SharedExpression::compile(&expr).unwrap();
+                assert_eq!(compiled.result_type(), Some(result));
+                assert_eq!(
+                    compiled
+                        .evaluate(&input, &rows, &mut EvalContext::default())
+                        .unwrap(),
+                    original,
+                    "{name}"
+                );
+            }
         }
     }
 

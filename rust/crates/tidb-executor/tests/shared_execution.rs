@@ -1268,3 +1268,71 @@ fn shared_sql_mixed_string_if_runs_md5_and_json_type() {
     eprintln!("mixed IF route={route:?}");
     assert_eq!(route, Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_bit_operations_keep_raw_bigint_bits() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE bit_values (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT UNSIGNED)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO bit_values VALUES (1,-1,63),(2,-9223372036854775808,64),
+         (3,NULL,1),(4,1,18446744073709551615)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let sql = "SELECT id, a & b, a | b, a ^ b, ~a, a << b, a >> b, BIT_COUNT(a)
+        FROM bit_values ORDER BY id LIMIT 4";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let original = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, original);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    assert!(actual.0[1..7].iter().all(|(_, ty)| ty.is_unsigned()));
+    assert!(!actual.0[7].1.is_unsigned());
+    use Datum::{Int, Null, UInt};
+    assert_eq!(
+        actual.1[0],
+        [
+            Int(1),
+            UInt(63),
+            UInt(u64::MAX),
+            UInt(u64::MAX ^ 63),
+            UInt(0),
+            UInt(1 << 63),
+            UInt(1),
+            Int(64)
+        ],
+    );
+    assert_eq!(actual.1[2][1..], [Null, Null, Null, Null, Null, Null, Null]);
+    let route = shared.shared_projection_counts();
+    eprintln!("bitwise route={route:?}");
+    assert_eq!(route, Some((1, 1)));
+
+    let sql = "SELECT a & BENCHMARK(1,RAND()) FROM bit_values ORDER BY id LIMIT 4";
+    let native_rng = Arc::new(MysqlRng::new_with_seed(19));
+    let shared_rng = Arc::new(MysqlRng::new_with_seed(19));
+    let native = StmtContext::for_query().with_rand_session(Arc::clone(&native_rng));
+    let shared = StmtContext::for_query()
+        .with_rand_session(Arc::clone(&shared_rng))
+        .with_shared_projection();
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &shared).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap(),
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    let oracle = MysqlRng::new_with_seed(19);
+    for _ in 0..4 {
+        oracle.gen();
+    }
+    let next = oracle.gen();
+    assert_eq!(native_rng.gen(), next);
+    assert_eq!(shared_rng.gen(), next);
+}
