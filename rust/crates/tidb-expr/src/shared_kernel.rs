@@ -118,8 +118,9 @@ impl SharedExpression {
                 usize,
                 Vec<usize>,
             ),
-            IntCall(tidb_query_expr::RpnFnMeta, usize, Option<usize>, bool),
-            WireComparisonRight(tidb_query_expr::RpnFnMeta, &'a Expression),
+            IntCall(tidb_query_expr::RpnFnMeta, usize, bool),
+            Compare(&'a str, ComparisonOperands, Option<usize>),
+            WireComparisonRight(&'static str, &'a Expression),
             LogicalNext(&'a Expression, usize),
             LogicalEnd(usize),
             Conditional(&'a [Expression], tipb::FieldType),
@@ -150,7 +151,7 @@ impl SharedExpression {
                 byte_count = native_byte_count(f);
                 bit_operation = native_bit_operation(f);
                 // Direct typed leaves never introduce per-row effects.
-                let pure_call = (is_native_integer_comparison(f)
+                let pure_call = (is_native_comparison(f)
                     || truth_test.is_some()
                     || byte_count.is_some()
                     || bit_operation.is_some())
@@ -656,7 +657,7 @@ impl SharedExpression {
                             "byte counts require a string leaf and signed BIGINT result".into()
                         );
                     }
-                    work.push(Visit::IntCall(byte_count.unwrap(), 1, None, false));
+                    work.push(Visit::IntCall(byte_count.unwrap(), 1, false));
                     work.push(Visit::ByteOperand(operand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f)) if truth_test.is_some() => {
@@ -675,11 +676,10 @@ impl SharedExpression {
                         work.push(Visit::IntCall(
                             tidb_query_expr::impl_op::unary_not_int_fn_meta(),
                             1,
-                            None,
                             false,
                         ));
                     }
-                    work.push(Visit::IntCall(func_meta, 1, None, false));
+                    work.push(Visit::IntCall(func_meta, 1, false));
                     work.push(Visit::BigIntOperand(operand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f)) if bit_operation.is_some() => {
@@ -696,12 +696,29 @@ impl SharedExpression {
                     {
                         return Err("bit operations require matching BIGINT declarations".into());
                     }
-                    work.push(Visit::IntCall(func_meta, arity, None, unsigned));
+                    work.push(Visit::IntCall(func_meta, arity, unsigned));
                     work.extend(f.args.iter().rev().map(Visit::BigIntOperand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
+                    if is_native_comparison(f)
+                        && f.args.iter().all(is_double_comparison_operand) =>
+                {
+                    if f.args.len() != 2 || !f.ret_type.as_ref().is_some_and(is_signed_bigint) {
+                        return Err(
+                            "DOUBLE comparison requires two operands and signed BIGINT result"
+                                .into(),
+                        );
+                    }
+                    work.push(Visit::Compare(
+                        f.func_name.lowercase(),
+                        ComparisonOperands::Double,
+                        None,
+                    ));
+                    work.extend(f.args.iter().rev().map(Visit::Enter));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
                     if wire_integer_comparison(f).is_some()
-                        || is_native_integer_comparison(f)
+                        || is_native_comparison(f)
                         || matches!(f.func_name.lowercase(), "and" | "or") =>
                 {
                     let [left, right] = f.args.as_slice() else {
@@ -727,10 +744,7 @@ impl SharedExpression {
                         );
                     }
                     if let Some(name) = wire {
-                        work.push(Visit::WireComparisonRight(
-                            integer_comparison(name, false, false),
-                            right,
-                        ));
+                        work.push(Visit::WireComparisonRight(name, right));
                     } else if logical {
                         let start = nodes.len();
                         nodes.push(RpnExpressionNode::LogicalStart {
@@ -740,11 +754,13 @@ impl SharedExpression {
                         });
                         work.push(Visit::LogicalNext(right, start));
                     } else {
-                        work.push(Visit::IntCall(
-                            integer_comparison(name, lhs_unsigned, rhs_unsigned),
-                            2,
+                        work.push(Visit::Compare(
+                            name,
+                            ComparisonOperands::BigInt {
+                                lhs_unsigned,
+                                rhs_unsigned,
+                            },
                             None,
-                            false,
                         ));
                         work.push(Visit::BigIntOperand(right));
                         work.push(Visit::BigIntOperand(left));
@@ -752,22 +768,32 @@ impl SharedExpression {
                     }
                     work.push(Visit::Enter(left));
                 }
-                Visit::WireComparisonRight(func_meta, right) => {
+                Visit::WireComparisonRight(name, right) => {
                     let guard = nodes.len();
                     nodes.push(RpnExpressionNode::NullGuard {
                         target: 0,
                         field_type: FieldTypeTp::LongLong.into(),
                     });
-                    work.push(Visit::IntCall(func_meta, 2, Some(guard), false));
+                    work.push(Visit::Compare(
+                        name,
+                        ComparisonOperands::BigInt {
+                            lhs_unsigned: false,
+                            rhs_unsigned: false,
+                        },
+                        Some(guard),
+                    ));
                     work.push(Visit::Enter(right));
                 }
-                Visit::IntCall(func_meta, args_len, guard, unsigned) => {
+                Visit::IntCall(func_meta, args_len, unsigned) => {
                     nodes.push(RpnExpressionNode::FnCall {
                         func_meta,
                         args_len,
                         field_type: bigint_type(unsigned),
                         metadata: Box::new(()),
                     });
+                }
+                Visit::Compare(name, operands, guard) => {
+                    nodes.push(comparison_node(name, operands));
                     let end = nodes.len();
                     if let Some(guard) = guard {
                         let RpnExpressionNode::NullGuard { target, .. } = &mut nodes[guard] else {
@@ -2158,7 +2184,7 @@ fn native_int_truth_test(
     })
 }
 
-fn is_native_integer_comparison(function: &crate::scalar_function::ScalarFunction) -> bool {
+fn is_native_comparison(function: &crate::scalar_function::ScalarFunction) -> bool {
     function.pb_signature().is_none()
         && matches!(
             function.func_name.lowercase(),
@@ -2177,26 +2203,53 @@ fn wire_integer_comparison(
     }
 }
 
-fn integer_comparison(
-    name: &str,
-    lhs_unsigned: bool,
-    rhs_unsigned: bool,
-) -> tidb_query_expr::RpnFnMeta {
+enum ComparisonOperands {
+    BigInt {
+        lhs_unsigned: bool,
+        rhs_unsigned: bool,
+    },
+    Double,
+}
+
+fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNode {
     use tidb_query_expr::impl_compare::{
-        CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq,
+        CmpOp, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq,
     };
-    use tidb_query_expr::integer_comparison_fn_meta;
+    use tidb_query_expr::{integer_comparison_fn_meta, native_real_comparison_node};
+    fn select<F: CmpOp>(operands: ComparisonOperands) -> RpnExpressionNode {
+        match operands {
+            ComparisonOperands::BigInt {
+                lhs_unsigned,
+                rhs_unsigned,
+            } => RpnExpressionNode::FnCall {
+                func_meta: integer_comparison_fn_meta::<F>(lhs_unsigned, rhs_unsigned),
+                args_len: 2,
+                field_type: FieldTypeTp::LongLong.into(),
+                metadata: Box::new(()),
+            },
+            ComparisonOperands::Double => native_real_comparison_node::<F>(),
+        }
+    }
     let select = match name {
-        "eq" => integer_comparison_fn_meta::<CmpOpEq>,
-        "ne" => integer_comparison_fn_meta::<CmpOpNe>,
-        "lt" => integer_comparison_fn_meta::<CmpOpLt>,
-        "le" => integer_comparison_fn_meta::<CmpOpLe>,
-        "gt" => integer_comparison_fn_meta::<CmpOpGt>,
-        "ge" => integer_comparison_fn_meta::<CmpOpGe>,
-        "nulleq" => integer_comparison_fn_meta::<CmpOpNullEq>,
+        "eq" => select::<CmpOpEq>,
+        "ne" => select::<CmpOpNe>,
+        "lt" => select::<CmpOpLt>,
+        "le" => select::<CmpOpLe>,
+        "gt" => select::<CmpOpGt>,
+        "ge" => select::<CmpOpGe>,
+        "nulleq" => select::<CmpOpNullEq>,
         _ => unreachable!(),
     };
-    select(lhs_unsigned, rhs_unsigned)
+    select(operands)
+}
+
+fn is_double_comparison_operand(arg: &Expression) -> bool {
+    arg.static_type().is_some_and(|ty| {
+        ty.code() == tidb_datatype::FieldTypeCode::Double && !ty.is_array() && !ty.is_unsigned()
+    }) && match arg {
+        Expression::Constant(c) => matches!(c.literal_value(), Some(Datum::Real(_) | Datum::Null)),
+        _ => true,
+    }
 }
 
 fn bigint_operand_signedness(expression: &Expression) -> Option<bool> {
@@ -3409,6 +3462,101 @@ mod tests {
                     )
                     .unwrap(),
                 [expected[1].clone()]
+            );
+        }
+    }
+
+    #[test]
+    fn shared_kernel_double_comparisons_preserve_nan_and_null() {
+        use tidb_datatype::FieldTypeCode;
+
+        let real = FieldType::new(FieldTypeCode::Double);
+        let int = FieldType::new(FieldTypeCode::LongLong);
+        let values = [
+            None,
+            Some(f64::from_bits(0x7ff8_0000_0000_0042)),
+            Some(f64::from_bits(0xfff8_0000_0000_0043)),
+            Some(-0.0),
+            Some(0.0),
+            Some(f64::NEG_INFINITY),
+            Some(f64::INFINITY),
+            Some(-1.25),
+            Some(1.25),
+        ];
+        let width = values.len() * values.len();
+        let mut input = Chunk::new(&[real.clone(), real.clone()], width, width);
+        for lhs in values {
+            for rhs in values {
+                for (column, value) in [lhs, rhs].into_iter().enumerate() {
+                    if let Some(value) = value {
+                        input.append_float64(column, value);
+                    } else {
+                        input.append_null(column);
+                    }
+                }
+            }
+        }
+        let mut rows: Vec<_> = (0..width).rev().collect();
+        rows.push(values.len() + 3);
+        let column = |index| {
+            let mut c = Column::new(index, real.clone());
+            c.index = index;
+            Expression::Column(c)
+        };
+        for name in ["eq", "ne", "lt", "le", "gt", "ge", "nulleq"] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                int.clone(),
+                vec![column(0), column(1)],
+            ));
+            let expected = rows
+                .iter()
+                .map(
+                    |&row| match (values[row / values.len()], values[row % values.len()]) {
+                        (Some(lhs), Some(rhs)) => Datum::Int(i64::from(match name {
+                            "eq" | "nulleq" => lhs == rhs,
+                            "ne" => lhs != rhs,
+                            "lt" => lhs < rhs,
+                            "le" => lhs <= rhs,
+                            "gt" => lhs > rhs,
+                            "ge" => lhs >= rhs,
+                            _ => unreachable!(),
+                        })),
+                        (lhs, rhs) if name == "nulleq" => {
+                            Datum::Int(i64::from(lhs.is_none() && rhs.is_none()))
+                        }
+                        _ => Datum::Null,
+                    },
+                )
+                .collect::<Vec<_>>();
+            let native = rows
+                .iter()
+                .map(|&row| {
+                    expression
+                        .eval(&crate::NoColumns, input.physical_row(row))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(native, expected, "{name}");
+            let program = SharedExpression::compile(&expression).unwrap();
+            assert_eq!(
+                program
+                    .evaluate(&input, &rows, &mut EvalContext::default())
+                    .unwrap(),
+                expected,
+                "{name}"
+            );
+            assert_eq!(
+                program
+                    .evaluate_mode(
+                        &input,
+                        &[values.len() + 3],
+                        &mut EvalContext::default(),
+                        InvocationMode::Scalar
+                    )
+                    .unwrap(),
+                [expected.last().unwrap().clone()],
+                "{name}"
             );
         }
     }
