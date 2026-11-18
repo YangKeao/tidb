@@ -2045,7 +2045,7 @@ fn convert_shared(
                 &expression,
                 &context.column_types,
             )
-            .map(Arc::new),
+            .map(|program| Arc::new(std::sync::Mutex::new(program))),
             expression,
             context: Arc::clone(context),
         }))
@@ -2063,14 +2063,15 @@ fn eval_shared(
     row: &[tidb_datatype::Datum],
 ) -> Result<tidb_datatype::Datum, String> {
     #[cfg(feature = "shared-kernel")]
-    if let Some(result) = expr
-        .comparison
-        .as_ref()
-        .and_then(|program| program.evaluate(row))
-    {
-        #[cfg(test)]
-        INTEGER_COMPARISON_EVALS.with(|count| count.set(count.get() + 1));
-        return result.map_err(|err| err.to_string());
+    if let Some(program) = &expr.comparison {
+        let program = program
+            .lock()
+            .map_err(|_| "shared coprocessor comparison lock poisoned")?;
+        if let Some(result) = program.evaluate(row) {
+            #[cfg(test)]
+            INTEGER_COMPARISON_EVALS.with(|count| count.set(count.get() + 1));
+            return result.map_err(|err| err.to_string());
+        }
     }
     let row = tidb_chunk::mutrow::MutRow::from_datums(row);
     expr.expression
@@ -5677,6 +5678,12 @@ mod tests {
             vec![Datum::Int(1), Datum::Int(2)],
             "first two handles"
         );
+    }
+
+    #[test]
+    fn coprocessor_expressions_remain_thread_safe() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SimpleExpr>();
     }
 
     #[test]

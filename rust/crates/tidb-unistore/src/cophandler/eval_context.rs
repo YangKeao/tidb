@@ -107,8 +107,9 @@ impl Columns for RequestEvalContext {
 pub struct SharedExpression {
     pub(super) expression: tidb_expr::expression::Expression,
     pub(super) context: Arc<RequestEvalContext>,
+    // The program can move between threads but its erased metadata is not Sync.
     #[cfg(feature = "shared-kernel")]
-    pub(super) comparison: Option<Arc<tidb_expr::shared_kernel::SharedIntegerComparison>>,
+    pub(super) comparison: Option<Arc<Mutex<tidb_expr::shared_kernel::SharedIntegerComparison>>>,
 }
 
 #[cfg(test)]
