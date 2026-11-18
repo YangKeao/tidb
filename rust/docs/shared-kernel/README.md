@@ -14,3 +14,4 @@
 通过 Git 可查看历史产物，例如 `git show 63a39255c4c143d7714ca46a2e65f603dca39de1:rust/docs/shared-kernel/costs/family-costs.tsv`。复现脚本所需的命令和源码端点在各固定报告中。 [当前实施计划](../expression-shared-kernel-execplan.md)
 
 当前验证补充 [BIGINT 比较的四种符号组合](mixed-bigint.zh.md)。
+另见 [条件表达式的分支与 NULL 需求](native-conditionals.zh.md)。
