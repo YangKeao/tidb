@@ -840,3 +840,71 @@ fn shared_sql_projection_passes_columns_to_topn_with_computed_keys() {
         assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
     }
 }
+
+#[test]
+fn shared_sql_bigint_truth_tests_run_in_projection_and_selection() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE truth_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO truth_values VALUES (1,NULL,NULL),(2,0,0),(3,-1,18446744073709551615),(4,1,1)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let ctx = StmtContext::for_query();
+    let shared = ctx.clone().with_shared_projection().with_shared_selection();
+    let sql = "SELECT id, NOT n, n IS NULL, u IS TRUE, u IS NOT FALSE
+        FROM (SELECT id,n,u FROM truth_values ORDER BY id LIMIT 4) AS kept
+        WHERE (n IS NULL OR u IS TRUE) ORDER BY id";
+    let expected = run_select_meta_on(sql, &catalog, &ctx).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), ctx.take_warnings());
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Int(1), Null, Int(1), Int(0), Int(1)],
+            vec![Int(3), Int(0), Int(0), Int(1), Int(1)],
+            vec![Int(4), Int(0), Int(0), Int(1), Int(1)],
+        ]
+    );
+    let projected = shared.shared_projection_counts().unwrap();
+    let selected = shared.shared_selection_counts().unwrap();
+    eprintln!("BIGINT truth route: projection={projected:?}, selection={selected:?}");
+    assert_eq!(projected, (1, 1));
+    assert_eq!(selected, (1, 1));
+
+    let sql = "SELECT id FROM (SELECT id,n FROM truth_values ORDER BY id LIMIT 4) AS kept
+        WHERE n IS NULL OR BENCHMARK(2,RAND()) IS FALSE ORDER BY id";
+    let original_rng = Arc::new(MysqlRng::new_with_seed(7));
+    let shared_rng = Arc::new(MysqlRng::new_with_seed(7));
+    let original = StmtContext::for_query().with_rand_session(Arc::clone(&original_rng));
+    let shared = StmtContext::for_query()
+        .with_rand_session(Arc::clone(&shared_rng))
+        .with_shared_selection();
+    let expected = run_select_meta_on(sql, &catalog, &original).unwrap();
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &shared).unwrap(),
+        expected
+    );
+    assert_eq!(
+        expected.1,
+        [vec![Int(1)], vec![Int(2)], vec![Int(3)], vec![Int(4)]]
+    );
+    assert_eq!(shared.shared_selection_counts(), Some((1, 1)));
+    let rng = MysqlRng::new_with_seed(7);
+    for _ in 0..6 {
+        rng.gen();
+    }
+    let next = rng.gen();
+    assert_eq!(original_rng.gen(), next);
+    assert_eq!(shared_rng.gen(), next);
+}

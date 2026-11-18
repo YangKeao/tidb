@@ -90,7 +90,7 @@ impl SharedExpression {
         enum Visit<'a> {
             Enter(&'a Expression),
             DecimalOperand(&'a Expression),
-            ComparisonOperand(&'a Expression),
+            BigIntOperand(&'a Expression),
             Md5,
             Date,
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
@@ -112,7 +112,7 @@ impl SharedExpression {
                 usize,
                 Vec<usize>,
             ),
-            IntComparison(tidb_query_expr::RpnFnMeta, Option<usize>),
+            IntCall(tidb_query_expr::RpnFnMeta, usize, Option<usize>),
             WireComparisonRight(tidb_query_expr::RpnFnMeta, &'a Expression),
             LogicalNext(&'a Expression, usize),
             LogicalEnd(usize),
@@ -128,13 +128,16 @@ impl SharedExpression {
         let mut row_fallback = false;
         let bytes_type = || tipb::FieldType::from(FieldTypeTp::VarString);
         while let Some(visit) = work.pop() {
+            let mut truth_test = None;
             if let Visit::Enter(Expression::ScalarFunction(f)) = &visit {
+                truth_test = native_int_truth_test(f);
                 // Direct integer leaves never introduce per-row effects.
-                let pure_comparison = is_native_integer_comparison(f)
+                let pure_integer_predicate = (is_native_integer_comparison(f)
+                    || truth_test.is_some())
                     && f.args
                         .iter()
                         .all(|arg| matches!(arg, Expression::Constant(_) | Expression::Column(_)));
-                row_fallback |= !pure_comparison
+                row_fallback |= !pure_integer_predicate
                     && !matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div");
             }
             match visit {
@@ -150,9 +153,9 @@ impl SharedExpression {
                     });
                 }
                 Visit::DecimalOperand(expression) => work.push(Visit::Enter(expression)),
-                Visit::ComparisonOperand(Expression::Constant(c))
+                Visit::BigIntOperand(Expression::Constant(c))
                 | Visit::Enter(Expression::Constant(c)) => {
-                    let unsigned = matches!(visit, Visit::ComparisonOperand(_))
+                    let unsigned = matches!(visit, Visit::BigIntOperand(_))
                         && c.ret_type.as_ref().is_some_and(|tp| tp.is_unsigned());
                     let datum = c
                         .literal_value()
@@ -226,9 +229,9 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::Constant { value, field_type });
                 }
-                Visit::ComparisonOperand(Expression::Column(c))
+                Visit::BigIntOperand(Expression::Column(c))
                 | Visit::Enter(Expression::Column(c)) => {
-                    let comparison_operand = matches!(visit, Visit::ComparisonOperand(_));
+                    let bigint_operand = matches!(visit, Visit::BigIntOperand(_));
                     let index = usize::try_from(c.index).map_err(|_| "negative column index")?;
                     let tp = c.ret_type.as_ref().ok_or("column requires a field type")?;
                     let admitted =
@@ -238,7 +241,7 @@ impl SharedExpression {
                             if tp.collation_name() == admitted.collation_name() => {}
                         tidb_datatype::FieldTypeCode::Double if !tp.is_unsigned() => {}
                         tidb_datatype::FieldTypeCode::LongLong
-                            if !tp.is_unsigned() || comparison_operand => {}
+                            if !tp.is_unsigned() || bigint_operand => {}
                         tidb_datatype::FieldTypeCode::NewDecimal
                         | tidb_datatype::FieldTypeCode::Date
                         | tidb_datatype::FieldTypeCode::Datetime
@@ -262,7 +265,7 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::ColumnRef { offset });
                 }
-                Visit::ComparisonOperand(expression) => work.push(Visit::Enter(expression)),
+                Visit::BigIntOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.func_name.lowercase() == "date" =>
                 {
@@ -581,6 +584,28 @@ impl SharedExpression {
                         *target = end;
                     }
                 }
+                Visit::Enter(Expression::ScalarFunction(f)) if truth_test.is_some() => {
+                    let (func_meta, invert) = truth_test.unwrap();
+                    let [operand] = f.args.as_slice() else {
+                        return Err("truth tests require one operand".into());
+                    };
+                    if bigint_operand_signedness(operand).is_none()
+                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err(
+                            "truth tests require a BIGINT operand and signed BIGINT result".into(),
+                        );
+                    }
+                    if invert {
+                        work.push(Visit::IntCall(
+                            tidb_query_expr::impl_op::unary_not_int_fn_meta(),
+                            1,
+                            None,
+                        ));
+                    }
+                    work.push(Visit::IntCall(func_meta, 1, None));
+                    work.push(Visit::BigIntOperand(operand));
+                }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if wire_integer_comparison(f).is_some()
                         || is_native_integer_comparison(f)
@@ -622,12 +647,13 @@ impl SharedExpression {
                         });
                         work.push(Visit::LogicalNext(right, start));
                     } else {
-                        work.push(Visit::IntComparison(
+                        work.push(Visit::IntCall(
                             integer_comparison(name, lhs_unsigned, rhs_unsigned),
+                            2,
                             None,
                         ));
-                        work.push(Visit::ComparisonOperand(right));
-                        work.push(Visit::ComparisonOperand(left));
+                        work.push(Visit::BigIntOperand(right));
+                        work.push(Visit::BigIntOperand(left));
                         continue;
                     }
                     work.push(Visit::Enter(left));
@@ -638,13 +664,13 @@ impl SharedExpression {
                         target: 0,
                         field_type: FieldTypeTp::LongLong.into(),
                     });
-                    work.push(Visit::IntComparison(func_meta, Some(guard)));
+                    work.push(Visit::IntCall(func_meta, 2, Some(guard)));
                     work.push(Visit::Enter(right));
                 }
-                Visit::IntComparison(func_meta, guard) => {
+                Visit::IntCall(func_meta, args_len, guard) => {
                     nodes.push(RpnExpressionNode::FnCall {
                         func_meta,
-                        args_len: 2,
+                        args_len,
                         field_type: FieldTypeTp::LongLong.into(),
                         metadata: Box::new(()),
                     });
@@ -1844,6 +1870,31 @@ fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_e
     EvaluateError::Custom { code, msg }.into()
 }
 
+fn native_int_truth_test(
+    function: &crate::scalar_function::ScalarFunction,
+) -> Option<(tidb_query_expr::RpnFnMeta, bool)> {
+    use tidb_query_expr::impl_op::{
+        int_is_false_fn_meta, int_is_true_fn_meta, is_null_fn_meta, unary_not_int_fn_meta,
+        KeepNullOff, KeepNullOn,
+    };
+
+    if function.pb_signature().is_some() {
+        return None;
+    }
+    let name = function.func_name.lowercase();
+    Some(match name {
+        "not" => (unary_not_int_fn_meta(), false),
+        "isnull" | "isunknown" => (is_null_fn_meta::<i64>(), false),
+        "istrue" => (int_is_true_fn_meta::<KeepNullOff>(), false),
+        "istrue_with_null" => (int_is_true_fn_meta::<KeepNullOn>(), false),
+        "isnottrue" => (int_is_true_fn_meta::<KeepNullOff>(), true),
+        "isfalse" => (int_is_false_fn_meta::<KeepNullOff>(), false),
+        "isnotfalse" => (int_is_false_fn_meta::<KeepNullOff>(), true),
+        "isnotunknown" => (is_null_fn_meta::<i64>(), true),
+        _ => return None,
+    })
+}
+
 fn is_native_integer_comparison(function: &crate::scalar_function::ScalarFunction) -> bool {
     function.pb_signature().is_none()
         && matches!(
@@ -2589,6 +2640,55 @@ mod tests {
             vec![vec![Datum::Null; 2]]
         );
         assert!(session.warnings.borrow().is_empty());
+    }
+
+    #[test]
+    fn shared_kernel_bigint_truth_tests_keep_null_and_unsigned_bits() {
+        use tidb_datatype::FieldTypeCode;
+        let int = FieldType::new(FieldTypeCode::LongLong);
+        let ctx = crate::NoColumns;
+        let rows = [3, 0, 1, 2, 3];
+        let cases = [
+            ("not", [None, Some(1), Some(0), Some(0)]),
+            ("isnull", [Some(1), Some(0), Some(0), Some(0)]),
+            ("istrue", [Some(0), Some(0), Some(1), Some(1)]),
+            ("istrue_with_null", [None, Some(0), Some(1), Some(1)]),
+            ("isnottrue", [Some(1), Some(1), Some(0), Some(0)]),
+            ("isfalse", [Some(0), Some(1), Some(0), Some(0)]),
+            ("isnotfalse", [Some(1), Some(0), Some(1), Some(1)]),
+            ("isunknown", [Some(1), Some(0), Some(0), Some(0)]),
+            ("isnotunknown", [Some(0), Some(1), Some(1), Some(1)]),
+        ];
+        for unsigned in [false, true] {
+            let ty = int.clone().with_unsigned(unsigned);
+            let mut input = Chunk::new(std::slice::from_ref(&ty), 4, 4);
+            input.append_null(0);
+            for value in [0, i64::MIN, -1] {
+                input.append_int64(0, value);
+            }
+            let mut column = Column::new(1, ty);
+            column.index = 0;
+            for (name, expected) in cases {
+                let expression = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new(name),
+                    int.clone(),
+                    vec![Expression::Column(column.clone())],
+                ));
+                let expected = rows.map(|row| expected[row].map_or(Datum::Null, Datum::Int));
+                let original =
+                    rows.map(|row| expression.eval(&ctx, input.physical_row(row)).unwrap());
+                assert_eq!(original, expected, "{name} unsigned={unsigned}");
+                let projection = SharedProjection::compile(&[expression]).unwrap();
+                let mut execution = projection.start_execution(&ctx);
+                assert_eq!(
+                    execution
+                        .evaluate(&input, &rows, &mut EvalContext::default())
+                        .unwrap(),
+                    [expected.to_vec()],
+                    "{name} unsigned={unsigned}",
+                );
+            }
+        }
     }
 
     #[test]
