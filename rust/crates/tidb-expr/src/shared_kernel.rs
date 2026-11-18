@@ -97,7 +97,7 @@ impl SharedExpression {
             ByteOperand(&'a Expression),
             JsonOperand(&'a Expression),
             JsonType,
-            Md5,
+            BytesCall(tidb_query_expr::RpnFnMeta, usize),
             Date,
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
@@ -1095,6 +1095,33 @@ impl SharedExpression {
                     field_type: bytes_type(),
                     metadata: Box::new(()),
                 }),
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "sha" | "sha1" | "sha2") =>
+                {
+                    use tidb_query_expr::impl_encryption::{sha1_fn_meta, sha2_fn_meta};
+                    if !f.ret_type.as_ref().is_some_and(is_raw_string_type) {
+                        return Err("SHA requires a string result declaration".into());
+                    }
+                    match (f.func_name.lowercase(), f.args.as_slice()) {
+                        ("sha" | "sha1", [operand]) if is_raw_string_operand(operand) => {
+                            work.push(Visit::BytesCall(sha1_fn_meta(), 1));
+                            work.push(Visit::ByteOperand(operand));
+                        }
+                        ("sha2", [operand, length])
+                            if is_raw_string_operand(operand) && is_shared_sha2_length(length) =>
+                        {
+                            work.push(Visit::BytesCall(sha2_fn_meta(), 2));
+                            work.push(Visit::Enter(length));
+                            work.push(Visit::ByteOperand(operand));
+                        }
+                        _ => {
+                            return Err(
+                                "SHA requires a string leaf and a supported literal length".into()
+                            )
+                        }
+                    }
+                }
                 Visit::Enter(Expression::ScalarFunction(f)) if f.func_name.lowercase() == "md5" => {
                     if f.args.len() != 1 {
                         return Err("MD5 requires one argument".into());
@@ -1114,7 +1141,10 @@ impl SharedExpression {
                         );
                     }
                     let argument = &f.args[0];
-                    work.push(Visit::Md5);
+                    work.push(Visit::BytesCall(
+                        tidb_query_expr::impl_encryption::md5_fn_meta(),
+                        1,
+                    ));
                     if f.pb_signature().is_none()
                         && matches!(argument, Expression::Column(_))
                         && is_raw_string_operand(argument)
@@ -1130,9 +1160,9 @@ impl SharedExpression {
                 Visit::Enter(_) | Visit::ByteOperand(_) | Visit::JsonOperand(_) => {
                     return Err("expression is outside shared kernel admission".into())
                 }
-                Visit::Md5 => nodes.push(RpnExpressionNode::FnCall {
-                    func_meta: tidb_query_expr::impl_encryption::md5_fn_meta(),
-                    args_len: 1,
+                Visit::BytesCall(func_meta, args_len) => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta,
+                    args_len,
                     field_type: bytes_type(),
                     metadata: Box::new(()),
                 }),
@@ -2151,6 +2181,15 @@ fn is_raw_string_operand(expression: &Expression) -> bool {
         ),
         _ => false,
     }
+}
+
+fn is_shared_sha2_length(length: &Expression) -> bool {
+    matches!(
+        length,
+        Expression::Constant(c)
+            if c.ret_type.as_ref().is_some_and(is_signed_bigint)
+                && matches!(c.literal_value(), Some(Datum::Int(0 | 224 | 256 | 384 | 512)))
+    )
 }
 
 fn native_bit_operation(
@@ -8599,6 +8638,35 @@ mod tests {
             assert!(SdkDecimal::from_parts(invalid).is_err());
             assert!(MyDecimal::from_parts(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn shared_kernel_pb_sha2_reports_invalid_length_warning() {
+        let mut input = tipb::Expr::default();
+        input.set_tp(tipb::ExprType::Bytes);
+        input.set_val(b"abc".to_vec());
+        input.set_field_type(FieldTypeTp::VarString.into());
+        let mut length = tipb::Expr::default();
+        length.set_tp(tipb::ExprType::Int64);
+        // PB signed integers flip the sign bit before big-endian encoding.
+        length.set_val(i64::MAX.to_be_bytes().to_vec());
+        length.set_field_type(FieldTypeTp::LongLong.into());
+        let mut pb = tipb::Expr::default();
+        pb.set_tp(tipb::ExprType::ScalarFunc);
+        pb.set_sig(tipb::ScalarFuncSig::Sha2);
+        pb.set_field_type(FieldTypeTp::VarString.into());
+        pb.mut_children().push(input);
+        pb.mut_children().push(length);
+        let mut ctx = EvalContext::default();
+        let program =
+            tidb_query_expr::RpnExpressionBuilder::build_from_expr_tree(pb, &mut ctx, 0).unwrap();
+        let columns = LazyBatchColumnVec::empty();
+        let result = program
+            .eval_decoded(&mut ctx, &[], &columns, &[0], 1)
+            .unwrap();
+        assert_eq!(native_output(result, 1).unwrap(), [Datum::Null]);
+        assert_eq!(ctx.warnings.warning_cnt, 1);
+        assert_eq!(ctx.warnings.warnings[0].get_code(), 1583);
     }
 
     #[test]

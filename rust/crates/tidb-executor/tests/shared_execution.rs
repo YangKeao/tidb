@@ -1524,3 +1524,53 @@ fn shared_sql_binary_comparisons_preserve_no_pad_and_invalid_utf8() {
     assert_eq!(projection, Some((1, 1)));
     assert_eq!(selection, Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_sha_keep_bytes_fields_and_invalid_length_semantics() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE hash_bytes (id BIGINT PRIMARY KEY, s VARBINARY(8), t VARCHAR(8), n BIGINT)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO hash_bytes VALUES (1,X'FF00','界',-1),(2,'','',256),(3,NULL,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql =
+        "SELECT id,SHA(s),SHA1(s),SHA1(t),SHA2(s,0),SHA2(s,224),SHA2(s,256),SHA2(s,384),SHA2(s,512)
+        FROM hash_bytes ORDER BY id LIMIT 3";
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert!(shared.take_warnings().is_empty());
+    assert!(native.take_warnings().is_empty());
+    let rows = actual.1;
+    assert_eq!(rows[0][1], rows[0][2]);
+    assert_eq!(rows[0][4], rows[0][6]);
+    assert_eq!(
+        rows[0][1..]
+            .iter()
+            .map(|value| value.as_raw_bytes().unwrap().len())
+            .collect::<Vec<_>>(),
+        [40, 40, 40, 64, 56, 64, 96, 128]
+    );
+    assert_eq!(rows[2][1..], [const { Datum::Null }; 8]);
+    eprintln!("SHA projection={:?}", shared.shared_projection_counts());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let fallback = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT SHA2(s,-1),SHA2(s,n) FROM hash_bytes ORDER BY id LIMIT 3";
+    let actual = run_select_meta_on(sql, &catalog, &fallback).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0], [Datum::Null, Datum::Null]);
+    assert!(fallback.take_warnings().is_empty());
+    assert!(native.take_warnings().is_empty());
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}
