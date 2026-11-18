@@ -621,3 +621,80 @@ fn shared_sql_selection_keeps_filter_demand_and_declines_decimal() {
     );
     compare(&sql.replace("AND b >", "AND CAST(u AS DECIMAL) >"), 0);
 }
+
+#[test]
+fn shared_sql_projection_runs_bigint_conditionals() {
+    use tidb_ast::Stmt;
+    use tidb_executor::{
+        driver::open_query_meta_stmt_with_physical, run_create_table_on, run_insert_on,
+        run_select_meta_on, Catalog, DEFAULT_DATABASE,
+    };
+
+    let mut catalog = Catalog::default();
+    let context = || StmtContext::for_query().with_executor_chunk_sizes(2, 8);
+    run_create_table_on(
+        "CREATE TABLE nullable_samples (id BIGINT PRIMARY KEY, x BIGINT, y BIGINT)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO nullable_samples VALUES (1,-1,NULL),(2,0,-8),(3,NULL,9),(4,NULL,NULL),(5,3,4)",
+        &mut catalog,
+        &context(),
+    )
+    .unwrap();
+
+    let sql =
+        "SELECT CASE WHEN x THEN y WHEN y THEN id END, IFNULL(x,id), COALESCE(x,y,id), RAND(7)
+        FROM nullable_samples ORDER BY id LIMIT 5";
+    let original = context();
+    let expected = run_select_meta_on(sql, &catalog, &original).unwrap();
+    let shared = context().with_shared_projection();
+    let Stmt::Query(query) = tidb_parser::parse(sql).unwrap() else {
+        unreachable!();
+    };
+    let mut records =
+        open_query_meta_stmt_with_physical(&query, None, &catalog, DEFAULT_DATABASE, &shared)
+            .unwrap();
+    assert_eq!(records.columns(), expected.0);
+    let types = expected
+        .0
+        .iter()
+        .map(|(_, tp)| tp.clone())
+        .collect::<Vec<_>>();
+    let mut request = records.new_chunk();
+    let mut actual = Vec::new();
+    loop {
+        request.set_required_rows(2, 8);
+        records.next(&mut request).unwrap();
+        if request.num_rows() == 0 {
+            break;
+        }
+        actual.extend((0..request.num_rows()).map(|i| request.get_row(i).get_datum_row(&types)));
+    }
+    records.finish().unwrap();
+    assert_eq!(actual, expected.1);
+    assert_eq!(shared.take_warnings(), original.take_warnings());
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.iter().map(|row| &row[..3]).collect::<Vec<_>>(),
+        [
+            &[Null, Int(-1), Int(-1)][..],
+            &[Int(2), Int(0), Int(0)][..],
+            &[Int(3), Int(3), Int(9)][..],
+            &[Null, Int(4), Int(4)][..],
+            &[Int(4), Int(3), Int(3)][..],
+        ],
+    );
+    let route = shared.shared_projection_counts().unwrap();
+    eprintln!("conditional projection route={route:?}, rows={actual:?}");
+    assert_eq!(route.0, 1);
+    assert!(route.1 >= 2);
+    let mixed = sql.replace("COALESCE(x,y,id)", "COALESCE(x,CAST(y AS DOUBLE),id)");
+    let fallback = context().with_shared_projection();
+    assert_eq!(
+        run_select_meta_on(&mixed, &catalog, &fallback).unwrap(),
+        run_select_meta_on(&mixed, &catalog, &context()).unwrap(),
+    );
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}

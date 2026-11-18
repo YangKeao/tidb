@@ -116,8 +116,10 @@ impl SharedExpression {
             WireComparisonRight(tidb_query_expr::RpnFnMeta, &'a Expression),
             LogicalNext(&'a Expression, usize),
             LogicalEnd(usize),
-            IfCondition(&'a crate::scalar_function::ScalarFunction),
-            IfThen(&'a crate::scalar_function::ScalarFunction, usize),
+            Conditional(&'a [Expression], tipb::FieldType),
+            IfCondition(&'a Expression, &'a [Expression], tipb::FieldType),
+            IfThen(&'a [Expression], tipb::FieldType, usize),
+            Alternative(&'a [Expression], Vec<usize>),
             IfElse(usize, usize),
         }
         let mut work = vec![Visit::Enter(expression)];
@@ -669,6 +671,55 @@ impl SharedExpression {
                     };
                     *target = end;
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if matches!(f.func_name.lowercase(), "case" | "coalesce" | "ifnull") =>
+                {
+                    let name = f.func_name.lowercase();
+                    if !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                        || f.args
+                            .iter()
+                            .any(|arg| bigint_operand_signedness(arg) != Some(false))
+                    {
+                        return Err(
+                            "conditional requires matching signed BIGINT arguments and output"
+                                .into(),
+                        );
+                    }
+                    match (name, f.args.as_slice()) {
+                        ("case", [_, _, ..]) => {
+                            work.push(Visit::Conditional(&f.args, FieldTypeTp::LongLong.into()));
+                        }
+                        ("ifnull", [first, last]) => {
+                            work.push(Visit::Alternative(std::slice::from_ref(last), Vec::new()));
+                            work.push(Visit::Enter(first));
+                        }
+                        ("coalesce", [first, rest @ ..]) => {
+                            work.push(Visit::Alternative(rest, Vec::new()));
+                            work.push(Visit::Enter(first));
+                        }
+                        _ => return Err("invalid conditional arity".into()),
+                    }
+                }
+                Visit::Alternative(remaining, mut guards) => {
+                    if let [next, rest @ ..] = remaining {
+                        guards.push(nodes.len());
+                        nodes.push(RpnExpressionNode::JumpIfNotNull {
+                            target: 0,
+                            field_type: FieldTypeTp::LongLong.into(),
+                        });
+                        work.push(Visit::Alternative(rest, guards));
+                        work.push(Visit::Enter(next));
+                    } else {
+                        let end = nodes.len();
+                        for index in guards {
+                            let RpnExpressionNode::JumpIfNotNull { target, .. } = &mut nodes[index]
+                            else {
+                                unreachable!()
+                            };
+                            *target = end;
+                        }
+                    }
+                }
                 Visit::Enter(Expression::ScalarFunction(f)) if f.func_name.lowercase() == "if" => {
                     if f.args.len() != 3 {
                         return Err("IF requires three arguments".into());
@@ -711,31 +762,41 @@ impl SharedExpression {
                                 .into(),
                         );
                     }
-                    work.push(Visit::IfCondition(f));
-                    work.push(Visit::Enter(&f.args[0]));
+                    work.push(Visit::Conditional(&f.args, control_type(f)?));
                 }
-                Visit::IfCondition(f) => {
+                Visit::Conditional(args, field_type) => match args {
+                    [condition, value, rest @ ..] => {
+                        work.push(Visit::IfCondition(value, rest, field_type));
+                        work.push(Visit::Enter(condition));
+                    }
+                    [value] => work.push(Visit::Enter(value)),
+                    [] => nodes.push(RpnExpressionNode::Constant {
+                        value: ScalarValue::Int(None),
+                        field_type,
+                    }),
+                },
+                Visit::IfCondition(value, rest, field_type) => {
                     let at = nodes.len();
                     nodes.push(RpnExpressionNode::JumpIfFalse {
                         target: 0,
                         end: 0,
-                        field_type: control_type(f)?,
+                        field_type: field_type.clone(),
                     });
-                    work.push(Visit::IfThen(f, at));
-                    work.push(Visit::Enter(&f.args[1]));
+                    work.push(Visit::IfThen(rest, field_type, at));
+                    work.push(Visit::Enter(value));
                 }
-                Visit::IfThen(f, branch) => {
+                Visit::IfThen(rest, field_type, branch) => {
                     let at = nodes.len();
                     nodes.push(RpnExpressionNode::Jump {
                         target: 0,
-                        field_type: control_type(f)?,
+                        field_type: field_type.clone(),
                     });
                     let RpnExpressionNode::JumpIfFalse { target, .. } = &mut nodes[branch] else {
                         unreachable!()
                     };
                     *target = at + 1;
                     work.push(Visit::IfElse(at, branch));
-                    work.push(Visit::Enter(&f.args[2]));
+                    work.push(Visit::Conditional(rest, field_type));
                 }
                 Visit::IfElse(jump, branch) => {
                     let end = nodes.len();
@@ -904,6 +965,7 @@ impl SharedExpression {
                         *end += 1;
                     }
                     RpnExpressionNode::Jump { target, .. }
+                    | RpnExpressionNode::JumpIfNotNull { target, .. }
                     | RpnExpressionNode::RegexpArgument { target, .. }
                     | RpnExpressionNode::NullGuard { target, .. } => *target += 1,
                     RpnExpressionNode::Repeat { end, .. }
@@ -2913,6 +2975,133 @@ mod tests {
         ));
         assert!(SharedExpression::compile(&mismatched).is_err());
         assert!(SharedExpression::compile(&literal(Datum::UInt(u64::MAX), field(true))).is_err());
+    }
+
+    #[test]
+    fn shared_kernel_native_conditionals_skip_errors_and_draws() {
+        use tidb_datatype::FieldTypeCode;
+
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let literal = |value| Expression::Constant(Constant::new(value, integer.clone()));
+        let call = |name, args| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                integer.clone(),
+                args,
+            ))
+        };
+        let mut column = Column::new(1, integer.clone());
+        column.index = 0;
+        let column = Expression::Column(column);
+        let mut input = Chunk::new(&[integer.clone()], 3, 3);
+        input.append_int64(0, -1);
+        input.append_int64(0, 0);
+        input.append_null(0);
+        let rows = [2, 0, 1, 2];
+        let repeat = call(
+            "benchmark",
+            vec![
+                literal(Datum::Int(2)),
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("rand"),
+                    FieldType::new(FieldTypeCode::Double),
+                    vec![],
+                )),
+            ],
+        );
+        let overflow = call(
+            "plus",
+            vec![literal(Datum::Int(i64::MAX)), literal(Datum::Int(1))],
+        );
+        for (expression, draws) in [
+            (
+                call(
+                    "coalesce",
+                    vec![column.clone(), repeat.clone(), overflow.clone()],
+                ),
+                4,
+            ),
+            (
+                call(
+                    "case",
+                    vec![
+                        column.clone(),
+                        literal(Datum::Int(7)),
+                        literal(Datum::Null),
+                        overflow.clone(),
+                        repeat,
+                    ],
+                ),
+                6,
+            ),
+        ] {
+            let original = Session::default();
+            let session = Session::default();
+            let wanted = rows
+                .iter()
+                .map(|row| {
+                    expression
+                        .eval(&original, input.physical_row(*row))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(original.draws.get(), draws);
+            let program = SharedExpression::compile(&expression).unwrap();
+            let mut exec = program.start_execution(&session);
+            let mut ctx = EvalContext::default();
+            let mut actual = exec
+                .evaluate(&input, &rows[..2], &mut ctx, InvocationMode::Vector)
+                .unwrap();
+            actual.extend(
+                exec.evaluate(&input, &rows[2..], &mut ctx, InvocationMode::Vector)
+                    .unwrap(),
+            );
+            assert_eq!(actual, wanted);
+            assert_eq!(session.draws.get(), draws);
+            eprintln!("conditional values={actual:?}, draws={draws}");
+        }
+
+        for expression in [
+            call("coalesce", vec![literal(Datum::Null), literal(Datum::Null)]),
+            call(
+                "case",
+                vec![
+                    literal(Datum::Int(1)),
+                    literal(Datum::Null),
+                    overflow.clone(),
+                    literal(Datum::Int(7)),
+                ],
+            ),
+        ] {
+            let native = expression
+                .eval(&crate::context::NoColumns, input.physical_row(0))
+                .unwrap();
+            assert_eq!(native, Datum::Null);
+            assert_eq!(
+                SharedExpression::compile(&expression)
+                    .unwrap()
+                    .evaluate(&input, &rows, &mut EvalContext::default())
+                    .unwrap(),
+                vec![native; rows.len()],
+            );
+        }
+
+        let expression = call("ifnull", vec![column, overflow]);
+        let native = crate::context::NoColumns;
+        let program = SharedExpression::compile(&expression).unwrap();
+        let mut ctx = EvalContext::default();
+        for row in [1, 0, 1] {
+            let expected = expression.eval(&native, input.physical_row(row)).unwrap();
+            assert_eq!(
+                program
+                    .evaluate_mode(&input, &[row], &mut ctx, InvocationMode::Scalar)
+                    .unwrap(),
+                [expected]
+            );
+        }
+        let expected = expression.eval(&native, input.physical_row(2)).unwrap_err();
+        let actual = program.evaluate(&input, &[1, 2], &mut ctx).unwrap_err();
+        assert_native_error(actual, expected);
     }
 
     #[test]
