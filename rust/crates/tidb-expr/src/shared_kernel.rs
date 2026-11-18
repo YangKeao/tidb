@@ -129,10 +129,13 @@ impl SharedExpression {
         let bytes_type = || tipb::FieldType::from(FieldTypeTp::VarString);
         while let Some(visit) = work.pop() {
             if let Visit::Enter(Expression::ScalarFunction(f)) = &visit {
-                // In this admitted subset only pure plus/mul trees enter the
-                // original numeric batch route; one fallback child rejects the root.
-                row_fallback |=
-                    !matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div");
+                // Direct integer leaves never introduce per-row effects.
+                let pure_comparison = is_native_integer_comparison(f)
+                    && f.args
+                        .iter()
+                        .all(|arg| matches!(arg, Expression::Constant(_) | Expression::Column(_)));
+                row_fallback |= !pure_comparison
+                    && !matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div");
             }
             match visit {
                 Visit::DecimalOperand(Expression::Constant(c)) if c.param_marker.is_some() => {
@@ -580,10 +583,8 @@ impl SharedExpression {
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if wire_integer_comparison(f).is_some()
-                        || matches!(
-                            f.func_name.lowercase(),
-                            "and" | "or" | "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq"
-                        ) =>
+                        || is_native_integer_comparison(f)
+                        || matches!(f.func_name.lowercase(), "and" | "or") =>
                 {
                     let [left, right] = f.args.as_slice() else {
                         return Err("logical operators and comparisons require two operands".into());
@@ -1813,6 +1814,14 @@ fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_e
     EvaluateError::Custom { code, msg }.into()
 }
 
+fn is_native_integer_comparison(function: &crate::scalar_function::ScalarFunction) -> bool {
+    function.pb_signature().is_none()
+        && matches!(
+            function.func_name.lowercase(),
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq"
+        )
+}
+
 fn wire_integer_comparison(
     function: &crate::scalar_function::ScalarFunction,
 ) -> Option<&'static str> {
@@ -2692,6 +2701,10 @@ mod tests {
             };
             let expression = crate::distsql_builtin::pb_to_expr(&node, &schema).unwrap();
             let plan = SharedIntegerComparison::compile(&expression, &schema).unwrap();
+            assert!(matches!(
+                plan.0.program[0],
+                RpnExpressionNode::OrderedRows { .. }
+            ));
             for (left, wanted_reads, expected) in [
                 (None, &[0][..], Datum::Null),
                 (Some(3), &[0, 1][..], Datum::Int(truth)),
@@ -2796,6 +2809,10 @@ mod tests {
             )
             .unwrap();
             let program = SharedProjection::compile_selection(&filters, &types).unwrap();
+            assert!(matches!(
+                program.expressions[1].program[0],
+                RpnExpressionNode::OrderedRows { .. }
+            ));
             let mut shared = program.into_owned_execution(Session::default());
             let mut actual = Vec::new();
             shared
@@ -2929,6 +2946,10 @@ mod tests {
                 let program = SharedExpression::compile(&expression).unwrap_or_else(|error| {
                     panic!("{name}, unsigned={left_unsigned}/{right_unsigned}: {error}")
                 });
+                assert!(matches!(
+                    program.program[0],
+                    RpnExpressionNode::ColumnRef { .. }
+                ));
                 assert_eq!(
                     program
                         .evaluate(&input, &rows, &mut EvalContext::default())
