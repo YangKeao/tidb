@@ -20,3 +20,4 @@
 - [混合列投影与 TopN](mixed-projection.zh.md)
 - [BIGINT 的 NOT、NULL 与真假判断](bigint-truth.zh.md)
 - [字节长度、ASCII 与二进制 CHAR_LENGTH](byte-counts.zh.md)
+- [聚合参数和分组键的共享求值](aggregate-projection.zh.md)
