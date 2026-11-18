@@ -15,8 +15,8 @@ use tidb_query_datatype::{
 };
 use tidb_query_expr::{
     ExpressionScalar, ExpressionVector, InputColumns, InputResult, InvocationMode,
-    NativeArithmetic, NativeDiagnosticPart, OutputOrder, RpnExpression, RpnExpressionNode,
-    RpnStackNode, RpnStackNodeVectorValue,
+    NativeArithmetic, NativeDiagnosticPart, OutputOrder, OwnedRpnExecution, RpnExecutionRef,
+    RpnExpression, RpnExpressionNode, RpnStackNode, RpnStackNodeVectorValue,
 };
 
 use crate::expression::Expression;
@@ -51,8 +51,9 @@ impl From<&str> for SharedEvaluationError {
 }
 impl From<tidb_query_expr::evaluation_error::Error> for SharedEvaluationError {
     fn from(error: tidb_query_expr::evaluation_error::Error) -> Self {
-        use tidb_query_expr::evaluation_error::ErrorInner;
+        use tidb_query_expr::evaluation_error::{ErrorInner, EvaluateError};
         match *error.0 {
+            ErrorInner::Evaluate(EvaluateError::Other(message)) => message.into(),
             ErrorInner::Evaluate(error) => Self {
                 code: Some(error.code()),
                 message: error.to_string(),
@@ -487,41 +488,45 @@ impl SharedExpression {
                         });
                     }
                     use tidb_query_expr::impl_arithmetic::{
-                        arithmetic_fn_meta, IntIntMultiply, IntIntPlus,
+                        native_int_arithmetic_fn_meta, IntIntMultiply, IntIntPlus,
                     };
-                    if f.ret_type.as_ref().unwrap().code() == tidb_datatype::FieldTypeCode::LongLong
-                    {
+                    let (op, native_op) = match f.func_name.lowercase() {
+                        "plus" => (NativeArithmetic::Add, tidb_ast::BinaryOp::Plus),
+                        "minus" => (NativeArithmetic::Subtract, tidb_ast::BinaryOp::Minus),
+                        "mul" => (NativeArithmetic::Multiply, tidb_ast::BinaryOp::Mul),
+                        "div" => (NativeArithmetic::Divide, tidb_ast::BinaryOp::Div),
+                        _ => unreachable!(),
+                    };
+                    let eval_type = f.ret_type.as_ref().unwrap().eval_type();
+                    let real = eval_type == tidb_datatype::EvalType::Real;
+                    let integer = eval_type == tidb_datatype::EvalType::Int;
+                    let class = match eval_type {
+                        tidb_datatype::EvalType::Real => "DOUBLE",
+                        tidb_datatype::EvalType::Int => "BIGINT",
+                        _ => "DECIMAL",
+                    };
+                    let source = crate::scalar_function::arithmetic_overflow_expression(
+                        f,
+                        native_op,
+                        real,
+                        &crate::context::NoColumns,
+                    );
+                    let overflow = source.map_or_else(
+                        || format!("{class} value is out of range"),
+                        |source| format!("{class} value is out of range in '{source}'"),
+                    );
+                    if integer {
                         nodes.push(RpnExpressionNode::FnCall {
                             func_meta: if f.func_name.lowercase() == "plus" {
-                                arithmetic_fn_meta::<IntIntPlus>()
+                                native_int_arithmetic_fn_meta::<IntIntPlus>()
                             } else {
-                                arithmetic_fn_meta::<IntIntMultiply>()
+                                native_int_arithmetic_fn_meta::<IntIntMultiply>()
                             },
                             args_len: 2,
                             field_type: FieldTypeTp::LongLong.into(),
-                            metadata: Box::new(()),
+                            metadata: Box::new(overflow),
                         });
                     } else {
-                        let (op, native_op) = match f.func_name.lowercase() {
-                            "plus" => (NativeArithmetic::Add, tidb_ast::BinaryOp::Plus),
-                            "minus" => (NativeArithmetic::Subtract, tidb_ast::BinaryOp::Minus),
-                            "mul" => (NativeArithmetic::Multiply, tidb_ast::BinaryOp::Mul),
-                            "div" => (NativeArithmetic::Divide, tidb_ast::BinaryOp::Div),
-                            _ => unreachable!(),
-                        };
-                        let real = f.ret_type.as_ref().unwrap().eval_type()
-                            == tidb_datatype::EvalType::Real;
-                        let class = if real { "DOUBLE" } else { "DECIMAL" };
-                        let source = crate::scalar_function::arithmetic_overflow_expression(
-                            f,
-                            native_op,
-                            real,
-                            &crate::context::NoColumns,
-                        );
-                        let overflow = source.map_or_else(
-                            || format!("{class} value is out of range"),
-                            |source| format!("{class} value is out of range in '{source}'"),
-                        );
                         nodes.push(RpnExpressionNode::NativeArithmetic {
                             op,
                             overflow,
@@ -636,6 +641,13 @@ impl SharedExpression {
                         || (name == "regexp_like" && !matches!(f.args.len(), 2 | 3))
                     {
                         return Err("unsupported JSON_LENGTH/REGEXP_LIKE arity".into());
+                    }
+                    if name == "regexp_like"
+                        && tidb_datatype::is_ci_collation(f.derived_collation().name())
+                    {
+                        return Err(
+                            "REGEXP_LIKE requires a case-sensitive effective collation".into()
+                        );
                     }
                     let default_string =
                         tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
@@ -902,6 +914,38 @@ impl SharedProjection {
             },
         })
     }
+    /// Largest number of selected rows supported in one child batch.
+    pub const MAX_BATCH_SIZE: usize = tidb_query_datatype::codec::data_type::BATCH_MAX_SIZE;
+
+    /// Validate the native output schema before opting a caller into this group.
+    pub fn matches_output_types(&self, types: &[tidb_datatype::FieldType]) -> bool {
+        self.expressions.len() == types.len()
+            && self
+                .expressions
+                .iter()
+                .zip(types)
+                .all(|(expr, tp)| expr.result_type() == Some(tp))
+    }
+
+    /// Own this frozen program and effects when a caller cannot borrow them
+    /// across its execution callbacks.
+    pub fn into_owned_execution<C: crate::Columns>(self, effects: C) -> OwnedSharedProjection<C> {
+        let supports_seeded_rand = effects.supports_seeded_rand();
+        OwnedSharedProjection {
+            roots: self
+                .expressions
+                .into_iter()
+                .map(|expr| OwnedProjectionRoot {
+                    execution: OwnedRpnExecution::new(expr.program, supports_seeded_rand),
+                    columns: expr.columns,
+                    schema: expr.schema,
+                })
+                .collect(),
+            order: self.order,
+            effects,
+        }
+    }
+
     /// Bind one execution to a fixed effects context; reuse it across chunks.
     pub fn start_execution<'p, 'e>(
         &'p self,
@@ -926,7 +970,7 @@ pub struct SharedProjectionExecution<'p, 'e> {
     executions: Vec<tidb_query_expr::RpnExecution<'p>>,
     effects: &'e dyn crate::context::Columns,
 }
-impl SharedProjectionExecution<'_, '_> {
+impl<'p> SharedProjectionExecution<'p, '_> {
     /// Return one typed native column per root.
     pub fn evaluate(
         &mut self,
@@ -935,7 +979,9 @@ impl SharedProjectionExecution<'_, '_> {
         ctx: &mut EvalContext,
     ) -> Result<Vec<Vec<Datum>>, SharedEvaluationError> {
         let roots = self.projection.expressions.len();
-        self.with_results(input, rows, ctx, |results| {
+        let order = self.projection.order;
+        let effects = self.effects;
+        with_projection_results(self.roots(), order, effects, input, rows, ctx, |results| {
             if rows.is_empty() {
                 return Ok((0..roots).map(|_| Vec::new()).collect());
             }
@@ -957,138 +1003,227 @@ impl SharedProjectionExecution<'_, '_> {
         ctx: &mut EvalContext,
         output: &mut Chunk,
     ) -> Result<(), SharedEvaluationError> {
-        if output.num_cols() != self.projection.expressions.len() {
-            return Err("output column count differs from projection".into());
-        }
-        for col in 0..output.num_cols() {
-            if (0..input.num_cols()).any(|i| output.columns_share_identity(col, input, i))
-                || (0..col).any(|i| output.columns_share_identity(col, output, i))
-            {
-                return Err("direct output requires independent columns".into());
-            }
-        }
-        for (col, expression) in self.projection.expressions.iter().enumerate() {
-            let expected = match expression
-                .program
-                .ret_field_type(&expression.schema)
-                .as_accessor()
-                .tp()
-            {
-                FieldTypeTp::NewDecimal => tidb_chunk::column::MY_DECIMAL_STRUCT_SIZE,
-                FieldTypeTp::Double
-                | FieldTypeTp::LongLong
-                | FieldTypeTp::Date
-                | FieldTypeTp::DateTime
-                | FieldTypeTp::Timestamp => 8,
-                _ => -1,
-            };
-            if output.column(col).type_size() != expected {
-                return Err("output column storage type mismatch".into());
-            }
-        }
-        self.with_results(input, rows, ctx, |results| {
-            enum Root {
-                Decimal(Vec<Option<tidb_datatype::DecimalArithmeticValue>>),
-                Datum(Vec<Datum>),
-            }
-            let mut prepared = Vec::with_capacity(results.len());
-            for result in results {
-                let values = match result {
-                    RpnStackNode::ExpressionVector {
-                        value: ExpressionVector::Decimal(values),
-                        ..
-                    } => Some(values),
-                    RpnStackNode::ExpressionScalar { value, .. }
-                        if matches!(value.as_ref(), ExpressionScalar::Decimal(_)) =>
-                    {
-                        let ExpressionScalar::Decimal(value) = value.as_ref() else {
-                            unreachable!()
-                        };
-                        Some(vec![value.clone(); rows.len()])
-                    }
-                    other => {
-                        prepared.push(Root::Datum(native_output(other, rows.len())?));
-                        None
-                    }
-                };
-                if let Some(values) = values {
-                    if values.len() != rows.len() || values.iter().flatten().any(|v| !v.is_valid())
-                    {
-                        return Err("invalid expression decimal result".into());
-                    }
-                    prepared.push(Root::Decimal(values));
-                }
-            }
-            output.reset();
-            for (col, values) in prepared.into_iter().enumerate() {
-                match values {
-                    Root::Decimal(values) => {
-                        for value in values {
-                            match value {
-                                Some(value) => output
-                                    .append_my_decimal(col, &value.to_chunk_my_decimal_lossy()),
-                                None => output.append_null(col),
-                            }
-                        }
-                    }
-                    Root::Datum(values) => {
-                        for value in values {
-                            output.append_datum(col, &value);
-                        }
-                    }
-                }
-            }
-            output.set_num_virtual_rows(rows.len());
-            Ok(())
-        })
+        let order = self.projection.order;
+        let effects = self.effects;
+        write_projection(self.roots(), order, effects, input, rows, ctx, output)
     }
 
-    fn with_results<T>(
-        &mut self,
-        input: &Chunk,
-        rows: &[usize],
-        ctx: &mut EvalContext,
-        consume: impl FnOnce(Vec<RpnStackNode<'_>>) -> Result<T, SharedEvaluationError>,
-    ) -> Result<T, SharedEvaluationError> {
-        if rows.iter().any(|r| *r >= input.physical_rows())
-            || rows.len() > tidb_query_datatype::codec::data_type::BATCH_MAX_SIZE
-        {
-            return Err("invalid group selection".into());
-        }
-        if rows.is_empty() {
-            return consume(Vec::new());
-        }
-        let inputs: Vec<_> = self
-            .projection
-            .expressions
-            .iter()
-            .map(|e| NativeInput {
-                chunk: input,
-                columns: &e.columns,
-                effects: self.effects,
-            })
-            .collect();
-        let mut programs: Vec<_> = self
-            .executions
+    fn roots<'s>(&'s mut self) -> impl ExactSizeIterator<Item = ProjectionRoot<'p, 's>> {
+        self.executions
             .iter_mut()
             .zip(&self.projection.expressions)
-            .zip(&inputs)
-            .map(|((execution, e), i)| (execution, e.schema.as_slice(), i as &dyn InputColumns))
-            .collect();
-        let results = tidb_query_expr::RpnExecution::eval_group(
-            &mut programs,
-            ctx,
-            rows,
-            self.projection.order,
-            if self.effects.enable_vectorized_expression() {
-                InvocationMode::Vector
-            } else {
-                InvocationMode::Scalar
-            },
-        )
-        .map_err(SharedEvaluationError::from)?;
-        consume(results)
+            .map(|(execution, expr)| ProjectionRoot {
+                execution: execution.borrow_execution(),
+                columns: &expr.columns,
+                schema: &expr.schema,
+            })
     }
+}
+
+/// Serial owner of one frozen projection and its statement effects.
+pub struct OwnedSharedProjection<C> {
+    roots: Vec<OwnedProjectionRoot>,
+    order: OutputOrder,
+    effects: C,
+}
+
+struct OwnedProjectionRoot {
+    execution: OwnedRpnExecution,
+    columns: Vec<(usize, tidb_datatype::FieldType)>,
+    schema: Vec<tipb::FieldType>,
+}
+
+struct ProjectionRoot<'p, 's> {
+    execution: RpnExecutionRef<'p, 's>,
+    columns: &'p [(usize, tidb_datatype::FieldType)],
+    schema: &'p [tipb::FieldType],
+}
+
+impl<C: crate::Columns> OwnedSharedProjection<C> {
+    /// Clear the per-execution state while keeping the frozen program.
+    pub fn reset(&mut self) {
+        let supports_seeded_rand = self.effects.supports_seeded_rand();
+        for root in &mut self.roots {
+            root.execution.reset(supports_seeded_rand);
+        }
+    }
+
+    /// Evaluate a child chunk's logical rows into an independently owned chunk.
+    pub fn evaluate_into_chunk(
+        &mut self,
+        input: &Chunk,
+        output: &mut Chunk,
+    ) -> Result<(), SharedEvaluationError> {
+        let contiguous;
+        let rows = match input.sel() {
+            Some(rows) => rows,
+            None => {
+                contiguous = (0..input.num_rows()).collect::<Vec<_>>();
+                &contiguous
+            }
+        };
+        let roots = self.roots.iter_mut().map(|root| ProjectionRoot {
+            execution: root.execution.borrow_execution(),
+            columns: &root.columns,
+            schema: &root.schema,
+        });
+        write_projection(
+            roots,
+            self.order,
+            &self.effects,
+            input,
+            rows,
+            &mut EvalContext::default(),
+            output,
+        )
+    }
+}
+
+fn write_projection<'p, 's>(
+    roots: impl ExactSizeIterator<Item = ProjectionRoot<'p, 's>>,
+    order: OutputOrder,
+    effects: &dyn crate::Columns,
+    input: &Chunk,
+    rows: &[usize],
+    ctx: &mut EvalContext,
+    output: &mut Chunk,
+) -> Result<(), SharedEvaluationError> {
+    if output.num_cols() != roots.len() {
+        return Err("output column count differs from projection".into());
+    }
+    for col in 0..output.num_cols() {
+        if (0..input.num_cols()).any(|i| output.columns_share_identity(col, input, i))
+            || (0..col).any(|i| output.columns_share_identity(col, output, i))
+        {
+            return Err("direct output requires independent columns".into());
+        }
+    }
+    let roots: Vec<_> = roots.collect();
+    for (col, root) in roots.iter().enumerate() {
+        let expected = match root
+            .execution
+            .program()
+            .ret_field_type(root.schema)
+            .as_accessor()
+            .tp()
+        {
+            FieldTypeTp::NewDecimal => tidb_chunk::column::MY_DECIMAL_STRUCT_SIZE,
+            FieldTypeTp::Double
+            | FieldTypeTp::LongLong
+            | FieldTypeTp::Date
+            | FieldTypeTp::DateTime
+            | FieldTypeTp::Timestamp => 8,
+            _ => -1,
+        };
+        if output.column(col).type_size() != expected {
+            return Err("output column storage type mismatch".into());
+        }
+    }
+    with_projection_results(roots, order, effects, input, rows, ctx, |results| {
+        enum Root {
+            Decimal(Vec<Option<tidb_datatype::DecimalArithmeticValue>>),
+            Datum(Vec<Datum>),
+        }
+        let mut prepared = Vec::with_capacity(results.len());
+        for result in results {
+            let values = match result {
+                RpnStackNode::ExpressionVector {
+                    value: ExpressionVector::Decimal(values),
+                    ..
+                } => Some(values),
+                RpnStackNode::ExpressionScalar { value, .. }
+                    if matches!(value.as_ref(), ExpressionScalar::Decimal(_)) =>
+                {
+                    let ExpressionScalar::Decimal(value) = value.as_ref() else {
+                        unreachable!()
+                    };
+                    Some(vec![value.clone(); rows.len()])
+                }
+                other => {
+                    prepared.push(Root::Datum(native_output(other, rows.len())?));
+                    None
+                }
+            };
+            if let Some(values) = values {
+                if values.len() != rows.len() || values.iter().flatten().any(|v| !v.is_valid()) {
+                    return Err("invalid expression decimal result".into());
+                }
+                prepared.push(Root::Decimal(values));
+            }
+        }
+        output.reset();
+        for (col, values) in prepared.into_iter().enumerate() {
+            match values {
+                Root::Decimal(values) => {
+                    for value in values {
+                        match value {
+                            Some(value) => {
+                                output.append_my_decimal(col, &value.to_chunk_my_decimal_lossy())
+                            }
+                            None => output.append_null(col),
+                        }
+                    }
+                }
+                Root::Datum(values) => {
+                    for value in values {
+                        output.append_datum(col, &value);
+                    }
+                }
+            }
+        }
+        output.set_num_virtual_rows(rows.len());
+        Ok(())
+    })
+}
+
+fn with_projection_results<'p, 's, T>(
+    roots: impl IntoIterator<Item = ProjectionRoot<'p, 's>>,
+    order: OutputOrder,
+    effects: &dyn crate::Columns,
+    input: &Chunk,
+    rows: &[usize],
+    ctx: &mut EvalContext,
+    consume: impl FnOnce(Vec<RpnStackNode<'_>>) -> Result<T, SharedEvaluationError>,
+) -> Result<T, SharedEvaluationError> {
+    if rows.iter().any(|r| *r >= input.physical_rows())
+        || rows.len() > tidb_query_datatype::codec::data_type::BATCH_MAX_SIZE
+    {
+        return Err("invalid group selection".into());
+    }
+    if rows.is_empty() {
+        return consume(Vec::new());
+    }
+    let (inputs, executions): (Vec<_>, Vec<_>) = roots
+        .into_iter()
+        .map(|root| {
+            (
+                NativeInput {
+                    chunk: input,
+                    columns: root.columns,
+                    effects,
+                },
+                (root.execution, root.schema),
+            )
+        })
+        .unzip();
+    let mut programs: Vec<_> = executions
+        .into_iter()
+        .zip(&inputs)
+        .map(|((execution, schema), input)| (execution, schema, input as &dyn InputColumns))
+        .collect();
+    let results = RpnExecutionRef::eval_group(
+        &mut programs,
+        ctx,
+        rows,
+        order,
+        if effects.enable_vectorized_expression() {
+            InvocationMode::Vector
+        } else {
+            InvocationMode::Scalar
+        },
+    )
+    .map_err(SharedEvaluationError::from)?;
+    consume(results)
 }
 
 struct NativeInput<'a> {
@@ -2677,6 +2812,69 @@ mod tests {
         let mut col = Column::new(index as i64 + 1, native_type());
         col.index = index as i64;
         Expression::Column(col)
+    }
+
+    #[test]
+    fn shared_kernel_regexp_rejects_case_insensitive_result_collation() {
+        let mut input = Chunk::new(&[native_type()], 1, 1);
+        input.append_datum(0, &Datum::new_string(b"^a$"));
+        let text = |v: &[u8]| numeric_literal(Datum::new_string(v), &native_type());
+        for (kind, pattern) in [("literal", text(b"^a$")), ("dynamic", regexp_column(0))] {
+            let mut expression = regexp_expr(text(b"A"), pattern, None);
+            let Expression::ScalarFunction(f) = &mut expression else {
+                unreachable!()
+            };
+            f.ret_type
+                .as_mut()
+                .unwrap()
+                .set_collation_name("utf8mb4_general_ci");
+            let native = expression
+                .eval(&crate::context::NoColumns, input.physical_row(0))
+                .unwrap();
+            assert_eq!(native, Datum::Int(1));
+            assert_eq!(
+                SharedExpression::compile(&expression).unwrap_err(),
+                "REGEXP_LIKE requires a case-sensitive effective collation",
+                "{kind} pattern"
+            );
+            let integer = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+            let one = numeric_literal(Datum::Int(1), &integer);
+            let parent = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("if"),
+                integer,
+                vec![one.clone(), expression, one.clone()],
+            ));
+            assert_eq!(
+                SharedProjection::compile(&[one, parent]).unwrap_err(),
+                "REGEXP_LIKE requires a case-sensitive effective collation"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_kernel_regexp_respects_rightmost_case_flag() {
+        let text = |v: &[u8]| numeric_literal(Datum::new_string(v), &native_type());
+        let mut input = Chunk::new(&[native_type()], 1, 1);
+        input.append_datum(0, &Datum::new_string(b"^a$"));
+        for pattern in [text(b"^a$"), regexp_column(0)] {
+            for (flags, matched) in [(b"ci", 1), (b"ic", 0)] {
+                let expression = regexp_expr(text(b"A"), pattern.clone(), Some(text(flags)));
+                let expected = Datum::Int(matched);
+                assert_eq!(
+                    expression
+                        .eval(&crate::context::NoColumns, input.physical_row(0))
+                        .unwrap(),
+                    expected
+                );
+                assert_eq!(
+                    SharedExpression::compile(&expression)
+                        .unwrap()
+                        .evaluate(&input, &[0], &mut EvalContext::default())
+                        .unwrap(),
+                    vec![expected]
+                );
+            }
+        }
     }
 
     #[test]

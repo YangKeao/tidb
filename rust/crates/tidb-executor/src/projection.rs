@@ -27,6 +27,8 @@ use tidb_datatype::FieldType;
 use tidb_expr::evaluator::{EvaluatorError, EvaluatorProgram, EvaluatorSuite};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
+#[cfg(feature = "shared-kernel")]
+use tidb_expr::shared_kernel::{OwnedSharedProjection, SharedProjection};
 use tidb_expr::Columns;
 
 /// Marks an evaluation context [`ProjectionExec`] accepts.
@@ -102,11 +104,22 @@ struct ParallelProjection<C> {
     child_done: bool,
 }
 
+enum ProjectionEvaluator {
+    Native {
+        suite: EvaluatorSuite,
+        program: Arc<EvaluatorProgram>,
+    },
+    #[cfg(feature = "shared-kernel")]
+    Shared {
+        projection: OwnedSharedProjection<crate::StmtContext>,
+        counts: Arc<crate::stmt_context::SharedProjectionCounts>,
+    },
+}
+
 /// One execution of a physical projection, with its own evaluator and buffer.
 pub struct ProjectionExec<C: Columns> {
     meta: ExecutorMeta,
-    evaluator_suite: EvaluatorSuite,
-    program: Arc<EvaluatorProgram>,
+    evaluator: ProjectionEvaluator,
     child: Box<dyn Executor>,
     ctx: C,
     child_chunk: Chunk,
@@ -136,13 +149,26 @@ impl<C: Columns> ProjectionExec<C> {
         ctx: C,
         avoid_column_evaluator: bool,
     ) -> Self {
-        let child_chunk = child.new_chunk();
         let program = Arc::new(EvaluatorProgram::new(exprs, avoid_column_evaluator));
-        let evaluator_suite = EvaluatorSuite::from_program(Arc::clone(&program));
+        let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+        Self::with_evaluator(
+            meta,
+            child,
+            ctx,
+            ProjectionEvaluator::Native { suite, program },
+        )
+    }
+
+    fn with_evaluator(
+        meta: ExecutorMeta,
+        child: Box<dyn Executor>,
+        ctx: C,
+        evaluator: ProjectionEvaluator,
+    ) -> Self {
+        let child_chunk = child.new_chunk();
         ProjectionExec {
             meta,
-            evaluator_suite,
-            program,
+            evaluator,
             child,
             ctx,
             child_chunk,
@@ -167,6 +193,30 @@ impl<C: Columns> ProjectionExec<C> {
     }
 }
 
+#[cfg(feature = "shared-kernel")]
+impl ProjectionExec<crate::StmtContext> {
+    pub(crate) fn with_shared_projection(
+        meta: ExecutorMeta,
+        child: Box<dyn Executor>,
+        ctx: crate::StmtContext,
+        projection: SharedProjection,
+    ) -> Self {
+        let counts = Arc::clone(
+            ctx.shared_projection
+                .as_ref()
+                .expect("shared projection opted in"),
+        );
+        counts
+            .programs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let evaluator = ProjectionEvaluator::Shared {
+            projection: projection.into_owned_execution(ctx.clone()),
+            counts,
+        };
+        Self::with_evaluator(meta, child, ctx, evaluator)
+    }
+}
+
 impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
     /// Go `parallelExecute`: the next finished output in fetch order, fetching
     /// and dispatching further child chunks while a free input and output
@@ -175,10 +225,19 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
         let max_chunk_size = self.meta.max_chunk_size();
         req.grow_and_reset(max_chunk_size);
         if self.parallel.is_none() {
+            let program = match &self.evaluator {
+                ProjectionEvaluator::Native { program, .. } => Arc::clone(program),
+                #[cfg(feature = "shared-kernel")]
+                ProjectionEvaluator::Shared { .. } => {
+                    return Err(ExecError::internal(
+                        "shared projection cannot run with workers",
+                    ));
+                }
+            };
             let (result_tx, result_rx) = std::sync::mpsc::channel();
             self.parallel = Some(ParallelProjection {
                 shared: Arc::new(ParallelProjectionShared {
-                    program: Arc::clone(&self.program),
+                    program,
                     ctx: self.ctx.clone(),
                 }),
                 result_tx,
@@ -343,6 +402,10 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
         self.child.open()?;
         self.child_chunk.reset();
         self.parallel = None;
+        #[cfg(feature = "shared-kernel")]
+        if let ProjectionEvaluator::Shared { projection, .. } = &mut self.evaluator {
+            projection.reset();
+        }
         Ok(())
     }
 
@@ -378,15 +441,37 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
             req.set_num_virtual_rows(child_rows);
             return Ok(());
         }
-        self.evaluator_suite
-            .run(&self.ctx, &mut self.child_chunk, req)
-            .map_err(Self::evaluator_error)
+        match &mut self.evaluator {
+            ProjectionEvaluator::Native { suite, .. } => suite
+                .run(&self.ctx, &mut self.child_chunk, req)
+                .map_err(Self::evaluator_error),
+            #[cfg(feature = "shared-kernel")]
+            ProjectionEvaluator::Shared { projection, counts } => {
+                counts
+                    .batches
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                projection
+                    .evaluate_into_chunk(&self.child_chunk, req)
+                    .map_err(
+                        |error| match error.code.and_then(|code| u16::try_from(code).ok()) {
+                            Some(code) => ExecError::Mysql(
+                                crate::MysqlError::new(code, error.message).from_evaluation(),
+                            ),
+                            None => ExecError::internal(error.message),
+                        },
+                    )
+            }
+        }
     }
 
     fn close(&mut self) -> Result<(), ExecError> {
         // Go closes `finishCh` and waits for the fetcher and workers; a task
         // still running here finds its receiver gone and drops its chunks.
         self.parallel = None;
+        #[cfg(feature = "shared-kernel")]
+        if let ProjectionEvaluator::Shared { projection, .. } = &mut self.evaluator {
+            projection.reset();
+        }
         self.child.close()
     }
 

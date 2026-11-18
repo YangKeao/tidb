@@ -4877,6 +4877,34 @@ fn build_with_state(
             } else {
                 0
             };
+            #[cfg(feature = "shared-kernel")]
+            {
+                use tidb_expr::shared_kernel::SharedProjection;
+
+                let batch_range = 1..=SharedProjection::MAX_BATCH_SIZE;
+                if ctx.shared_projection.is_some()
+                    && ctx.statement_class() == crate::stmt_context::StatementClass::Select
+                    && workers == 0
+                    && batch_range.contains(&meta.max_chunk_size())
+                    && batch_range.contains(&child.max_chunk_size())
+                    && !expressions.is_empty()
+                    && expressions
+                        .iter()
+                        .all(|expr| matches!(expr, Expression::ScalarFunction(_)))
+                {
+                    if let Some(shared) = SharedProjection::compile(&expressions)
+                        .ok()
+                        .filter(|shared| shared.matches_output_types(meta.ret_field_types()))
+                    {
+                        return Ok(Box::new(ProjectionExec::with_shared_projection(
+                            meta,
+                            child,
+                            ctx.clone(),
+                            shared,
+                        )));
+                    }
+                }
+            }
             let executor: Box<dyn Executor> = Box::new(
                 ProjectionExec::new(meta, expressions, child, ctx.clone()).with_workers(workers),
             );

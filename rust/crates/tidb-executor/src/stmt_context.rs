@@ -37,6 +37,13 @@ use tidb_util::spill_storage::SpillStorage;
 
 static NEXT_STATEMENT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(feature = "shared-kernel")]
+#[derive(Debug, Default)]
+pub(crate) struct SharedProjectionCounts {
+    pub(crate) programs: AtomicU64,
+    pub(crate) batches: AtomicU64,
+}
+
 /// Which of Go's mutually exclusive `StatementContext` statement-kind
 /// booleans this statement sets (`InInsertStmt`, `InUpdateStmt`/
 /// `InDeleteStmt`, `InSelectStmt`, `InLoadDataStmt`).
@@ -805,6 +812,8 @@ pub struct StmtContextData {
     /// [`StatementMemory::default`].
     memory: StatementMemory,
     executor_chunk_sizes: ExecutorChunkSizes,
+    #[cfg(feature = "shared-kernel")]
+    pub(crate) shared_projection: Option<Arc<SharedProjectionCounts>>,
     /// Go `SessionVars.EnableVectorizedExpression`, captured for executor workers.
     enable_vectorized_expression: bool,
     /// The scanner flags of `@@sql_mode` -- Go's `Parser.SetSQLMode` input.
@@ -990,6 +999,14 @@ context_configuration! {
     #[must_use]
     pub fn with_executor_chunk_sizes(mut self, init: usize, max: usize) -> Self {
         self.executor_chunk_sizes = ExecutorChunkSizes { init, max };
+        self
+    }
+
+    /// Enables the shared serial projection experiment for this statement.
+    #[cfg(feature = "shared-kernel")]
+    #[must_use]
+    pub fn with_shared_projection(mut self) -> Self {
+        self.shared_projection = Some(Arc::default());
         self
     }
 
@@ -1973,6 +1990,8 @@ impl StmtContext {
             sequences: session.sequences,
             memory,
             executor_chunk_sizes: ExecutorChunkSizes::default(),
+            #[cfg(feature = "shared-kernel")]
+            shared_projection: None,
             enable_vectorized_expression: true,
             sql_mode: tidb_parser::SqlMode::default(),
             ddl_sql_mode: session.ddl_sql_mode,
@@ -2050,6 +2069,17 @@ impl StmtContext {
     #[must_use]
     pub fn statement_class(&self) -> StatementClass {
         self.statement_class
+    }
+
+    /// Returns the number of shared programs selected and nonempty batches attempted.
+    #[cfg(feature = "shared-kernel")]
+    pub fn shared_projection_counts(&self) -> Option<(u64, u64)> {
+        self.shared_projection.as_ref().map(|counts| {
+            (
+                counts.programs.load(Ordering::Relaxed),
+                counts.batches.load(Ordering::Relaxed),
+            )
+        })
     }
 
     /// Rebuilding an already-compiled predicate for statistics must not
