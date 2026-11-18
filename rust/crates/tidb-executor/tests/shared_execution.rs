@@ -908,3 +908,60 @@ fn shared_sql_bigint_truth_tests_run_in_projection_and_selection() {
     assert_eq!(original_rng.gen(), next);
     assert_eq!(shared_rng.gen(), next);
 }
+
+#[test]
+fn shared_sql_byte_counts_preserve_invalid_utf8() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE byte_counts (id BIGINT PRIMARY KEY, b VARBINARY(8), t VARCHAR(8))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO byte_counts VALUES (1,X'FF00','界'),(2,'',''),(3,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id, LENGTH(b), OCTET_LENGTH(b), BIT_LENGTH(b), ASCII(b), CHAR_LENGTH(b)
+        FROM byte_counts ORDER BY id LIMIT 3";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Int(1), Int(2), Int(2), Int(16), Int(255), Int(2)],
+            vec![Int(2), Int(0), Int(0), Int(0), Int(0), Int(0)],
+            vec![Int(3), Null, Null, Null, Null, Null],
+        ]
+    );
+    eprintln!(
+        "binary byte count route={:?}",
+        shared.shared_projection_counts()
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let text_bytes = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT LENGTH(t), ASCII(t) FROM byte_counts ORDER BY id LIMIT 3";
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &text_bytes).unwrap(),
+        run_select_meta_on(sql, &catalog, &StmtContext::for_query()).unwrap(),
+    );
+    assert_eq!(text_bytes.shared_projection_counts(), Some((1, 1)));
+
+    let text = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT LENGTH(t), CHAR_LENGTH(t) FROM byte_counts ORDER BY id LIMIT 3";
+    let actual = run_select_meta_on(sql, &catalog, &text).unwrap();
+    assert_eq!(
+        actual.1,
+        [vec![Int(3), Int(1)], vec![Int(0), Int(0)], vec![Null, Null],]
+    );
+    assert_eq!(text.shared_projection_counts(), Some((0, 0)));
+}

@@ -91,6 +91,7 @@ impl SharedExpression {
             Enter(&'a Expression),
             DecimalOperand(&'a Expression),
             BigIntOperand(&'a Expression),
+            ByteOperand(&'a Expression),
             Md5,
             Date,
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
@@ -129,15 +130,18 @@ impl SharedExpression {
         let bytes_type = || tipb::FieldType::from(FieldTypeTp::VarString);
         while let Some(visit) = work.pop() {
             let mut truth_test = None;
+            let mut byte_count = None;
             if let Visit::Enter(Expression::ScalarFunction(f)) = &visit {
                 truth_test = native_int_truth_test(f);
-                // Direct integer leaves never introduce per-row effects.
-                let pure_integer_predicate = (is_native_integer_comparison(f)
-                    || truth_test.is_some())
+                byte_count = native_byte_count(f);
+                // Direct typed leaves never introduce per-row effects.
+                let pure_call = (is_native_integer_comparison(f)
+                    || truth_test.is_some()
+                    || byte_count.is_some())
                     && f.args
                         .iter()
                         .all(|arg| matches!(arg, Expression::Constant(_) | Expression::Column(_)));
-                row_fallback |= !pure_integer_predicate
+                row_fallback |= !pure_call
                     && !matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div");
             }
             match visit {
@@ -153,7 +157,8 @@ impl SharedExpression {
                     });
                 }
                 Visit::DecimalOperand(expression) => work.push(Visit::Enter(expression)),
-                Visit::BigIntOperand(Expression::Constant(c))
+                Visit::ByteOperand(Expression::Constant(c))
+                | Visit::BigIntOperand(Expression::Constant(c))
                 | Visit::Enter(Expression::Constant(c)) => {
                     let unsigned = matches!(visit, Visit::BigIntOperand(_))
                         && c.ret_type.as_ref().is_some_and(|tp| tp.is_unsigned());
@@ -218,6 +223,11 @@ impl SharedExpression {
                         Datum::UInt(v) if unsigned => ScalarValue::Int(Some(*v as i64)),
                         Datum::Bytes(v) => ScalarValue::Bytes(Some(v.clone())),
                         Datum::String(v) => ScalarValue::Bytes(Some(v.bytes().to_vec())),
+                        Datum::BinaryLiteral(v) | Datum::Bit(v)
+                            if matches!(visit, Visit::ByteOperand(_)) =>
+                        {
+                            ScalarValue::Bytes(Some(v.as_bytes().to_vec()))
+                        }
                         _ => {
                             return Err("shared kernel does not yet admit this literal type".into())
                         }
@@ -229,7 +239,8 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::Constant { value, field_type });
                 }
-                Visit::BigIntOperand(Expression::Column(c))
+                Visit::ByteOperand(Expression::Column(c))
+                | Visit::BigIntOperand(Expression::Column(c))
                 | Visit::Enter(Expression::Column(c)) => {
                     let bigint_operand = matches!(visit, Visit::BigIntOperand(_));
                     let index = usize::try_from(c.index).map_err(|_| "negative column index")?;
@@ -237,6 +248,7 @@ impl SharedExpression {
                     let admitted =
                         tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                     match tp.code() {
+                        _ if matches!(visit, Visit::ByteOperand(_)) => {}
                         tidb_datatype::FieldTypeCode::VarString
                             if tp.collation_name() == admitted.collation_name() => {}
                         tidb_datatype::FieldTypeCode::Double if !tp.is_unsigned() => {}
@@ -583,6 +595,20 @@ impl SharedExpression {
                         };
                         *target = end;
                     }
+                }
+                Visit::Enter(Expression::ScalarFunction(f)) if byte_count.is_some() => {
+                    let [operand] = f.args.as_slice() else {
+                        return Err("byte counts require one operand".into());
+                    };
+                    if !is_raw_string_operand(operand)
+                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err(
+                            "byte counts require a string leaf and signed BIGINT result".into()
+                        );
+                    }
+                    work.push(Visit::IntCall(byte_count.unwrap(), 1, None));
+                    work.push(Visit::ByteOperand(operand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f)) if truth_test.is_some() => {
                     let (func_meta, invert) = truth_test.unwrap();
@@ -932,7 +958,7 @@ impl SharedExpression {
                     work.push(Visit::Md5);
                     work.push(Visit::Enter(&f.args[0]));
                 }
-                Visit::Enter(_) => {
+                Visit::Enter(_) | Visit::ByteOperand(_) => {
                     return Err("expression is outside shared kernel admission".into())
                 }
                 Visit::Md5 => nodes.push(RpnExpressionNode::FnCall {
@@ -1870,6 +1896,57 @@ fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_e
     EvaluateError::Custom { code, msg }.into()
 }
 
+fn native_byte_count(
+    function: &crate::scalar_function::ScalarFunction,
+) -> Option<tidb_query_expr::RpnFnMeta> {
+    use tidb_query_expr::impl_string::{
+        ascii_fn_meta, bit_length_fn_meta, char_length_fn_meta, length_fn_meta,
+    };
+
+    if function.pb_signature().is_some() {
+        return None;
+    }
+    Some(match function.func_name.lowercase() {
+        "length" | "octet_length" => length_fn_meta(),
+        "ascii" => ascii_fn_meta(),
+        "bit_length" => bit_length_fn_meta(),
+        "char_length" | "character_length"
+            if function
+                .args
+                .first()
+                .and_then(Expression::static_type)
+                .is_some_and(tidb_datatype::FieldType::is_binary_string) =>
+        {
+            char_length_fn_meta()
+        }
+        _ => return None,
+    })
+}
+
+fn is_raw_string_operand(expression: &Expression) -> bool {
+    use tidb_datatype::FieldTypeCode;
+
+    if !expression.static_type().is_some_and(|ty| {
+        ty.is_string() && ty.code() != FieldTypeCode::Unspecified && !ty.is_array()
+    }) {
+        return false;
+    }
+    match expression {
+        Expression::Column(_) => true,
+        Expression::Constant(c) => matches!(
+            c.literal_value(),
+            Some(
+                Datum::Null
+                    | Datum::String(_)
+                    | Datum::Bytes(_)
+                    | Datum::Bit(_)
+                    | Datum::BinaryLiteral(_)
+            )
+        ),
+        _ => false,
+    }
+}
+
 fn native_int_truth_test(
     function: &crate::scalar_function::ScalarFunction,
 ) -> Option<(tidb_query_expr::RpnFnMeta, bool)> {
@@ -2640,6 +2717,81 @@ mod tests {
             vec![vec![Datum::Null; 2]]
         );
         assert!(session.warnings.borrow().is_empty());
+    }
+
+    #[test]
+    fn shared_kernel_byte_counts_read_raw_binary_columns() {
+        use tidb_datatype::{Collation, FieldTypeCode};
+        let int = FieldType::new(FieldTypeCode::LongLong);
+        let bytes = FieldType::new(FieldTypeCode::Varchar).with_collation(Collation::Binary);
+        let mut input = Chunk::new(std::slice::from_ref(&bytes), 4, 4);
+        input.append_bytes(0, &[0xff, 0x00]);
+        input.append_bytes(0, b"");
+        input.append_null(0);
+        input.append_bytes(0, "界".as_bytes());
+        let mut column = Column::new(1, bytes);
+        column.index = 0;
+        let rows = [3, 0, 2, 1, 0];
+        let ctx = crate::NoColumns;
+        for (name, expected) in [
+            ("length", [Some(3), Some(2), None, Some(0), Some(2)]),
+            ("octet_length", [Some(3), Some(2), None, Some(0), Some(2)]),
+            ("bit_length", [Some(24), Some(16), None, Some(0), Some(16)]),
+            ("ascii", [Some(231), Some(255), None, Some(0), Some(255)]),
+            ("char_length", [Some(3), Some(2), None, Some(0), Some(2)]),
+            (
+                "character_length",
+                [Some(3), Some(2), None, Some(0), Some(2)],
+            ),
+        ] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                int.clone(),
+                vec![Expression::Column(column.clone())],
+            ));
+            let expected = expected.map(|value| value.map_or(Datum::Null, Datum::Int));
+            let original = rows.map(|row| expression.eval(&ctx, input.physical_row(row)).unwrap());
+            assert_eq!(original, expected, "{name}");
+            let plan = SharedExpression::compile(&expression).unwrap();
+            let mut execution = plan.start_execution(&ctx);
+            assert_eq!(
+                execution
+                    .evaluate(
+                        &input,
+                        &rows,
+                        &mut EvalContext::default(),
+                        InvocationMode::Vector
+                    )
+                    .unwrap(),
+                expected,
+                "{name}"
+            );
+            let literal = Expression::Constant(Constant::new(
+                Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![0xff, 0x00])),
+                column.ret_type.clone().unwrap(),
+            ));
+            let scalar = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                int.clone(),
+                vec![literal],
+            ));
+            assert_eq!(
+                scalar.eval(&ctx, input.physical_row(0)).unwrap(),
+                expected[1]
+            );
+            assert_eq!(
+                SharedExpression::compile(&scalar)
+                    .unwrap()
+                    .evaluate_mode(
+                        &input,
+                        &[0],
+                        &mut EvalContext::default(),
+                        InvocationMode::Scalar
+                    )
+                    .unwrap(),
+                [expected[1].clone()]
+            );
+        }
     }
 
     #[test]
