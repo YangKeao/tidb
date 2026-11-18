@@ -1220,33 +1220,43 @@ impl SharedExpression {
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
-                        && matches!(f.func_name.lowercase(), "hex" | "unhex") =>
+                        && matches!(f.func_name.lowercase(), "bin" | "oct" | "hex" | "unhex") =>
                 {
                     use tidb_query_expr::impl_string::{
-                        hex_int_arg_fn_meta, hex_str_arg_fn_meta, unhex_fn_meta,
+                        bin_fn_meta, hex_int_arg_fn_meta, hex_str_arg_fn_meta, oct_int_fn_meta,
+                        unhex_fn_meta,
                     };
                     let [operand] = f.args.as_slice() else {
-                        return Err("HEX and UNHEX require one argument".into());
+                        return Err("radix function requires one argument".into());
                     };
-                    let decode = f.func_name.lowercase() == "unhex";
+                    let name = f.func_name.lowercase();
                     if !f.ret_type.as_ref().is_some_and(|ty| {
-                        is_raw_string_type(ty) && (!decode || ty.is_binary_string())
+                        is_raw_string_type(ty) && (name != "unhex" || ty.is_binary_string())
                     }) {
-                        return Err("HEX or UNHEX result declaration is unsupported".into());
+                        return Err("radix function requires a matching string result".into());
                     }
-                    let (meta, arg) = if is_raw_string_operand(operand) {
-                        let meta = if decode {
-                            unhex_fn_meta()
-                        } else {
-                            hex_str_arg_fn_meta()
-                        };
-                        (meta, Visit::ByteOperand(operand))
-                    } else if !decode && bigint_operand_signedness(operand).is_some() {
-                        (hex_int_arg_fn_meta(), Visit::BigIntOperand(operand))
-                    } else {
-                        return Err(
-                            "HEX or UNHEX operand conversion is outside shared admission".into(),
-                        );
+                    let (meta, arg) = match name {
+                        "hex" | "unhex" if is_raw_string_operand(operand) => {
+                            let meta = if name == "unhex" {
+                                unhex_fn_meta()
+                            } else {
+                                hex_str_arg_fn_meta()
+                            };
+                            (meta, Visit::ByteOperand(operand))
+                        }
+                        "bin" | "oct" | "hex" if bigint_operand_signedness(operand).is_some() => {
+                            let meta = match name {
+                                "bin" => bin_fn_meta(),
+                                "oct" => oct_int_fn_meta(),
+                                _ => hex_int_arg_fn_meta(),
+                            };
+                            (meta, Visit::BigIntOperand(operand))
+                        }
+                        _ => {
+                            return Err(
+                                "radix operand conversion is outside shared admission".into()
+                            )
+                        }
                     };
                     work.push(Visit::BytesCall(meta, 1));
                     work.push(arg);

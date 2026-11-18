@@ -1911,3 +1911,54 @@ fn shared_sql_ip_text_functions_keep_legacy_parse_and_diagnostics() {
         assert_eq!(shared.take_warnings(), native.take_warnings());
     }
 }
+
+#[test]
+fn shared_sql_bin_and_oct_keep_integer_bits_and_string_conversion() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE radix_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, s VARCHAR(8))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO radix_values VALUES
+         (1,-1,18446744073709551615,'12bad'),
+         (2,-9223372036854775808,9223372036854775808,''),
+         (3,0,0,'0'),(4,NULL,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,BIN(n),BIN(u),OCT(n),OCT(u)
+        FROM radix_values ORDER BY id LIMIT 4";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(native.take_warnings(), shared.take_warnings());
+    for (row, bits) in [(0, u64::MAX), (1, 1 << 63), (2, 0)] {
+        let bin = format!("{bits:b}");
+        let oct = format!("{bits:o}");
+        for (value, expected) in actual.1[row][1..].iter().zip([&bin, &bin, &oct, &oct]) {
+            assert_eq!(value.as_raw_bytes(), Some(expected.as_bytes()));
+        }
+    }
+    assert!(actual.1[3][1..].iter().all(Datum::is_null));
+    let route = shared.shared_projection_counts();
+    eprintln!("radix projection={route:?}");
+    assert_eq!(route, Some((1, 1)));
+
+    let fallback = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT BIN(s),OCT(s) FROM radix_values ORDER BY id LIMIT 4";
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &fallback).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap()
+    );
+    let warnings = fallback.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}
