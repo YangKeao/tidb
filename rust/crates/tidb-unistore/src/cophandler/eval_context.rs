@@ -107,6 +107,8 @@ impl Columns for RequestEvalContext {
 pub struct SharedExpression {
     pub(super) expression: tidb_expr::expression::Expression,
     pub(super) context: Arc<RequestEvalContext>,
+    #[cfg(feature = "shared-kernel")]
+    pub(super) comparison: Option<Arc<tidb_expr::shared_kernel::SharedIntegerComparison>>,
 }
 
 #[cfg(test)]

@@ -2040,10 +2040,21 @@ fn convert_shared(
 ) -> Result<SimpleExpr, String> {
     tidb_expr::distsql_builtin::pb_to_expr(expr, &context.column_types).map(|expression| {
         SimpleExpr::Shared(Arc::new(SharedExpression {
+            #[cfg(feature = "shared-kernel")]
+            comparison: tidb_expr::shared_kernel::SharedIntegerComparison::compile(
+                &expression,
+                &context.column_types,
+            )
+            .map(Arc::new),
             expression,
             context: Arc::clone(context),
         }))
     })
+}
+
+#[cfg(all(test, feature = "shared-kernel"))]
+thread_local! {
+    static INTEGER_COMPARISON_EVALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Evaluates a [`SimpleExpr::Shared`] node over one scanned row.
@@ -2051,6 +2062,16 @@ fn eval_shared(
     expr: &SharedExpression,
     row: &[tidb_datatype::Datum],
 ) -> Result<tidb_datatype::Datum, String> {
+    #[cfg(feature = "shared-kernel")]
+    if let Some(result) = expr
+        .comparison
+        .as_ref()
+        .and_then(|program| program.evaluate(row))
+    {
+        #[cfg(test)]
+        INTEGER_COMPARISON_EVALS.with(|count| count.set(count.get() + 1));
+        return result.map_err(|err| err.to_string());
+    }
     let row = tidb_chunk::mutrow::MutRow::from_datums(row);
     expr.expression
         .eval(expr.context.as_ref(), row.to_row())
@@ -5667,7 +5688,7 @@ mod tests {
         use tidb_proto::{KvrpcMutation, KvrpcOp};
         let mut store = MvccStore::new();
         for (handle, b_value) in [
-            (1_i64, Datum::Int(77)),
+            (1_i64, Datum::Int(-77)),
             (2, Datum::Int(88)),
             (3, Datum::Null),
         ] {
@@ -5750,6 +5771,8 @@ mod tests {
         let mut data = Vec::new();
         dag.encode(&mut data).expect("encodes");
         let (range_start, range_end) = tidb_codec::table_key::get_table_handle_key_range(11);
+        #[cfg(feature = "shared-kernel")]
+        INTEGER_COMPARISON_EVALS.with(|count| count.set(0));
         let resp = handle_cop_request(
             &mut store,
             &coprocessor::Request {
@@ -5765,9 +5788,18 @@ mod tests {
         );
         assert!(resp.other_error.is_empty(), "{}", resp.other_error);
         let select = tipb::SelectResponse::decode(resp.data.as_ref()).expect("decodes");
+        assert!(select.error.is_none());
+        assert!(select.warnings.is_empty());
+        assert_eq!(select.warning_count.unwrap_or(0), 0);
+        #[cfg(feature = "shared-kernel")]
+        assert_eq!(INTEGER_COMPARISON_EVALS.with(|count| count.get()), 3);
         let rows_data = select.chunks[0].rows_data.as_deref().expect("rows");
         let decoded = tidb_codec::decode(rows_data, 2).expect("one row");
         assert_eq!(decoded, vec![Datum::Int(2), Datum::Int(88)]);
+        eprintln!(
+            "selection result={decoded:?}, shared kernel={}",
+            cfg!(feature = "shared-kernel")
+        );
     }
 
     #[test]

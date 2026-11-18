@@ -111,7 +111,8 @@ impl SharedExpression {
                 usize,
                 Vec<usize>,
             ),
-            IntComparison(tidb_query_expr::RpnFnMeta),
+            IntComparison(tidb_query_expr::RpnFnMeta, Option<usize>),
+            WireComparisonRight(tidb_query_expr::RpnFnMeta, &'a Expression),
             LogicalNext(&'a Expression, usize),
             LogicalEnd(usize),
             IfCondition(&'a crate::scalar_function::ScalarFunction),
@@ -567,10 +568,11 @@ impl SharedExpression {
                     }
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
-                    if matches!(
-                        f.func_name.lowercase(),
-                        "and" | "or" | "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq"
-                    ) =>
+                    if wire_integer_comparison(f).is_some()
+                        || matches!(
+                            f.func_name.lowercase(),
+                            "and" | "or" | "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq"
+                        ) =>
                 {
                     let [left, right] = f.args.as_slice() else {
                         return Err("logical operators and comparisons require two operands".into());
@@ -584,41 +586,49 @@ impl SharedExpression {
                     {
                         return Err("logical operators and comparisons require signed BIGINT operands and result".into());
                     }
-                    let name = f.func_name.lowercase();
-                    if matches!(name, "and" | "or") {
+                    if let Some(name) = wire_integer_comparison(f) {
+                        work.push(Visit::WireComparisonRight(integer_comparison(name), right));
+                    } else if matches!(f.func_name.lowercase(), "and" | "or") {
                         let start = nodes.len();
                         nodes.push(RpnExpressionNode::LogicalStart {
-                            and: name == "and",
+                            and: f.func_name.lowercase() == "and",
                             end: 0,
                             preserve_mode: true,
                         });
                         work.push(Visit::LogicalNext(right, start));
                     } else {
-                        use tidb_query_expr::impl_compare::{
-                            compare_fn_meta, BasicComparer, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe,
-                            CmpOpLt, CmpOpNe, CmpOpNullEq,
-                        };
-                        let func = match name {
-                            "eq" => compare_fn_meta::<BasicComparer<i64, CmpOpEq>>(),
-                            "ne" => compare_fn_meta::<BasicComparer<i64, CmpOpNe>>(),
-                            "lt" => compare_fn_meta::<BasicComparer<i64, CmpOpLt>>(),
-                            "le" => compare_fn_meta::<BasicComparer<i64, CmpOpLe>>(),
-                            "gt" => compare_fn_meta::<BasicComparer<i64, CmpOpGt>>(),
-                            "ge" => compare_fn_meta::<BasicComparer<i64, CmpOpGe>>(),
-                            "nulleq" => compare_fn_meta::<BasicComparer<i64, CmpOpNullEq>>(),
-                            _ => unreachable!(),
-                        };
-                        work.push(Visit::IntComparison(func));
+                        work.push(Visit::IntComparison(
+                            integer_comparison(f.func_name.lowercase()),
+                            None,
+                        ));
                         work.push(Visit::Enter(right));
                     }
                     work.push(Visit::Enter(left));
                 }
-                Visit::IntComparison(func_meta) => nodes.push(RpnExpressionNode::FnCall {
-                    func_meta,
-                    args_len: 2,
-                    field_type: FieldTypeTp::LongLong.into(),
-                    metadata: Box::new(()),
-                }),
+                Visit::WireComparisonRight(func_meta, right) => {
+                    let guard = nodes.len();
+                    nodes.push(RpnExpressionNode::NullGuard {
+                        target: 0,
+                        field_type: FieldTypeTp::LongLong.into(),
+                    });
+                    work.push(Visit::IntComparison(func_meta, Some(guard)));
+                    work.push(Visit::Enter(right));
+                }
+                Visit::IntComparison(func_meta, guard) => {
+                    nodes.push(RpnExpressionNode::FnCall {
+                        func_meta,
+                        args_len: 2,
+                        field_type: FieldTypeTp::LongLong.into(),
+                        metadata: Box::new(()),
+                    });
+                    let end = nodes.len();
+                    if let Some(guard) = guard {
+                        let RpnExpressionNode::NullGuard { target, .. } = &mut nodes[guard] else {
+                            unreachable!()
+                        };
+                        *target = end;
+                    }
+                }
                 Visit::LogicalNext(right, start) => {
                     nodes.push(RpnExpressionNode::LogicalNext);
                     work.push(Visit::LogicalEnd(start));
@@ -932,6 +942,88 @@ impl SharedExpression {
             ),
             effects,
         }
+    }
+}
+
+/// A frozen coprocessor comparison over two signed BIGINT leaf operands.
+#[derive(Debug)]
+pub struct SharedIntegerComparison(SharedExpression);
+
+impl SharedIntegerComparison {
+    /// Check the decoded request and bind column references to the scan schema.
+    pub fn compile(
+        expression: &Expression,
+        input_types: &[tidb_datatype::FieldType],
+    ) -> Option<Self> {
+        let Expression::ScalarFunction(function) = expression else {
+            return None;
+        };
+        wire_integer_comparison(function)?;
+        if !function
+            .args
+            .iter()
+            .all(|arg| matches!(arg, Expression::Column(_) | Expression::Constant(_)))
+        {
+            return None;
+        }
+        let program = SharedExpression::compile(expression).ok()?;
+        if program
+            .columns
+            .iter()
+            .any(|(index, field)| input_types.get(*index) != Some(field))
+        {
+            return None;
+        }
+        Some(Self(program))
+    }
+
+    /// Compare one scan row. Nonmatching row carriers retain the caller's original path.
+    pub fn evaluate(&self, row: &[Datum]) -> Option<Result<Datum, SharedEvaluationError>> {
+        struct Input([ScalarValue; 2]);
+        impl InputColumns for Input {
+            fn read<'a>(
+                &'a self,
+                schema: &'a [tipb::FieldType],
+                offset: usize,
+                _rows: &'a [usize],
+                _ctx: &mut EvalContext,
+            ) -> InputResult<'a> {
+                Ok(RpnStackNode::Scalar {
+                    value: &self.0[offset],
+                    field_type: &schema[offset],
+                })
+            }
+        }
+        let mut values = [ScalarValue::Int(None), ScalarValue::Int(None)];
+        for (value, (index, _)) in values.iter_mut().zip(&self.0.columns) {
+            *value = match row.get(*index)? {
+                Datum::Int(value) => ScalarValue::Int(Some(*value)),
+                Datum::Null => ScalarValue::Int(None),
+                _ => return None,
+            };
+        }
+        let input = Input(values);
+        Some(
+            self.0
+                .program
+                .eval_input_mode(
+                    &mut EvalContext::default(),
+                    &self.0.schema,
+                    &input,
+                    &[0],
+                    1,
+                    InvocationMode::Scalar,
+                )
+                .map_err(SharedEvaluationError::from)
+                .and_then(|value| match value.get_logical_scalar_ref(0) {
+                    ScalarValueRef::Int(value) => {
+                        Ok(value.map_or(Datum::Null, |value| Datum::Int(*value)))
+                    }
+                    _ => Err(SharedEvaluationError::from(
+                        "expected integer comparison result",
+                    )),
+                }),
+        )
     }
 }
 
@@ -1632,6 +1724,34 @@ fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_e
         }
     };
     EvaluateError::Custom { code, msg }.into()
+}
+
+fn wire_integer_comparison(
+    function: &crate::scalar_function::ScalarFunction,
+) -> Option<&'static str> {
+    use tidb_proto::tipb::ScalarFuncSig;
+    match function.pb_signature()? {
+        ScalarFuncSig::EqInt => Some("eq"),
+        ScalarFuncSig::GtInt => Some("gt"),
+        _ => None,
+    }
+}
+
+fn integer_comparison(name: &str) -> tidb_query_expr::RpnFnMeta {
+    use tidb_query_expr::impl_compare::{
+        compare_fn_meta, BasicComparer, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe,
+        CmpOpNullEq,
+    };
+    match name {
+        "eq" => compare_fn_meta::<BasicComparer<i64, CmpOpEq>>(),
+        "ne" => compare_fn_meta::<BasicComparer<i64, CmpOpNe>>(),
+        "lt" => compare_fn_meta::<BasicComparer<i64, CmpOpLt>>(),
+        "le" => compare_fn_meta::<BasicComparer<i64, CmpOpLe>>(),
+        "gt" => compare_fn_meta::<BasicComparer<i64, CmpOpGt>>(),
+        "ge" => compare_fn_meta::<BasicComparer<i64, CmpOpGe>>(),
+        "nulleq" => compare_fn_meta::<BasicComparer<i64, CmpOpNullEq>>(),
+        _ => unreachable!(),
+    }
 }
 
 fn is_signed_bigint(tp: &tidb_datatype::FieldType) -> bool {
@@ -2392,6 +2512,96 @@ mod tests {
             self.vars
                 .borrow_mut()
                 .insert(name.to_ascii_lowercase(), value);
+        }
+    }
+
+    #[test]
+    fn shared_kernel_wire_comparison_skips_right_on_left_null() {
+        use tidb_datatype::FieldTypeCode;
+        use tidb_proto::tipb as wire;
+
+        struct Input {
+            left: ScalarValue,
+            right: ScalarValue,
+            reads: std::cell::RefCell<Vec<usize>>,
+        }
+        impl InputColumns for Input {
+            fn read<'a>(
+                &'a self,
+                schema: &'a [tipb::FieldType],
+                offset: usize,
+                _rows: &'a [usize],
+                _ctx: &mut EvalContext,
+            ) -> InputResult<'a> {
+                self.reads.borrow_mut().push(offset);
+                Ok(RpnStackNode::Scalar {
+                    value: if offset == 0 { &self.left } else { &self.right },
+                    field_type: &schema[offset],
+                })
+            }
+        }
+
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let schema = [integer.clone(), integer.clone()];
+        let column = |index| {
+            let mut val = Vec::new();
+            tidb_codec::encode_int(&mut val, index);
+            wire::Expr {
+                tp: Some(wire::ExprType::ColumnRef as i32),
+                val: Some(val),
+                ..Default::default()
+            }
+        };
+        for (sig, truth) in [
+            (wire::ScalarFuncSig::EqInt, 0),
+            (wire::ScalarFuncSig::GtInt, 1),
+        ] {
+            let node = wire::Expr {
+                tp: Some(wire::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                field_type: Some(wire::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                children: vec![column(0), column(1)],
+                ..Default::default()
+            };
+            let expression = crate::distsql_builtin::pb_to_expr(&node, &schema).unwrap();
+            let plan = SharedIntegerComparison::compile(&expression, &schema).unwrap();
+            for (left, wanted_reads, expected) in [
+                (None, &[0][..], Datum::Null),
+                (Some(3), &[0, 1][..], Datum::Int(truth)),
+            ] {
+                let input = Input {
+                    left: ScalarValue::Int(left),
+                    right: ScalarValue::Int(Some(2)),
+                    reads: Default::default(),
+                };
+                let output = plan
+                    .0
+                    .program
+                    .eval_input_mode(
+                        &mut EvalContext::default(),
+                        &plan.0.schema,
+                        &input,
+                        &[0],
+                        1,
+                        InvocationMode::Scalar,
+                    )
+                    .unwrap();
+                assert_eq!(native_output(output, 1).unwrap(), [expected.clone()]);
+                assert_eq!(*input.reads.borrow(), wanted_reads);
+                let row = [left.map_or(Datum::Null, Datum::Int), Datum::Int(2)];
+                assert_eq!(plan.evaluate(&row).unwrap().unwrap(), expected);
+                eprintln!("{sig:?}: left={left:?}, reads={wanted_reads:?}, result={expected:?}");
+            }
+            assert!(plan.evaluate(&[Datum::UInt(3), Datum::Int(2)]).is_none());
+            assert!(SharedIntegerComparison::compile(
+                &expression,
+                &[integer.clone().with_unsigned(true), integer.clone()],
+            )
+            .is_none());
+            assert!(SharedIntegerComparison::compile(&expression, &[]).is_none());
         }
     }
 

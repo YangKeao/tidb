@@ -10,6 +10,9 @@ description = "Go pkg/store/mockstore/unistore/lockstore: the arena-backed skipl
 [lints]
 workspace = true
 
+[features]
+shared-kernel = ["tidb-expr/shared-kernel"]
+
 [dependencies]
 regex = { workspace = true }
 chrono.workspace = true
