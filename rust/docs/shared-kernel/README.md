@@ -38,3 +38,4 @@
 - [剩余函数族的 SDK PB 注册入口](sdk-registry-inventory.zh.md)
 - [类型化 IP 地址转换](ip-conversions.zh.md)
 - [IPv4 二进制前缀判断](ip-prefix.zh.md)
+- [文本 IP 函数的共享求值](ip-text.zh.md)
