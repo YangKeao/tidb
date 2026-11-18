@@ -70,6 +70,7 @@ pub struct SharedExpression {
     columns: Vec<(usize, tidb_datatype::FieldType)>,
     schema: Vec<tipb::FieldType>,
     result_type: Option<tidb_datatype::FieldType>,
+    result_collation: tidb_datatype::Collation,
 }
 
 impl SharedExpression {
@@ -81,7 +82,6 @@ impl SharedExpression {
     /// Compile the admitted native expression subset without evaluating it.
     pub fn compile(expression: &Expression) -> Result<Self, String> {
         if matches!(expression, Expression::Constant(c) if matches!(c.literal_value(), Some(Datum::Bytes(_) | Datum::String(_))))
-            || matches!(expression, Expression::ScalarFunction(f) if f.func_name.lowercase() == "if" && f.ret_type.as_ref().is_some_and(|t| t.eval_type() == tidb_datatype::EvalType::String))
         {
             return Err(
                 "byte literal identity is outside this checkpoint's output admission".into(),
@@ -128,6 +128,13 @@ impl SharedExpression {
         let mut columns = Vec::new();
         let mut row_fallback = false;
         let bytes_type = || tipb::FieldType::from(FieldTypeTp::VarString);
+        let result_operand = |value, field_type: &tipb::FieldType| {
+            if field_type.as_accessor().tp() == FieldTypeTp::VarString {
+                Visit::ByteOperand(value)
+            } else {
+                Visit::Enter(value)
+            }
+        };
         while let Some(visit) = work.pop() {
             let mut truth_test = None;
             let mut byte_count = None;
@@ -401,6 +408,12 @@ impl SharedExpression {
                             {
                                 return Err("SETVAR literal carrier is outside default-string shared admission".into());
                             }
+                        }
+                        if matches!(&f.args[1], Expression::ScalarFunction(value)
+                            if string_conditional_collation(value)
+                                .is_some_and(|collation| collation != tidb_datatype::Collation::DEFAULT))
+                        {
+                            return Err("SETVAR conditional carrier is outside default-string shared admission".into());
                         }
                         work.push(Visit::Enter(&f.args[1]));
                     }
@@ -749,15 +762,22 @@ impl SharedExpression {
                                     | FieldTypeCode::NewDecimal
                             ) && !ty.is_unsigned()
                                 && !ty.is_array()
+                                || is_raw_string_type(ty)
                         })
-                        .ok_or("conditional result requires matching BIGINT, DOUBLE or DECIMAL")?;
+                        .ok_or("conditional result requires matching BIGINT, DOUBLE, DECIMAL or string")?;
+                    let string_result = is_raw_string_type(declared);
+                    if string_result && string_conditional_collation(f).is_none() {
+                        return Err(
+                            "string conditional requires matching string result leaves".into()
+                        );
+                    }
                     if f.args.iter().enumerate().any(|(index, arg)| {
                         let condition =
                             name == "case" && index % 2 == 0 && index + 1 < f.args.len();
                         if condition {
                             bigint_operand_signedness(arg) != Some(false)
                         } else {
-                            !matches_conditional_value(arg, declared.code())
+                            !string_result && !matches_conditional_value(arg, declared.code())
                         }
                     }) {
                         return Err("conditional arguments require matching typed values".into());
@@ -768,16 +788,18 @@ impl SharedExpression {
                             work.push(Visit::Conditional(&f.args, field_type));
                         }
                         ("ifnull", [first, last]) => {
+                            let first = result_operand(first, &field_type);
                             work.push(Visit::Alternative(
                                 std::slice::from_ref(last),
                                 Vec::new(),
                                 field_type,
                             ));
-                            work.push(Visit::Enter(first));
+                            work.push(first);
                         }
                         ("coalesce", [first, rest @ ..]) => {
+                            let first = result_operand(first, &field_type);
                             work.push(Visit::Alternative(rest, Vec::new(), field_type));
-                            work.push(Visit::Enter(first));
+                            work.push(first);
                         }
                         _ => return Err("invalid conditional arity".into()),
                     }
@@ -789,8 +811,9 @@ impl SharedExpression {
                             target: 0,
                             field_type: field_type.clone(),
                         });
+                        let next = result_operand(next, &field_type);
                         work.push(Visit::Alternative(rest, guards, field_type));
-                        work.push(Visit::Enter(next));
+                        work.push(next);
                     } else {
                         let end = nodes.len();
                         for index in guards {
@@ -815,6 +838,15 @@ impl SharedExpression {
                     // shortcut: FLOAT/BIT and decorated result shapes need shared coercion;
                     // reject them until that instruction is implemented.
                     let declared = f.ret_type.as_ref().ok_or("IF requires a return type")?;
+                    if is_raw_string_type(declared) {
+                        if string_conditional_collation(f).is_none() {
+                            return Err(
+                                "string conditional requires matching string result leaves".into(),
+                            );
+                        }
+                        work.push(Visit::Conditional(&f.args, control_type(f)?));
+                        continue;
+                    }
                     if !matches!(
                         declared.code(),
                         tidb_datatype::FieldTypeCode::LongLong
@@ -851,7 +883,7 @@ impl SharedExpression {
                         work.push(Visit::IfCondition(value, rest, field_type));
                         work.push(Visit::Enter(condition));
                     }
-                    [value] => work.push(Visit::Enter(value)),
+                    [value] => work.push(result_operand(value, &field_type)),
                     [] => nodes.push(match field_type.as_accessor().tp() {
                         FieldTypeTp::Double => RpnExpressionNode::ExpressionConstant {
                             value: ExpressionScalar::Real(None),
@@ -859,6 +891,10 @@ impl SharedExpression {
                         },
                         FieldTypeTp::NewDecimal => RpnExpressionNode::ExpressionConstant {
                             value: ExpressionScalar::Decimal(None),
+                            field_type,
+                        },
+                        FieldTypeTp::VarString => RpnExpressionNode::Constant {
+                            value: ScalarValue::Bytes(None),
                             field_type,
                         },
                         _ => RpnExpressionNode::Constant {
@@ -874,8 +910,9 @@ impl SharedExpression {
                         end: 0,
                         field_type: field_type.clone(),
                     });
+                    let value = result_operand(value, &field_type);
                     work.push(Visit::IfThen(rest, field_type, at));
-                    work.push(Visit::Enter(value));
+                    work.push(value);
                 }
                 Visit::IfThen(rest, field_type, branch) => {
                     let at = nodes.len();
@@ -1079,6 +1116,12 @@ impl SharedExpression {
             columns,
             schema,
             result_type: expression.static_type().cloned(),
+            result_collation: match expression {
+                Expression::ScalarFunction(f) => {
+                    string_conditional_collation(f).unwrap_or(tidb_datatype::Collation::DEFAULT)
+                }
+                _ => tidb_datatype::Collation::DEFAULT,
+            },
         })
     }
 
@@ -1248,7 +1291,8 @@ impl SharedExpressionExecution<'_, '_> {
                 mode,
             )
             .map_err(SharedEvaluationError::from)?;
-        native_output(result, rows.len()).map_err(SharedEvaluationError::from)
+        native_output_with_collation(result, rows.len(), self.expression.result_collation)
+            .map_err(SharedEvaluationError::from)
     }
 }
 
@@ -1363,16 +1407,20 @@ impl<'p> SharedProjectionExecution<'p, '_> {
         rows: &[usize],
         ctx: &mut EvalContext,
     ) -> Result<Vec<Vec<Datum>>, SharedEvaluationError> {
-        let roots = self.projection.expressions.len();
+        let expressions = &self.projection.expressions;
         let order = self.projection.order;
         let effects = self.effects;
         with_projection_results(self.roots(), order, effects, input, rows, ctx, |results| {
             if rows.is_empty() {
-                return Ok((0..roots).map(|_| Vec::new()).collect());
+                return Ok(expressions.iter().map(|_| Vec::new()).collect());
             }
             results
                 .into_iter()
-                .map(|v| native_output(v, rows.len()).map_err(SharedEvaluationError::from))
+                .zip(expressions)
+                .map(|(value, expr)| {
+                    native_output_with_collation(value, rows.len(), expr.result_collation)
+                        .map_err(SharedEvaluationError::from)
+                })
                 .collect()
         })
     }
@@ -1932,12 +1980,12 @@ fn native_byte_count(
     })
 }
 
-fn is_raw_string_operand(expression: &Expression) -> bool {
-    use tidb_datatype::FieldTypeCode;
+fn is_raw_string_type(ty: &tidb_datatype::FieldType) -> bool {
+    ty.is_string() && ty.code() != tidb_datatype::FieldTypeCode::Unspecified && !ty.is_array()
+}
 
-    if !expression.static_type().is_some_and(|ty| {
-        ty.is_string() && ty.code() != FieldTypeCode::Unspecified && !ty.is_array()
-    }) {
+fn is_raw_string_operand(expression: &Expression) -> bool {
+    if !expression.static_type().is_some_and(is_raw_string_type) {
         return false;
     }
     match expression {
@@ -2054,6 +2102,44 @@ fn bigint_type(unsigned: bool) -> tipb::FieldType {
     field_type
 }
 
+// Native conditional values retain the chosen branch's collation even when
+// the SQL output declaration uses a different collation.
+fn string_conditional_collation(
+    f: &crate::scalar_function::ScalarFunction,
+) -> Option<tidb_datatype::Collation> {
+    let result = f.ret_type.as_ref().filter(|ty| is_raw_string_type(ty))?;
+    let name = f.func_name.lowercase();
+    if f.pb_signature().is_some() || !matches!(name, "if" | "case" | "ifnull" | "coalesce") {
+        return None;
+    }
+    let mut common = None;
+    for (index, arg) in f.args.iter().enumerate() {
+        if (name == "if" && index == 0)
+            || (name == "case" && index % 2 == 0 && index + 1 < f.args.len())
+        {
+            continue;
+        }
+        let ty = arg.static_type().filter(|ty| is_raw_string_type(ty))?;
+        let collation = ty.collation();
+        match arg {
+            Expression::Column(_) => {}
+            Expression::Constant(c) => match c.literal_value()? {
+                Datum::Null => continue,
+                Datum::String(value) if value.collation() == collation => {}
+                _ => return None,
+            },
+            _ => return None,
+        }
+        if common
+            .replace(collation)
+            .is_some_and(|previous| previous != collation)
+        {
+            return None;
+        }
+    }
+    Some(common.unwrap_or(result.collation()))
+}
+
 fn matches_conditional_value(expression: &Expression, code: tidb_datatype::FieldTypeCode) -> bool {
     use tidb_datatype::FieldTypeCode;
     if expression
@@ -2116,7 +2202,19 @@ fn control_type(f: &crate::scalar_function::ScalarFunction) -> Result<tipb::Fiel
 }
 
 fn native_output(result: RpnStackNode<'_>, rows: usize) -> Result<Vec<Datum>, String> {
-    let convert = |v: Option<&[u8]>| v.map_or(Datum::Null, |v| Datum::new_string(v.to_vec()));
+    native_output_with_collation(result, rows, tidb_datatype::Collation::DEFAULT)
+}
+
+fn native_output_with_collation(
+    result: RpnStackNode<'_>,
+    rows: usize,
+    collation: tidb_datatype::Collation,
+) -> Result<Vec<Datum>, String> {
+    let convert = |v: Option<&[u8]>| {
+        v.map_or(Datum::Null, |v| {
+            Datum::new_collation_string(v.to_vec(), collation)
+        })
+    };
     match result {
         RpnStackNode::ExpressionVector { value, .. } => match value {
             ExpressionVector::Time(values) => Ok(values
@@ -2726,6 +2824,146 @@ mod tests {
             vec![vec![Datum::Null; 2]]
         );
         assert!(session.warnings.borrow().is_empty());
+    }
+
+    #[test]
+    fn shared_kernel_string_conditionals_keep_byte_identity_and_null() {
+        use tidb_datatype::{Collation, FieldTypeCode};
+
+        let int = FieldType::new(FieldTypeCode::LongLong);
+        let ctx = crate::NoColumns;
+        let rows = [1, 0, 2, 1];
+        for collation in [Collation::Binary, Collation::Utf8Mb4Bin] {
+            let ty = FieldType::new(FieldTypeCode::Varchar).with_collation(collation);
+            let mut input = Chunk::new(&[int.clone(), ty.clone(), ty.clone()], 3, 3);
+            input.append_int64(0, 1);
+            input.append_int64(0, 0);
+            input.append_null(0);
+            input.append_null(1);
+            input.append_bytes(1, &[0xff, 0x00]);
+            input.append_null(1);
+            input.append_bytes(2, &[0x80]);
+            input.append_bytes(2, b"");
+            input.append_null(2);
+            let column = |index, ty: &FieldType| {
+                let mut c = Column::new(index, ty.clone());
+                c.index = index;
+                Expression::Column(c)
+            };
+            let flag = || column(0, &int);
+            let lhs = || column(1, &ty);
+            let rhs = || column(2, &ty);
+            let conditional = |name, args| {
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new(name),
+                    ty.clone(),
+                    args,
+                ))
+            };
+            let roots = [
+                conditional("if", vec![flag(), lhs(), rhs()]),
+                conditional("case", vec![flag(), lhs()]),
+                conditional("ifnull", vec![lhs(), rhs()]),
+                conditional("coalesce", vec![lhs(), rhs()]),
+            ];
+            let expected = roots
+                .each_ref()
+                .map(|root| rows.map(|row| root.eval(&ctx, input.physical_row(row)).unwrap()));
+            assert_eq!(
+                expected[0],
+                [
+                    Datum::new_collation_string(b"", collation),
+                    Datum::Null,
+                    Datum::Null,
+                    Datum::new_collation_string(b"", collation)
+                ]
+            );
+            assert_eq!(
+                expected[2][0],
+                Datum::new_collation_string([0xff, 0x00], collation)
+            );
+            assert_eq!(
+                expected[2][1],
+                Datum::new_collation_string([0x80], collation)
+            );
+            let projection = SharedProjection::compile(&roots).unwrap();
+            let mut execution = projection.start_execution(&ctx);
+            let actual = execution
+                .evaluate(&input, &rows, &mut EvalContext::default())
+                .unwrap();
+            assert_eq!(actual, expected.map(|column| column.to_vec()));
+            let mut output = Chunk::new(&[ty.clone(), ty.clone(), ty.clone(), ty.clone()], 4, 4);
+            execution
+                .evaluate_into_chunk(&input, &rows, &mut EvalContext::default(), &mut output)
+                .unwrap();
+            for (column, values) in actual.iter().enumerate() {
+                assert_eq!(
+                    (0..rows.len())
+                        .map(|row| output.get_row(row).get_datum(column, &ty))
+                        .collect::<Vec<_>>(),
+                    *values
+                );
+            }
+
+            let other_collation = if collation == Collation::Binary {
+                Collation::Utf8Mb4Bin
+            } else {
+                Collation::Binary
+            };
+            let declared = ty.clone().with_collation(other_collation);
+            let case = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("case"),
+                declared.clone(),
+                vec![flag(), rhs()],
+            ));
+            let program = SharedExpression::compile(&case).unwrap();
+            assert_eq!(program.result_type(), Some(&declared));
+            let expected = Datum::new_collation_string([0x80], collation);
+            assert_eq!(case.eval(&ctx, input.physical_row(0)).unwrap(), expected);
+            assert_eq!(
+                program
+                    .evaluate_mode(
+                        &input,
+                        &[0],
+                        &mut EvalContext::default(),
+                        InvocationMode::Scalar
+                    )
+                    .unwrap(),
+                [expected],
+            );
+
+            let different = Expression::Constant(Constant::new(
+                Datum::new_collation_string(b"x", other_collation),
+                declared,
+            ));
+            assert!(
+                SharedExpression::compile(&conditional("ifnull", vec![lhs(), different])).is_err()
+            );
+            let bytes = Expression::Constant(Constant::new(Datum::new_bytes([0xff]), ty.clone()));
+            assert!(SharedExpression::compile(&conditional("ifnull", vec![bytes, rhs()])).is_err());
+
+            if collation == Collation::Binary {
+                let native_string = native_type();
+                let name = numeric_literal(Datum::new_string(b"test"), &native_string);
+                let case = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("case"),
+                    native_string.clone(),
+                    vec![flag(), rhs()],
+                ));
+                let set = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("setvar"),
+                    native_string,
+                    vec![name, case],
+                ));
+                let session = Session::default();
+                set.eval(&session, input.physical_row(0)).unwrap();
+                assert_eq!(
+                    session.vars.borrow().get("test"),
+                    Some(&Datum::new_collation_string([0x80], Collation::Binary)),
+                );
+                assert!(SharedExpression::compile(&set).is_err());
+            }
+        }
     }
 
     #[test]

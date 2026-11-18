@@ -1131,3 +1131,51 @@ fn shared_sql_signed_subtraction_keeps_null_demand_and_overflow() {
     );
     assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_string_conditionals_keep_non_utf8_results() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE string_choices (id BIGINT PRIMARY KEY, flag BIGINT, b VARBINARY(8), c VARBINARY(8))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO string_choices VALUES (1,1,NULL,X'80'),(2,0,X'FF00',''),(3,NULL,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let sql =
+        "SELECT id, IF(flag,b,c), CASE WHEN flag THEN b ELSE c END, IFNULL(b,c), COALESCE(b,c)
+        FROM string_choices ORDER BY id LIMIT 3";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    let rows = &actual.1;
+    assert_eq!(rows[0][1], Datum::Null);
+    assert_eq!(rows[0][2], Datum::Null);
+    assert_eq!(rows[0][3].as_raw_bytes(), Some(&[0x80][..]));
+    assert_eq!(rows[1][1].as_raw_bytes(), Some(&[][..]));
+    assert_eq!(rows[1][4].as_raw_bytes(), Some(&[0xff, 0x00][..]));
+    assert!(rows[2][1..].iter().all(Datum::is_null));
+    eprintln!(
+        "string conditional route={:?}",
+        shared.shared_projection_counts()
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let sql = "SELECT CASE WHEN flag THEN b END FROM string_choices ORDER BY id LIMIT 3";
+    let shared_case = StmtContext::for_query().with_shared_projection();
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &shared_case).unwrap(),
+        run_select_meta_on(sql, &catalog, &StmtContext::for_query()).unwrap(),
+    );
+    assert_eq!(shared_case.shared_projection_counts(), Some((1, 1)));
+}
