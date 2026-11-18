@@ -9,7 +9,10 @@
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::Datum;
 use tidb_query_datatype::{
-    codec::data_type::{ChunkRef, ScalarValue, ScalarValueRef, VectorValue},
+    codec::{
+        data_type::{ChunkRef, ScalarValue, ScalarValueRef, VectorValue},
+        mysql::json::{Json, JsonType},
+    },
     expr::EvalContext,
     EvalType, FieldTypeAccessor, FieldTypeFlag, FieldTypeTp,
 };
@@ -92,6 +95,8 @@ impl SharedExpression {
             DecimalOperand(&'a Expression),
             BigIntOperand(&'a Expression),
             ByteOperand(&'a Expression),
+            JsonOperand(&'a Expression),
+            JsonType,
             Md5,
             Date,
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
@@ -164,6 +169,20 @@ impl SharedExpression {
                     });
                 }
                 Visit::DecimalOperand(expression) => work.push(Visit::Enter(expression)),
+                Visit::JsonOperand(Expression::Constant(c)) => {
+                    let value = match c.literal_value() {
+                        Some(Datum::Null) => None,
+                        Some(Datum::Json(json)) => Some(
+                            native_binary_json(json.type_code(), json.value())
+                                .map_err(|error| error.to_string())?,
+                        ),
+                        _ => return Err("JSON_TYPE requires an explicitly typed JSON value".into()),
+                    };
+                    nodes.push(RpnExpressionNode::Constant {
+                        value: ScalarValue::Json(value),
+                        field_type: FieldTypeTp::Json.into(),
+                    });
+                }
                 Visit::ByteOperand(Expression::Constant(c))
                 | Visit::BigIntOperand(Expression::Constant(c))
                 | Visit::Enter(Expression::Constant(c)) => {
@@ -246,7 +265,8 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::Constant { value, field_type });
                 }
-                Visit::ByteOperand(Expression::Column(c))
+                Visit::JsonOperand(Expression::Column(c))
+                | Visit::ByteOperand(Expression::Column(c))
                 | Visit::BigIntOperand(Expression::Column(c))
                 | Visit::Enter(Expression::Column(c)) => {
                     let bigint_operand = matches!(visit, Visit::BigIntOperand(_));
@@ -255,7 +275,7 @@ impl SharedExpression {
                     let admitted =
                         tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                     match tp.code() {
-                        _ if matches!(visit, Visit::ByteOperand(_)) => {}
+                        _ if matches!(visit, Visit::ByteOperand(_) | Visit::JsonOperand(_)) => {}
                         tidb_datatype::FieldTypeCode::VarString
                             if tp.collation_name() == admitted.collation_name() => {}
                         tidb_datatype::FieldTypeCode::Double if !tp.is_unsigned() => {}
@@ -985,6 +1005,30 @@ impl SharedExpression {
                     }
                     work.extend(f.args.iter().rev().map(Visit::Enter));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.func_name.lowercase() == "json_type" && f.pb_signature().is_none() =>
+                {
+                    let [operand] = f.args.as_slice() else {
+                        return Err("JSON_TYPE requires one operand".into());
+                    };
+                    if !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                        || operand.static_type().is_none_or(|ty| {
+                            ty.code() != tidb_datatype::FieldTypeCode::Json || ty.is_array()
+                        })
+                    {
+                        return Err(
+                            "JSON_TYPE requires a binary JSON operand and string result".into()
+                        );
+                    }
+                    work.push(Visit::JsonType);
+                    work.push(Visit::JsonOperand(operand));
+                }
+                Visit::JsonType => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta: tidb_query_expr::impl_json::native_json_type_fn_meta(),
+                    args_len: 1,
+                    field_type: bytes_type(),
+                    metadata: Box::new(()),
+                }),
                 Visit::Enter(Expression::ScalarFunction(f)) if f.func_name.lowercase() == "md5" => {
                     if f.args.len() != 1 {
                         return Err("MD5 requires one argument".into());
@@ -1006,7 +1050,7 @@ impl SharedExpression {
                     work.push(Visit::Md5);
                     work.push(Visit::Enter(&f.args[0]));
                 }
-                Visit::Enter(_) | Visit::ByteOperand(_) => {
+                Visit::Enter(_) | Visit::ByteOperand(_) | Visit::JsonOperand(_) => {
                     return Err("expression is outside shared kernel admission".into())
                 }
                 Visit::Md5 => nodes.push(RpnExpressionNode::FnCall {
@@ -1078,6 +1122,7 @@ impl SharedExpression {
                 tidb_datatype::FieldTypeCode::LongLong => bigint_type(tp.is_unsigned()),
                 tidb_datatype::FieldTypeCode::Double => FieldTypeTp::Double.into(),
                 tidb_datatype::FieldTypeCode::NewDecimal => FieldTypeTp::NewDecimal.into(),
+                tidb_datatype::FieldTypeCode::Json => FieldTypeTp::Json.into(),
                 _ if is_time_type(tp) => time_type(tp),
                 _ => bytes_type(),
             })
@@ -1853,6 +1898,17 @@ impl InputColumns for NativeInput<'_> {
                 }
                 EvalType::Bytes => values
                     .push_bytes((!column.is_null(*row)).then(|| column.get_bytes(*row).to_vec())),
+                EvalType::Json => {
+                    let value = if column.is_null(*row) {
+                        None
+                    } else {
+                        let bytes = column.get_bytes(*row);
+                        let (&tag, payload) =
+                            bytes.split_first().ok_or_else(invalid_native_json)?;
+                        Some(native_binary_json(tag, payload)?)
+                    };
+                    values.push_json(value);
+                }
                 _ => unreachable!("compiler checks input types"),
             }
         }
@@ -1863,6 +1919,20 @@ impl InputColumns for NativeInput<'_> {
             field_type: (&schema[offset]).into(),
         })
     }
+}
+
+fn invalid_native_json() -> tidb_query_expr::evaluation_error::Error {
+    let error = crate::JsonError::InvalidText;
+    tidb_query_expr::evaluation_error::EvaluateError::Custom {
+        code: i32::from(error.code()),
+        msg: error.message(),
+    }
+    .into()
+}
+
+fn native_binary_json(tag: u8, payload: &[u8]) -> tidb_query_expr::evaluation_error::Result<Json> {
+    let tag = JsonType::try_from(tag).map_err(|_| invalid_native_json())?;
+    Ok(Json::new(tag, payload.to_vec()))
 }
 
 // Native overflow text can inspect a hidden column's source even when
@@ -2826,6 +2896,109 @@ mod tests {
             vec![vec![Datum::Null; 2]]
         );
         assert!(session.warnings.borrow().is_empty());
+    }
+
+    #[test]
+    fn shared_kernel_json_type_keeps_binary_type_codes() {
+        use tidb_datatype::{BinaryJSON, FieldTypeCode};
+
+        let json = FieldType::new(FieldTypeCode::Json);
+        let cases: &[(u8, &[u8], &str)] = &[
+            (0x01, &[], "OBJECT"),
+            (0x03, &[], "ARRAY"),
+            (0x04, &[0], "NULL"),
+            (0x04, &[1], "BOOLEAN"),
+            (0x04, &[0, 1], "BOOLEAN"),
+            (0x09, &0i64.to_le_bytes(), "INTEGER"),
+            (0x0a, &u64::MAX.to_le_bytes(), "UNSIGNED INTEGER"),
+            (0x0b, &1.5f64.to_le_bytes(), "DOUBLE"),
+            (0x0c, &[1, 0xff], "STRING"),
+            (0x0d, &[0xfc, 1, 0xff], "BLOB"),
+            (0x0d, &[0x10, 1, 0x80], "BIT"),
+            (0x0d, &[0x01, 0], "OPAQUE"),
+            (0x0e, &[0; 8], "DATE"),
+            (0x0f, &[0; 8], "DATETIME"),
+            (0x10, &[0; 8], "DATETIME"),
+            (0x11, &[0; 12], "TIME"),
+        ];
+        let mut input = Chunk::new(std::slice::from_ref(&json), 32, 32);
+        input.append_null(0);
+        for &(tag, value, _) in cases {
+            input.append_json(0, &BinaryJSON::from_encoded_parts(tag, value));
+        }
+        let mut column = Column::new(1, json.clone());
+        column.index = 0;
+        let result_type = native_type();
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("json_type"),
+            result_type.clone(),
+            vec![Expression::Column(column)],
+        ));
+        let mut rows: Vec<_> = (0..input.num_rows()).rev().collect();
+        rows.push(3);
+        let original = |row| expression.eval(&crate::NoColumns, input.physical_row(row));
+        let expected = rows
+            .iter()
+            .map(|&row| {
+                if row == 0 {
+                    Datum::Null
+                } else {
+                    Datum::new_string(cases[row - 1].2)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows.iter()
+                .map(|&row| original(row).unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let program = SharedExpression::compile(&expression).unwrap();
+        assert_eq!(program.result_type(), Some(&result_type));
+        assert_eq!(
+            program
+                .evaluate(&input, &rows, &mut EvalContext::default())
+                .unwrap(),
+            expected
+        );
+
+        let literal = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("json_type"),
+            result_type,
+            vec![numeric_literal(
+                Datum::Json(BinaryJSON::from_encoded_parts(0x10, [0; 8])),
+                &json,
+            )],
+        ));
+        assert_eq!(
+            SharedExpression::compile(&literal)
+                .unwrap()
+                .evaluate_mode(
+                    &input,
+                    &[0],
+                    &mut EvalContext::default(),
+                    InvocationMode::Scalar
+                )
+                .unwrap(),
+            [literal
+                .eval(&crate::NoColumns, input.physical_row(0))
+                .unwrap()],
+        );
+
+        let invalid = crate::EvalError::Json(crate::JsonError::InvalidText);
+        for (tag, value) in [(0xff, &[][..]), (0x0d, &[0xfc, 3, 0xff][..])] {
+            let row = input.num_rows();
+            input.append_json(0, &BinaryJSON::from_encoded_parts(tag, value));
+            assert_eq!(
+                expression.eval(&crate::NoColumns, input.physical_row(row)),
+                Err(invalid.clone())
+            );
+            let error = program
+                .evaluate(&input, &[row], &mut EvalContext::default())
+                .unwrap_err();
+            assert_eq!(error.code, Some(3140));
+            assert_eq!(error.message, crate::JsonError::InvalidText.message());
+        }
     }
 
     #[test]

@@ -1179,3 +1179,49 @@ fn shared_sql_string_conditionals_keep_non_utf8_results() {
     );
     assert_eq!(shared_case.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_json_type_reads_binary_json_column() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE json_types (id BIGINT PRIMARY KEY, j JSON)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        r#"INSERT INTO json_types VALUES (1,NULL),(2,'null'),(3,'18446744073709551615'),
+         (4,'{"k":2}'),(5,'[1]'),(6,'true'),(7,'"abc"')"#,
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let sql = "SELECT id, JSON_TYPE(j) FROM json_types ORDER BY id LIMIT 7";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    assert_eq!(
+        actual
+            .1
+            .iter()
+            .map(|row| row[1].as_raw_bytes())
+            .collect::<Vec<_>>(),
+        [
+            None,
+            Some(&b"NULL"[..]),
+            Some(&b"UNSIGNED INTEGER"[..]),
+            Some(&b"OBJECT"[..]),
+            Some(&b"ARRAY"[..]),
+            Some(&b"BOOLEAN"[..]),
+            Some(&b"STRING"[..])
+        ]
+    );
+    let route = shared.shared_projection_counts();
+    eprintln!("JSON_TYPE route={route:?}");
+    assert_eq!(route, Some((1, 1)));
+}
