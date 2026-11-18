@@ -965,3 +965,93 @@ fn shared_sql_byte_counts_preserve_invalid_utf8() {
     );
     assert_eq!(text.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_materializes_aggregate_arguments_and_keys() {
+    use tidb_ast::Stmt;
+    use tidb_executor::{
+        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
+        DEFAULT_DATABASE,
+    };
+    use tidb_expr::expression::Expression;
+    use tidb_planner::physical::PhysicalPlan;
+
+    fn input_projection_id(plan: &PhysicalPlan, stream: bool, computed: usize) -> Option<i32> {
+        let matching_aggregate = matches!(
+            (plan, stream),
+            (PhysicalPlan::HashAgg(_), false) | (PhysicalPlan::StreamAgg(_), true)
+        );
+        if matching_aggregate {
+            if let [projection @ PhysicalPlan::Projection(physical)] = plan.children() {
+                if physical.exprs.iter()
+                    .filter(|expr| matches!(expr, Expression::ScalarFunction(f) if f.func_name.lowercase() == "coalesce"))
+                    .count() == computed
+                {
+                    return Some(projection.id());
+                }
+            }
+        }
+        plan.children()
+            .iter()
+            .find_map(|child| input_projection_id(child, stream, computed))
+    }
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE shared_agg (id BIGINT PRIMARY KEY, g BIGINT, a BIGINT)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO shared_agg VALUES (1,1,8),(2,NULL,NULL),(3,1,4),(4,2,NULL),(5,NULL,-3),(6,9,99)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    use Datum::Int;
+    for (sql, stream, computed, expected_rows) in [
+        (
+            "SELECT /*+ HASH_AGG() */ COALESCE(g,id) AS k, MAX(COALESCE(a,id)), COUNT(*)
+             FROM (SELECT id,g,a FROM shared_agg ORDER BY id LIMIT 5) AS retained
+             GROUP BY k ORDER BY k",
+            false,
+            2,
+            vec![
+                vec![Int(1), Int(8), Int(2)],
+                vec![Int(2), Int(4), Int(2)],
+                vec![Int(5), Int(-3), Int(1)],
+            ],
+        ),
+        (
+            "SELECT /*+ STREAM_AGG() */ MAX(COALESCE(a,id))
+             FROM (SELECT id,a FROM shared_agg ORDER BY id LIMIT 5) AS retained",
+            true,
+            1,
+            vec![vec![Int(8)]],
+        ),
+    ] {
+        let native = StmtContext::for_query();
+        let shared = StmtContext::for_query().with_shared_projection();
+        let Stmt::Query(query) = tidb_parser::parse(sql).unwrap() else {
+            unreachable!();
+        };
+        let plan = plan_query_meta_stmt(&query, &catalog, DEFAULT_DATABASE, &native).unwrap();
+        let projection = input_projection_id(&plan, stream, computed)
+            .unwrap_or_else(|| panic!("expected aggregate-input projection: {plan:#?}"));
+        eprintln!("aggregate input projection {projection}");
+        let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+        let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.1, expected_rows);
+        assert_eq!(shared.take_warnings(), native.take_warnings());
+        eprintln!(
+            "aggregate stream={stream} route={:?}",
+            shared.shared_projection_counts()
+        );
+        assert_eq!(
+            shared.shared_projection_counts(),
+            Some(if stream { (2, 2) } else { (2, 3) })
+        );
+    }
+}
