@@ -1720,3 +1720,76 @@ fn shared_sql_binary_string_operations_keep_bytes_and_counts() {
     assert_eq!(actual.1[0][1].as_raw_bytes(), Some("界".as_bytes()));
     assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_ip_conversions_keep_typed_values_and_fields() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE ip_values
+         (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, ip VARBINARY(64), bin VARBINARY(16))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO ip_values VALUES
+         (1,4294967295,2130706433,'127.0.0.1',X'7F000001'),
+         (2,-1,18446744073709551615,'::ffff:127.0.0.1',X'00000000000000000000FFFF7F000001'),
+         (3,4294967296,0,'2001:db8::1',X'20010DB8000000000000000000000001'),
+         (4,0,4294967296,X'FF00',X'FF00'),
+         (5,NULL,NULL,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT id,INET_NTOA(n),INET_NTOA(u),INET6_ATON(ip),INET6_NTOA(bin)
+        FROM ip_values ORDER BY id LIMIT 5";
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    let values = actual
+        .1
+        .iter()
+        .map(|row| row[1..].iter().map(Datum::as_raw_bytes).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let mapped = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0x7f, 0, 0, 1];
+    let v6 = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    assert_eq!(
+        values,
+        [
+            vec![
+                Some(&b"255.255.255.255"[..]),
+                Some(b"127.0.0.1"),
+                Some(&[0x7f, 0, 0, 1]),
+                Some(b"127.0.0.1")
+            ],
+            vec![None, None, Some(&mapped), Some(b"::ffff:127.0.0.1")],
+            vec![None, Some(&b"0.0.0.0"[..]), Some(&v6), Some(b"2001:db8::1")],
+            vec![Some(&b"0.0.0.0"[..]), None, None, None],
+            vec![None; 4],
+        ]
+    );
+    let route = shared.shared_projection_counts();
+    eprintln!("IP conversions projection={route:?}");
+    assert_eq!(route, Some((1, 1)));
+
+    let fallback = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT INET_NTOA(ip),IS_IPV4(bin),IS_IPV4_MAPPED(bin),IS_IPV6(bin)
+        FROM ip_values WHERE id IN (1,5) ORDER BY id";
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &fallback).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap()
+    );
+    assert_eq!(fallback.take_warnings(), native.take_warnings());
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+
+    let sql = "SELECT IS_IPV4(ip) FROM ip_values WHERE id = 4";
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap_err();
+    let actual = run_select_meta_on(sql, &catalog, &fallback).unwrap_err();
+    assert_eq!(actual.to_string(), expected.to_string());
+    assert!(actual.to_string().contains("invalid UTF-8 string datum"));
+}

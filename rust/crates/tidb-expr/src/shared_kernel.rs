@@ -1140,6 +1140,42 @@ impl SharedExpression {
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "inet_ntoa" | "inet6_aton" | "inet6_ntoa"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_miscellaneous::{
+                        inet6_aton_fn_meta, inet6_ntoa_fn_meta, inet_ntoa_fn_meta,
+                    };
+                    let [operand] = f.args.as_slice() else {
+                        return Err("IP conversion requires one operand".into());
+                    };
+                    let name = f.func_name.lowercase();
+                    if !f.ret_type.as_ref().is_some_and(|ty| {
+                        is_raw_string_type(ty) && (name != "inet6_aton" || ty.is_binary_string())
+                    }) {
+                        return Err("IP conversion has an unsupported result declaration".into());
+                    }
+                    let (meta, arg) = match name {
+                        "inet_ntoa" if bigint_operand_signedness(operand).is_some() => {
+                            (inet_ntoa_fn_meta(), Visit::BigIntOperand(operand))
+                        }
+                        "inet6_aton" | "inet6_ntoa" if is_ip_string_operand(operand) => {
+                            let meta = if name == "inet6_aton" {
+                                inet6_aton_fn_meta()
+                            } else {
+                                inet6_ntoa_fn_meta()
+                            };
+                            (meta, Visit::ByteOperand(operand))
+                        }
+                        _ => return Err("IP conversion requires an already typed operand".into()),
+                    };
+                    work.push(Visit::BytesCall(meta, 1));
+                    work.push(arg);
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
                         && matches!(f.func_name.lowercase(), "hex" | "unhex") =>
                 {
                     use tidb_query_expr::impl_string::{
@@ -2257,6 +2293,18 @@ fn is_raw_string_operand(expression: &Expression) -> bool {
         ),
         _ => false,
     }
+}
+
+fn is_ip_string_operand(expression: &Expression) -> bool {
+    expression.static_type().is_some_and(is_raw_string_type)
+        && match expression {
+            Expression::Column(_) => true,
+            Expression::Constant(c) => matches!(
+                c.literal_value(),
+                Some(Datum::String(_) | Datum::Bytes(_) | Datum::Null)
+            ),
+            _ => false,
+        }
 }
 
 fn is_shared_sha2_length(length: &Expression) -> bool {
