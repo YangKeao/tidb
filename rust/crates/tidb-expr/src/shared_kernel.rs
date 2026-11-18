@@ -723,7 +723,7 @@ impl SharedExpression {
                         {
                             Some(ComparisonOperands::Decimal)
                         } else if f.derived_collation() == tidb_datatype::Collation::Binary
-                            && [left, right].into_iter().all(is_binary_comparison_operand)
+                            && [left, right].into_iter().all(is_binary_string_leaf)
                         {
                             Some(ComparisonOperands::Binary)
                         } else {
@@ -1095,6 +1095,49 @@ impl SharedExpression {
                     field_type: bytes_type(),
                     metadata: Box::new(()),
                 }),
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "ltrim" | "rtrim" | "reverse" | "left" | "right"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_string::{
+                        left_fn_meta, ltrim_fn_meta, reverse_fn_meta, right_fn_meta, rtrim_fn_meta,
+                    };
+                    let [operand, rest @ ..] = f.args.as_slice() else {
+                        return Err("binary string operation requires an operand".into());
+                    };
+                    if !is_binary_string_leaf(operand)
+                        || !f
+                            .ret_type
+                            .as_ref()
+                            .is_some_and(|ty| is_raw_string_type(ty) && ty.is_binary_string())
+                    {
+                        return Err("binary string operation requires binary declarations".into());
+                    }
+                    let meta = match (f.func_name.lowercase(), rest) {
+                        ("ltrim", []) => ltrim_fn_meta(),
+                        ("rtrim", []) => rtrim_fn_meta(),
+                        ("reverse", []) => reverse_fn_meta(),
+                        ("left" | "right", [length])
+                            if matches!(
+                                length,
+                                Expression::Column(_) | Expression::Constant(_)
+                            ) && bigint_operand_signedness(length) == Some(false) =>
+                        {
+                            if f.func_name.lowercase() == "left" {
+                                left_fn_meta()
+                            } else {
+                                right_fn_meta()
+                            }
+                        }
+                        _ => return Err("unsupported binary string operation arguments".into()),
+                    };
+                    work.push(Visit::BytesCall(meta, f.args.len()));
+                    work.extend(rest.iter().rev().map(Visit::Enter));
+                    work.push(Visit::ByteOperand(operand));
+                }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
                         && matches!(f.func_name.lowercase(), "hex" | "unhex") =>
@@ -2346,7 +2389,7 @@ fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNod
     select(operands)
 }
 
-fn is_binary_comparison_operand(arg: &Expression) -> bool {
+fn is_binary_string_leaf(arg: &Expression) -> bool {
     if !arg
         .static_type()
         .is_some_and(|ty| is_raw_string_type(ty) && ty.is_binary_string())

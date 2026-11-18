@@ -1653,3 +1653,70 @@ fn shared_sql_hex_unhex_keep_raw_bytes_and_integer_bits() {
     assert_eq!(fallback.take_warnings(), native.take_warnings());
     assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_binary_string_operations_keep_bytes_and_counts() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE byte_ops (id BIGINT PRIMARY KEY, b VARBINARY(8), n BIGINT, t VARCHAR(8))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO byte_ops VALUES
+         (1,X'20FF000920',2,'界a'),(2,'  ',-1,'a'),(3,X'E7958C',9223372036854775807,'界'),
+         (4,'a',NULL,'a'),(5,NULL,1,NULL),(6,'',0,'')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT id,LTRIM(b),RTRIM(b),REVERSE(b),LEFT(b,n),RIGHT(b,n)
+        FROM byte_ops ORDER BY id LIMIT 6";
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    let bytes: Vec<Vec<Option<&[u8]>>> = actual
+        .1
+        .iter()
+        .map(|row| row[1..].iter().map(Datum::as_raw_bytes).collect())
+        .collect();
+    assert_eq!(
+        bytes,
+        [
+            vec![
+                Some(&[0xff, 0, 9, 32][..]),
+                Some(&[32, 0xff, 0, 9]),
+                Some(&[32, 9, 0, 0xff, 32]),
+                Some(&[32, 0xff]),
+                Some(&[9, 32])
+            ],
+            vec![Some(&b""[..]), Some(b""), Some(b"  "), Some(b""), Some(b"")],
+            vec![
+                Some(&[0xe7, 0x95, 0x8c][..]),
+                Some(&[0xe7, 0x95, 0x8c]),
+                Some(&[0x8c, 0x95, 0xe7]),
+                Some(&[0xe7, 0x95, 0x8c]),
+                Some(&[0xe7, 0x95, 0x8c])
+            ],
+            vec![Some(&b"a"[..]), Some(b"a"), Some(b"a"), None, None],
+            vec![None; 5],
+            vec![Some(&b""[..]); 5],
+        ]
+    );
+    let route = shared.shared_projection_counts();
+    eprintln!("binary string operations projection={route:?}");
+    assert_eq!(route, Some((1, 1)));
+
+    let fallback = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT REVERSE(t),LEFT(t,1),RIGHT(t,1) FROM byte_ops ORDER BY id LIMIT 6";
+    let actual = run_select_meta_on(sql, &catalog, &fallback).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0][0].as_raw_bytes(), Some("a界".as_bytes()));
+    assert_eq!(actual.1[0][1].as_raw_bytes(), Some("界".as_bytes()));
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}
