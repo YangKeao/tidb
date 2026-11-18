@@ -1055,3 +1055,79 @@ fn shared_sql_materializes_aggregate_arguments_and_keys() {
         );
     }
 }
+
+#[test]
+fn shared_sql_signed_subtraction_keeps_null_demand_and_overflow() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE sub_values (id BIGINT PRIMARY KEY, n BIGINT)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO sub_values VALUES (1,5),(2,NULL),(3,-9223372036854775808),(4,9223372036854775807)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let sql = "SELECT id, n - BENCHMARK(2,RAND()) FROM sub_values ORDER BY id LIMIT 4";
+    let native_rng = Arc::new(MysqlRng::new_with_seed(7));
+    let shared_rng = Arc::new(MysqlRng::new_with_seed(7));
+    let native = StmtContext::for_query().with_rand_session(Arc::clone(&native_rng));
+    let shared = StmtContext::for_query()
+        .with_rand_session(Arc::clone(&shared_rng))
+        .with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Int(1), Int(5)],
+            vec![Int(2), Null],
+            vec![Int(3), Int(i64::MIN)],
+            vec![Int(4), Int(i64::MAX)],
+        ]
+    );
+    let route = shared.shared_projection_counts();
+    eprintln!("subtraction route={route:?}");
+    assert_eq!(route, Some((1, 1)));
+    let oracle = MysqlRng::new_with_seed(7);
+    for _ in 0..6 {
+        oracle.gen();
+    }
+    let next = oracle.gen();
+    assert_eq!(shared_rng.gen(), next);
+    assert_eq!(native_rng.gen(), next);
+
+    for sql in [
+        "SELECT n - 1 FROM sub_values WHERE id = 3",
+        "SELECT n - (-1) FROM sub_values WHERE id = 4",
+    ] {
+        let native = StmtContext::for_query();
+        let shared = StmtContext::for_query().with_shared_projection();
+        let expected = run_select_meta_on(sql, &catalog, &native)
+            .unwrap_err()
+            .to_mysql_error();
+        let actual = run_select_meta_on(sql, &catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(actual, expected);
+        assert_eq!((actual.code, actual.state), (1690, *b"22003"));
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+        assert_eq!(shared.take_warnings(), native.take_warnings());
+    }
+
+    let sql = "SELECT CAST(n AS UNSIGNED) - CAST(n AS UNSIGNED) FROM sub_values WHERE id = 4";
+    let fallback = StmtContext::for_query().with_shared_projection();
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &fallback).unwrap(),
+        run_select_meta_on(sql, &catalog, &StmtContext::for_query()).unwrap(),
+    );
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}

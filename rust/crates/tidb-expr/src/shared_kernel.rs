@@ -444,6 +444,7 @@ impl SharedExpression {
                     if matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div") =>
                 {
                     use tidb_datatype::FieldTypeCode as Code;
+                    let name = f.func_name.lowercase();
                     let result = f.ret_type.as_ref().ok_or("arithmetic needs result type")?;
                     let admitted = |t: &tidb_datatype::FieldType| {
                         (t.code() == result.code()
@@ -467,7 +468,8 @@ impl SharedExpression {
                             .iter()
                             .any(|a| a.static_type().is_none_or(|t| !admitted(t)))
                         || (result.code() == Code::LongLong
-                            && !matches!(f.func_name.lowercase(), "plus" | "mul"))
+                            && (!matches!(name, "plus" | "minus" | "mul")
+                                || (name == "minus" && f.pb_signature().is_some())))
                     {
                         return Err("arithmetic requires matching supported numeric types".into());
                     }
@@ -521,7 +523,7 @@ impl SharedExpression {
                         });
                     }
                     use tidb_query_expr::impl_arithmetic::{
-                        native_int_arithmetic_fn_meta, IntIntMultiply, IntIntPlus,
+                        native_int_arithmetic_fn_meta, IntIntMinus, IntIntMultiply, IntIntPlus,
                     };
                     let (op, native_op) = match f.func_name.lowercase() {
                         "plus" => (NativeArithmetic::Add, tidb_ast::BinaryOp::Plus),
@@ -571,10 +573,17 @@ impl SharedExpression {
                     };
                     if integer {
                         nodes.push(RpnExpressionNode::FnCall {
-                            func_meta: if f.func_name.lowercase() == "plus" {
-                                native_int_arithmetic_fn_meta::<IntIntPlus>()
-                            } else {
-                                native_int_arithmetic_fn_meta::<IntIntMultiply>()
+                            func_meta: match native_op {
+                                tidb_ast::BinaryOp::Plus => {
+                                    native_int_arithmetic_fn_meta::<IntIntPlus>()
+                                }
+                                tidb_ast::BinaryOp::Minus => {
+                                    native_int_arithmetic_fn_meta::<IntIntMinus>()
+                                }
+                                tidb_ast::BinaryOp::Mul => {
+                                    native_int_arithmetic_fn_meta::<IntIntMultiply>()
+                                }
+                                _ => unreachable!("only admitted signed integer operations"),
                             },
                             args_len: 2,
                             field_type: FieldTypeTp::LongLong.into(),
