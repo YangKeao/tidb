@@ -30,3 +30,4 @@
 - [固定函数族与调用入口的迁移差距](migration-gap.zh.md)
 - [BIGINT 位运算与无符号输出](bigint-bits.zh.md)
 - [DOUBLE 比较与原生 NaN 语义](double-comparison.zh.md)
+- [DECIMAL 比较与精确排序](decimal-comparison.zh.md)
