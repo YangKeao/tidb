@@ -16,3 +16,4 @@
 当前验证补充 [BIGINT 比较的四种符号组合](mixed-bigint.zh.md)。
 另见 [条件表达式的分支与 NULL 需求](native-conditionals.zh.md)。
 性能对照见 [直接 BIGINT 比较的批执行](bigint-batch.zh.md)。
+另见 [DOUBLE 和 DECIMAL 条件结果](numeric-conditionals.zh.md)。
