@@ -119,7 +119,7 @@ impl SharedExpression {
             Conditional(&'a [Expression], tipb::FieldType),
             IfCondition(&'a Expression, &'a [Expression], tipb::FieldType),
             IfThen(&'a [Expression], tipb::FieldType, usize),
-            Alternative(&'a [Expression], Vec<usize>),
+            Alternative(&'a [Expression], Vec<usize>, tipb::FieldType),
             IfElse(usize, usize),
         }
         let mut work = vec![Visit::Enter(expression)];
@@ -675,40 +675,60 @@ impl SharedExpression {
                 Visit::Enter(Expression::ScalarFunction(f))
                     if matches!(f.func_name.lowercase(), "case" | "coalesce" | "ifnull") =>
                 {
+                    use tidb_datatype::FieldTypeCode;
                     let name = f.func_name.lowercase();
-                    if !f.ret_type.as_ref().is_some_and(is_signed_bigint)
-                        || f.args
-                            .iter()
-                            .any(|arg| bigint_operand_signedness(arg) != Some(false))
-                    {
-                        return Err(
-                            "conditional requires matching signed BIGINT arguments and output"
-                                .into(),
-                        );
+                    let declared = f
+                        .ret_type
+                        .as_ref()
+                        .filter(|ty| {
+                            matches!(
+                                ty.code(),
+                                FieldTypeCode::LongLong
+                                    | FieldTypeCode::Double
+                                    | FieldTypeCode::NewDecimal
+                            ) && !ty.is_unsigned()
+                                && !ty.is_array()
+                        })
+                        .ok_or("conditional result requires matching BIGINT, DOUBLE or DECIMAL")?;
+                    if f.args.iter().enumerate().any(|(index, arg)| {
+                        let condition =
+                            name == "case" && index % 2 == 0 && index + 1 < f.args.len();
+                        if condition {
+                            bigint_operand_signedness(arg) != Some(false)
+                        } else {
+                            !matches_conditional_value(arg, declared.code())
+                        }
+                    }) {
+                        return Err("conditional arguments require matching typed values".into());
                     }
+                    let field_type = control_type(f)?;
                     match (name, f.args.as_slice()) {
                         ("case", [_, _, ..]) => {
-                            work.push(Visit::Conditional(&f.args, FieldTypeTp::LongLong.into()));
+                            work.push(Visit::Conditional(&f.args, field_type));
                         }
                         ("ifnull", [first, last]) => {
-                            work.push(Visit::Alternative(std::slice::from_ref(last), Vec::new()));
+                            work.push(Visit::Alternative(
+                                std::slice::from_ref(last),
+                                Vec::new(),
+                                field_type,
+                            ));
                             work.push(Visit::Enter(first));
                         }
                         ("coalesce", [first, rest @ ..]) => {
-                            work.push(Visit::Alternative(rest, Vec::new()));
+                            work.push(Visit::Alternative(rest, Vec::new(), field_type));
                             work.push(Visit::Enter(first));
                         }
                         _ => return Err("invalid conditional arity".into()),
                     }
                 }
-                Visit::Alternative(remaining, mut guards) => {
+                Visit::Alternative(remaining, mut guards, field_type) => {
                     if let [next, rest @ ..] = remaining {
                         guards.push(nodes.len());
                         nodes.push(RpnExpressionNode::JumpIfNotNull {
                             target: 0,
-                            field_type: FieldTypeTp::LongLong.into(),
+                            field_type: field_type.clone(),
                         });
-                        work.push(Visit::Alternative(rest, guards));
+                        work.push(Visit::Alternative(rest, guards, field_type));
                         work.push(Visit::Enter(next));
                     } else {
                         let end = nodes.len();
@@ -771,9 +791,19 @@ impl SharedExpression {
                         work.push(Visit::Enter(condition));
                     }
                     [value] => work.push(Visit::Enter(value)),
-                    [] => nodes.push(RpnExpressionNode::Constant {
-                        value: ScalarValue::Int(None),
-                        field_type,
+                    [] => nodes.push(match field_type.as_accessor().tp() {
+                        FieldTypeTp::Double => RpnExpressionNode::ExpressionConstant {
+                            value: ExpressionScalar::Real(None),
+                            field_type,
+                        },
+                        FieldTypeTp::NewDecimal => RpnExpressionNode::ExpressionConstant {
+                            value: ExpressionScalar::Decimal(None),
+                            field_type,
+                        },
+                        _ => RpnExpressionNode::Constant {
+                            value: ScalarValue::Int(None),
+                            field_type,
+                        },
                     }),
                 },
                 Visit::IfCondition(value, rest, field_type) => {
@@ -1887,6 +1917,26 @@ fn bigint_type(unsigned: bool) -> tipb::FieldType {
     field_type
 }
 
+fn matches_conditional_value(expression: &Expression, code: tidb_datatype::FieldTypeCode) -> bool {
+    use tidb_datatype::FieldTypeCode;
+    if expression
+        .static_type()
+        .is_none_or(|ty| ty.code() != code || ty.is_array() || ty.is_unsigned())
+    {
+        return false;
+    }
+    match expression {
+        Expression::Constant(c) => matches!(
+            (code, c.literal_value()),
+            (_, Some(Datum::Null))
+                | (FieldTypeCode::LongLong, Some(Datum::Int(_)))
+                | (FieldTypeCode::Double, Some(Datum::Real(_)))
+                | (FieldTypeCode::NewDecimal, Some(Datum::Decimal(_)))
+        ),
+        _ => true,
+    }
+}
+
 fn is_signed_bigint(tp: &tidb_datatype::FieldType) -> bool {
     tp.code() == tidb_datatype::FieldTypeCode::LongLong && !tp.is_unsigned() && !tp.is_array()
 }
@@ -2996,6 +3046,102 @@ mod tests {
         ));
         assert!(SharedExpression::compile(&mismatched).is_err());
         assert!(SharedExpression::compile(&literal(Datum::UInt(u64::MAX), field(true))).is_err());
+    }
+
+    #[test]
+    fn shared_kernel_typed_numeric_conditionals_keep_selected_representation() {
+        use tidb_datatype::{Decimal, FieldTypeCode};
+
+        let int = FieldType::new(FieldTypeCode::LongLong);
+        let real = FieldType::new(FieldTypeCode::Double);
+        let decimal = FieldType::new(FieldTypeCode::NewDecimal);
+        let literal =
+            |value, tp: &FieldType| Expression::Constant(Constant::new(value, tp.clone()));
+        let call = |name, tp: &FieldType, arguments| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                tp.clone(),
+                arguments,
+            ))
+        };
+        let mut input = Chunk::new(&[], 3, 3);
+        input.set_num_virtual_rows(3);
+        let rows = [2, 0, 2, 1];
+        let hidden = Decimal::from_int(8)
+            .true_div(&Decimal::from_int(7), 7)
+            .unwrap();
+        let wide =
+            Decimal::from_literal(&format!("1{}", "0".repeat(81))).with_declared_shape(82, 0);
+        let nan = f64::from_bits(0x7ff8000000000042);
+        for (tp, value, other) in [
+            (&real, Datum::Real(nan), Datum::Real(-0.0)),
+            (&decimal, Datum::Decimal(hidden), Datum::Decimal(wide)),
+        ] {
+            let null = || literal(Datum::Null, tp);
+            let broken = call(
+                "if",
+                tp,
+                vec![
+                    call(
+                        "plus",
+                        &int,
+                        vec![
+                            literal(Datum::Int(i64::MAX), &int),
+                            literal(Datum::Int(1), &int),
+                        ],
+                    ),
+                    literal(other.clone(), tp),
+                    null(),
+                ],
+            );
+            for expression in [
+                call(
+                    "coalesce",
+                    tp,
+                    vec![null(), literal(value.clone(), tp), broken.clone()],
+                ),
+                call("ifnull", tp, vec![null(), literal(other.clone(), tp)]),
+                call(
+                    "case",
+                    tp,
+                    vec![
+                        literal(Datum::Int(0), &int),
+                        broken,
+                        literal(Datum::Int(-1), &int),
+                        literal(other.clone(), tp),
+                    ],
+                ),
+                call(
+                    "case",
+                    tp,
+                    vec![literal(Datum::Null, &int), literal(value.clone(), tp)],
+                ),
+                call("coalesce", tp, vec![null(), null()]),
+            ] {
+                let native = expression
+                    .eval(&crate::context::NoColumns, input.physical_row(0))
+                    .unwrap();
+                let shared = SharedExpression::compile(&expression).unwrap();
+                assert_eq!(shared.result_type(), Some(tp));
+                for actual in shared
+                    .evaluate(&input, &rows, &mut EvalContext::default())
+                    .unwrap()
+                {
+                    match (&actual, &native) {
+                        (Datum::Real(a), Datum::Real(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+                        (Datum::Decimal(_), Datum::Decimal(_)) => {
+                            assert_same_decimal(&actual, &native)
+                        }
+                        (Datum::Null, Datum::Null) => {}
+                        _ => panic!("native {native:?}, shared {actual:?}"),
+                    }
+                }
+                eprintln!(
+                    "conditional declaration={:?}, native value={native:?}",
+                    tp.code()
+                );
+            }
+        }
     }
 
     #[test]

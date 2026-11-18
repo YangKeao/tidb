@@ -698,3 +698,38 @@ fn shared_sql_projection_runs_bigint_conditionals() {
     );
     assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_projection_runs_real_and_decimal_conditionals() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE numeric_choice (id BIGINT PRIMARY KEY, r DOUBLE, s DOUBLE,
+          d DECIMAL(20,8), e DECIMAL(20,8))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO numeric_choice VALUES
+          (1,NULL,2.5,NULL,1.22500000),(2,0,NULL,-1.23123456,0.0),(3,NULL,NULL,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let sql = "SELECT CASE WHEN id < 3 THEN r END, IFNULL(r,s), COALESCE(d,e)
+        FROM numeric_choice ORDER BY id LIMIT 3";
+    let original = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &original).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), original.take_warnings());
+    eprintln!(
+        "numeric conditional route={:?}, rows={:?}",
+        shared.shared_projection_counts(),
+        actual.1
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
