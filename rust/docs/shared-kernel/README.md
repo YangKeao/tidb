@@ -33,3 +33,4 @@
 - [DECIMAL 比较与精确排序](decimal-comparison.zh.md)
 - [二进制字符串比较](binary-comparison.zh.md)
 - [SHA、SHA1 和固定长度的 SHA2](sha-kernels.zh.md)
+- [HEX 和 UNHEX 的类型化执行](hex-kernels.zh.md)
