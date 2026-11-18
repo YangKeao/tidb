@@ -4888,22 +4888,18 @@ fn build_with_state(
                     && workers == 0
                     && batch_range.contains(&meta.max_chunk_size())
                     && batch_range.contains(&child.max_chunk_size())
-                    && !expressions.is_empty()
-                    && expressions.iter().all(|expr| {
-                        // GETVAR's stored bytes and collation can vary between calls.
-                        matches!(expr, Expression::ScalarFunction(_))
-                            && !tidb_expr::expr_util::check_func_in_expr(expr, "getvar_string")
-                    })
                 {
-                    if let Some(shared) = SharedProjection::compile(&expressions)
-                        .ok()
-                        .filter(|shared| shared.matches_output_types(meta.ret_field_types()))
-                    {
+                    if let Some((shared, mixed_columns)) = ProjectionExec::compile_shared_projection(
+                        &expressions,
+                        &meta,
+                        child.ret_field_types(),
+                    ) {
                         break 'projection Ok(Box::new(ProjectionExec::with_shared_projection(
                             meta,
                             child,
                             ctx.clone(),
                             shared,
+                            mixed_columns,
                         )) as Box<dyn Executor>);
                     }
                 }

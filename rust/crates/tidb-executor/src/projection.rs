@@ -19,10 +19,14 @@
 //! one output row. Go's parallel projection (worker pool) is deferred.
 
 use crate::executor::{ExecError, Executor, ExecutorMeta};
+#[cfg(feature = "shared-kernel")]
+use std::collections::HashMap;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use tidb_chunk::chunk::Chunk;
+#[cfg(feature = "shared-kernel")]
+use tidb_chunk::chunk_util::ColumnSwapHelper;
 use tidb_datatype::FieldType;
 use tidb_expr::evaluator::{EvaluatorError, EvaluatorProgram, EvaluatorSuite};
 use tidb_expr::expression::Expression;
@@ -113,7 +117,17 @@ enum ProjectionEvaluator {
     Shared {
         projection: OwnedSharedProjection<crate::StmtContext>,
         counts: Arc<crate::stmt_context::SharedProgramCounts>,
+        mixed_columns: Option<Box<MixedProjectionColumns>>,
     },
+}
+
+/// Scratch owners for computed columns, and the same column transfer used by
+/// native projections. The scratch chunk has no aliases to the child.
+#[cfg(feature = "shared-kernel")]
+pub(crate) struct MixedProjectionColumns {
+    calculated: Chunk,
+    calculated_columns: ColumnSwapHelper,
+    direct_columns: ColumnSwapHelper,
 }
 
 /// One execution of a physical projection, with its own evaluator and buffer.
@@ -195,11 +209,80 @@ impl<C: Columns> ProjectionExec<C> {
 
 #[cfg(feature = "shared-kernel")]
 impl ProjectionExec<crate::StmtContext> {
+    pub(crate) fn compile_shared_projection(
+        expressions: &[Expression],
+        meta: &ExecutorMeta,
+        input_types: &[FieldType],
+    ) -> Option<(SharedProjection, Option<Box<MixedProjectionColumns>>)> {
+        let output_types = meta.ret_field_types();
+        if output_types.len() != expressions.len() {
+            return None;
+        }
+        let mut calculated_indexes = Vec::new();
+        let mut direct_mapping = HashMap::<usize, Vec<usize>>::new();
+
+        for (output, (expr, field_type)) in expressions.iter().zip(output_types).enumerate() {
+            match expr {
+                Expression::Column(column) => {
+                    let input = usize::try_from(column.index).ok()?;
+                    if input_types.get(input) != Some(field_type)
+                        || column.ret_type.as_ref() != Some(field_type)
+                    {
+                        return None;
+                    }
+                    direct_mapping.entry(input).or_default().push(output);
+                }
+                // GETVAR strings can change their stored bytes and collation.
+                Expression::ScalarFunction(_)
+                    if !tidb_expr::expr_util::check_func_in_expr(expr, "getvar_string") =>
+                {
+                    calculated_indexes.push(output);
+                }
+                _ => return None,
+            }
+        }
+        if calculated_indexes.is_empty() {
+            return None;
+        }
+        if direct_mapping.is_empty() {
+            let program = SharedProjection::compile(expressions).ok()?;
+            return program
+                .matches_output_types(output_types)
+                .then_some((program, None));
+        }
+        let calculated = calculated_indexes
+            .iter()
+            .map(|&i| expressions[i].clone())
+            .collect::<Vec<_>>();
+        let calculated_types = calculated_indexes
+            .iter()
+            .map(|&i| output_types[i].clone())
+            .collect::<Vec<_>>();
+        let program = SharedProjection::compile(&calculated).ok()?;
+        if !program.matches_output_types(&calculated_types) {
+            return None;
+        }
+        let calculated_mapping = calculated_indexes
+            .into_iter()
+            .enumerate()
+            .map(|(input, output)| (input, vec![output]))
+            .collect();
+        Some((
+            program,
+            Some(Box::new(MixedProjectionColumns {
+                calculated: Chunk::new(&calculated_types, meta.init_cap(), meta.max_chunk_size()),
+                calculated_columns: ColumnSwapHelper::from_mapping(calculated_mapping),
+                direct_columns: ColumnSwapHelper::from_mapping(direct_mapping),
+            })),
+        ))
+    }
+
     pub(crate) fn with_shared_projection(
         meta: ExecutorMeta,
         child: Box<dyn Executor>,
         ctx: crate::StmtContext,
         projection: SharedProjection,
+        mixed_columns: Option<Box<MixedProjectionColumns>>,
     ) -> Self {
         let counts = Arc::clone(
             ctx.shared_projection
@@ -212,6 +295,7 @@ impl ProjectionExec<crate::StmtContext> {
         let evaluator = ProjectionEvaluator::Shared {
             projection: projection.into_owned_execution(ctx.clone()),
             counts,
+            mixed_columns,
         };
         Self::with_evaluator(meta, child, ctx, evaluator)
     }
@@ -446,13 +530,31 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
                 .run(&self.ctx, &mut self.child_chunk, req)
                 .map_err(Self::evaluator_error),
             #[cfg(feature = "shared-kernel")]
-            ProjectionEvaluator::Shared { projection, counts } => {
+            ProjectionEvaluator::Shared {
+                projection,
+                counts,
+                mixed_columns,
+            } => {
                 counts
                     .batches
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                projection
-                    .evaluate_into_chunk(&self.child_chunk, req)
-                    .map_err(ExecError::from)
+                if let Some(columns) = mixed_columns {
+                    projection.evaluate_into_chunk(&self.child_chunk, &mut columns.calculated)?;
+                    columns
+                        .calculated_columns
+                        .swap_columns(&mut columns.calculated, req)
+                        .map_err(ExecError::internal)?;
+                    columns
+                        .direct_columns
+                        .swap_columns(&mut self.child_chunk, req)
+                        .map_err(ExecError::internal)?;
+                    req.set_num_virtual_rows(child_rows);
+                    Ok(())
+                } else {
+                    projection
+                        .evaluate_into_chunk(&self.child_chunk, req)
+                        .map_err(ExecError::from)
+                }
             }
         }
     }

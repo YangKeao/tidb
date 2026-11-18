@@ -232,6 +232,7 @@ fn shared_sql_projection_preserves_failure_and_declines_whole_groups() {
         "SELECT RAND(), n + 1 FROM limits_case LIMIT 1",
         "SELECT RAND(), n * 2 FROM limits_case LIMIT 1",
         "SELECT RAND(), (n + 0) + 1 FROM limits_case LIMIT 1",
+        "SELECT n, RAND(), n + 1 FROM limits_case LIMIT 1",
     ] {
         let Stmt::Query(query) = tidb_parser::parse(sql).unwrap() else {
             unreachable!();
@@ -268,16 +269,16 @@ fn shared_sql_projection_preserves_failure_and_declines_whole_groups() {
         assert!(shared.take_warnings().is_empty());
     }
 
-    for sql in [
-        "SELECT RAND(7), ABS(n) FROM limits_case LIMIT 1",
-        "SELECT RAND(7), n FROM limits_case LIMIT 1",
+    for (sql, route) in [
+        ("SELECT RAND(7), ABS(n) FROM limits_case LIMIT 1", (0, 0)),
+        ("SELECT RAND(7), n FROM limits_case LIMIT 1", (1, 1)),
     ] {
         let shared = StmtContext::for_query().with_shared_projection();
         assert_eq!(
             run_select_meta_on(sql, &catalog, &shared).unwrap(),
             run_select_meta_on(sql, &catalog, &StmtContext::for_query()).unwrap()
         );
-        assert_eq!(shared.shared_projection_counts(), Some((0, 0)), "{sql}");
+        assert_eq!(shared.shared_projection_counts(), Some(route), "{sql}");
     }
     let oversized = StmtContext::for_query()
         .with_executor_chunk_sizes(32, 2048)
@@ -732,4 +733,110 @@ fn shared_sql_projection_runs_real_and_decimal_conditionals() {
         actual.1
     );
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
+
+#[test]
+fn shared_sql_projection_passes_columns_to_topn_with_computed_keys() {
+    use tidb_ast::Stmt;
+    use tidb_executor::{
+        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
+        DEFAULT_DATABASE,
+    };
+    use tidb_planner::physical::PhysicalPlan;
+
+    fn has_topn(plan: &PhysicalPlan) -> bool {
+        matches!(plan, PhysicalPlan::TopN(_)) || plan.children().iter().any(has_topn)
+    }
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE mixed_projection (id BIGINT PRIMARY KEY, v BIGINT, b VARBINARY(8))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO mixed_projection VALUES (1,8,'a'),(2,NULL,NULL),(3,4,'b'),(4,0,'c')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+
+    let sql = "SELECT b, COALESCE(v,id) AS k, id, b
+        FROM mixed_projection ORDER BY k, id LIMIT 3";
+    let context = || StmtContext::for_query().with_executor_chunk_sizes(2, 8);
+    let native = context();
+    let shared = context().with_shared_projection();
+    let Stmt::Query(query) = tidb_parser::parse(sql).unwrap() else {
+        unreachable!();
+    };
+    let plan = plan_query_meta_stmt(&query, &catalog, DEFAULT_DATABASE, &native).unwrap();
+    assert!(has_topn(&plan));
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    assert_eq!(
+        actual.1.iter().map(|row| &row[2]).collect::<Vec<_>>(),
+        [&Datum::Int(4), &Datum::Int(2), &Datum::Int(3)],
+    );
+    assert_eq!(actual.1[1][0], Datum::Null);
+    assert!(actual.1.iter().all(|row| row[0] == row[3]));
+    eprintln!(
+        "mixed TopN projection route={:?}",
+        shared.shared_projection_counts()
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((2, 2)));
+
+    // A second execution reuses the same layout for successive child batches.
+    // The repeated direct slot stays aliased while the seeded stream advances.
+    let Stmt::Query(query) =
+        tidb_parser::parse("SELECT b, RAND(7), b, id FROM mixed_projection ORDER BY id LIMIT 4")
+            .unwrap()
+    else {
+        unreachable!();
+    };
+    let read_batches = |ctx: &StmtContext| {
+        let mut records = tidb_executor::driver::open_query_meta_stmt_with_physical(
+            &query,
+            None,
+            &catalog,
+            DEFAULT_DATABASE,
+            ctx,
+        )
+        .unwrap();
+        let types: Vec<_> = records.columns().iter().map(|(_, ty)| ty.clone()).collect();
+        let mut request = records.new_chunk();
+        let mut results = Vec::new();
+        loop {
+            request.set_required_rows(2, 8);
+            records.next(&mut request).unwrap();
+            if request.num_rows() == 0 {
+                break;
+            }
+            results.push(
+                (0..request.num_rows())
+                    .map(|i| request.get_row(i).get_datum_row(&types))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        records.finish().unwrap();
+        results
+    };
+    let shared = context().with_shared_projection();
+    let batches = read_batches(&shared);
+    assert_eq!(batches, read_batches(&context()));
+    assert_eq!(batches.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2]);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 2)));
+
+    for sql in [
+        "SELECT id FROM mixed_projection",
+        "SELECT b, COALESCE(v,id), ABS(v) FROM mixed_projection",
+    ] {
+        let fallback = context().with_shared_projection();
+        assert_eq!(
+            run_select_meta_on(sql, &catalog, &fallback).unwrap(),
+            run_select_meta_on(sql, &catalog, &context()).unwrap(),
+        );
+        assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+    }
 }
