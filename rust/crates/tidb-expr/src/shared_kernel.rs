@@ -722,6 +722,10 @@ impl SharedExpression {
                             .all(|arg| matches_typed_operand(arg, NewDecimal))
                         {
                             Some(ComparisonOperands::Decimal)
+                        } else if f.derived_collation() == tidb_datatype::Collation::Binary
+                            && [left, right].into_iter().all(is_binary_comparison_operand)
+                        {
+                            Some(ComparisonOperands::Binary)
                         } else {
                             None
                         };
@@ -729,9 +733,15 @@ impl SharedExpression {
                             if !f.ret_type.as_ref().is_some_and(is_signed_bigint) {
                                 return Err("comparison requires a signed BIGINT result".into());
                             }
+                            let binary = matches!(operands, ComparisonOperands::Binary);
                             work.push(Visit::Compare(name, operands, None));
-                            work.push(Visit::Enter(right));
-                            work.push(Visit::Enter(left));
+                            work.extend([right, left].into_iter().map(|arg| {
+                                if binary {
+                                    Visit::ByteOperand(arg)
+                                } else {
+                                    Visit::Enter(arg)
+                                }
+                            }));
                             continue;
                         }
                     }
@@ -2218,11 +2228,14 @@ enum ComparisonOperands {
     },
     Double,
     Decimal,
+    Binary,
 }
 
 fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNode {
+    use tidb_query_datatype::codec::collation::collator::CollatorBinary;
     use tidb_query_expr::impl_compare::{
-        CmpOp, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq,
+        compare_bytes_fn_meta, CmpOp, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe,
+        CmpOpNullEq,
     };
     use tidb_query_expr::{
         integer_comparison_fn_meta, native_decimal_comparison_node, native_real_comparison_node,
@@ -2240,6 +2253,12 @@ fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNod
             },
             ComparisonOperands::Double => native_real_comparison_node::<F>(),
             ComparisonOperands::Decimal => native_decimal_comparison_node::<F>(),
+            ComparisonOperands::Binary => RpnExpressionNode::FnCall {
+                func_meta: compare_bytes_fn_meta::<CollatorBinary, F>(),
+                args_len: 2,
+                field_type: FieldTypeTp::LongLong.into(),
+                metadata: Box::new(()),
+            },
         }
     }
     let select = match name {
@@ -2253,6 +2272,23 @@ fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNod
         _ => unreachable!(),
     };
     select(operands)
+}
+
+fn is_binary_comparison_operand(arg: &Expression) -> bool {
+    if !arg
+        .static_type()
+        .is_some_and(|ty| is_raw_string_type(ty) && ty.is_binary_string())
+    {
+        return false;
+    }
+    match arg {
+        Expression::Column(_) => true,
+        Expression::Constant(c) => matches!(
+            c.literal_value(),
+            Some(Datum::Bytes(_) | Datum::String(_) | Datum::BinaryLiteral(_) | Datum::Null)
+        ),
+        _ => false,
+    }
 }
 
 fn bigint_operand_signedness(expression: &Expression) -> Option<bool> {
@@ -3467,6 +3503,100 @@ mod tests {
                 [expected[1].clone()]
             );
         }
+    }
+
+    #[test]
+    fn shared_kernel_binary_comparisons_keep_raw_byte_order() {
+        use tidb_datatype::{Collation, FieldTypeCode};
+
+        let bytes = FieldType::new(FieldTypeCode::Varchar).with_collation(Collation::Binary);
+        let result = FieldType::new(FieldTypeCode::LongLong).with_collation(Collation::Binary);
+        let values: [Option<&[u8]>; 6] = [
+            None,
+            Some(b""),
+            Some(b"A"),
+            Some(b"A "),
+            Some(&[0xff, 0]),
+            Some(&[0xff, 1]),
+        ];
+        let width = values.len() * values.len();
+        let mut chunk = Chunk::new(&[bytes.clone(), bytes.clone()], width, width);
+        for lhs in values {
+            for rhs in values {
+                for (col, value) in [lhs, rhs].into_iter().enumerate() {
+                    if let Some(value) = value {
+                        chunk.append_bytes(col, value);
+                    } else {
+                        chunk.append_null(col);
+                    }
+                }
+            }
+        }
+        let mut rows = (0..width).rev().collect::<Vec<_>>();
+        rows.push(2 * values.len() + 3);
+        let column = |i| {
+            let mut column = Column::new(i, bytes.clone());
+            column.index = i;
+            Expression::Column(column)
+        };
+        for name in ["eq", "ne", "lt", "le", "gt", "ge", "nulleq"] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                result.clone(),
+                vec![column(0), column(1)],
+            ));
+            let expected = rows
+                .iter()
+                .map(|&row| {
+                    expression
+                        .eval(&crate::NoColumns, chunk.physical_row(row))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            let program = SharedExpression::compile(&expression).unwrap();
+            assert_eq!(
+                program
+                    .evaluate(&chunk, &rows, &mut EvalContext::default())
+                    .unwrap(),
+                expected,
+                "{name}"
+            );
+        }
+        let literal = Expression::Constant(Constant::new(
+            Datum::BinaryLiteral(tidb_datatype::BinaryLiteral::from(vec![0xff, 0])),
+            bytes.clone(),
+        ));
+        let compare_literal = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("eq"),
+            result,
+            vec![column(0), literal],
+        ));
+        let row = 4 * values.len();
+        assert_eq!(
+            compare_literal
+                .eval(&crate::NoColumns, chunk.physical_row(row))
+                .unwrap(),
+            Datum::Int(1)
+        );
+        assert_eq!(
+            SharedExpression::compile(&compare_literal)
+                .unwrap()
+                .evaluate_mode(
+                    &chunk,
+                    &[row],
+                    &mut EvalContext::default(),
+                    InvocationMode::Scalar
+                )
+                .unwrap(),
+            [Datum::Int(1)]
+        );
+        let padded = FieldType::new(FieldTypeCode::LongLong).with_collation(Collation::Utf8Mb4Bin);
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("eq"),
+            padded,
+            vec![column(0), column(1)],
+        ));
+        assert!(SharedExpression::compile(&expression).is_err());
     }
 
     #[test]
