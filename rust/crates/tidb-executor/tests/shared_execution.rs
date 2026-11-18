@@ -1574,3 +1574,82 @@ fn shared_sql_sha_keep_bytes_fields_and_invalid_length_semantics() {
     assert!(native.take_warnings().is_empty());
     assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_hex_unhex_keep_raw_bytes_and_integer_bits() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE hex_values
+         (id BIGINT PRIMARY KEY, b VARBINARY(8), s VARCHAR(8), n BIGINT, u BIGINT UNSIGNED)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO hex_values VALUES
+         (1,X'FF00','abc',-1,18446744073709551615),
+         (2,'','G',-9223372036854775808,9223372036854775808),
+         (3,X'FF','',0,0),(4,NULL,NULL,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,HEX(b),HEX(s),HEX(n),HEX(u),UNHEX(s),UNHEX(b)
+        FROM hex_values ORDER BY id LIMIT 4";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    let bytes = actual
+        .1
+        .iter()
+        .map(|row| row[1..].iter().map(Datum::as_raw_bytes).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let bits = &b"FFFFFFFFFFFFFFFF"[..];
+    let half = &b"8000000000000000"[..];
+    assert_eq!(
+        bytes,
+        [
+            vec![
+                Some(&b"FF00"[..]),
+                Some(b"616263"),
+                Some(bits),
+                Some(bits),
+                Some(&[0x0a, 0xbc]),
+                None
+            ],
+            vec![
+                Some(&b""[..]),
+                Some(b"47"),
+                Some(half),
+                Some(half),
+                None,
+                Some(b"")
+            ],
+            vec![
+                Some(&b"FF"[..]),
+                Some(b""),
+                Some(b"0"),
+                Some(b"0"),
+                Some(b""),
+                None
+            ],
+            vec![None; 6],
+        ]
+    );
+    let route = shared.shared_projection_counts();
+    eprintln!("HEX projection={route:?}");
+    assert_eq!(route, Some((1, 1)));
+
+    let fallback = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT HEX(CAST(n AS DECIMAL(20,0))),UNHEX(n) FROM hex_values ORDER BY id LIMIT 4";
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &fallback).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap()
+    );
+    assert_eq!(fallback.take_warnings(), native.take_warnings());
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}

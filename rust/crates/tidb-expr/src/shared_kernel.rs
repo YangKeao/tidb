@@ -1097,6 +1097,39 @@ impl SharedExpression {
                 }),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "hex" | "unhex") =>
+                {
+                    use tidb_query_expr::impl_string::{
+                        hex_int_arg_fn_meta, hex_str_arg_fn_meta, unhex_fn_meta,
+                    };
+                    let [operand] = f.args.as_slice() else {
+                        return Err("HEX and UNHEX require one argument".into());
+                    };
+                    let decode = f.func_name.lowercase() == "unhex";
+                    if !f.ret_type.as_ref().is_some_and(|ty| {
+                        is_raw_string_type(ty) && (!decode || ty.is_binary_string())
+                    }) {
+                        return Err("HEX or UNHEX result declaration is unsupported".into());
+                    }
+                    let (meta, arg) = if is_raw_string_operand(operand) {
+                        let meta = if decode {
+                            unhex_fn_meta()
+                        } else {
+                            hex_str_arg_fn_meta()
+                        };
+                        (meta, Visit::ByteOperand(operand))
+                    } else if !decode && bigint_operand_signedness(operand).is_some() {
+                        (hex_int_arg_fn_meta(), Visit::BigIntOperand(operand))
+                    } else {
+                        return Err(
+                            "HEX or UNHEX operand conversion is outside shared admission".into(),
+                        );
+                    };
+                    work.push(Visit::BytesCall(meta, 1));
+                    work.push(arg);
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
                         && matches!(f.func_name.lowercase(), "sha" | "sha1" | "sha2") =>
                 {
                     use tidb_query_expr::impl_encryption::{sha1_fn_meta, sha2_fn_meta};
