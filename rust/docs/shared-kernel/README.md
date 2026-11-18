@@ -18,3 +18,4 @@
 性能对照见 [直接 BIGINT 比较的批执行](bigint-batch.zh.md)。
 另见 [DOUBLE 和 DECIMAL 条件结果](numeric-conditionals.zh.md)。
 - [混合列投影与 TopN](mixed-projection.zh.md)
+- [BIGINT 的 NOT、NULL 与真假判断](bigint-truth.zh.md)
