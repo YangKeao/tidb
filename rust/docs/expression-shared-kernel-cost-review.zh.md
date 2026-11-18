@@ -1,6 +1,6 @@
 # 成本复审与底层算法复用：下一步设计
 
-当前结论是：**保留一个共享表达式执行循环和原底层算法所有者；显式执行状态及类型化DATE完整调用链已通过限定复审，下一批补现有REGEXP_LIKE的按需准备状态。** 下文按固定版本保留历史审查和当时范围，已结束的阶段不构成新的等待条件；当前结论、证据边界与下一批接口在末两节。完整范围、默认SQL、性能和10K目标尚未证明。
+**task 48 首版已验证正则有效排序规则修正和真实 SQL 的跨批执行。串行投影需修正四处接线或接纳条件后再验收。** 当前两仓相对原始端点的源码和测试增删 11,079 行。末节记录证据、修正范围和全部材料的增删。全范围、默认 SQL 和性能仍待验证。
 
 这是设计与固定源码审查，不是替代实现的验收。完整245族、默认入口、旧执行器退役和性能目标均未完成。人类要求的10K数量级仍是目标；本轮没有证明它可达，也没有证明它不可能。
 
@@ -502,14 +502,14 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 ## 完整预算前提更新：保留原所有者，未完成部分仍需定价
 
 
-以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45更新执行状态，task46以dad1610309／00106bee更新类型化DATE触及的temporal、cast、control及输入输出／engine事实，task 47（451c307f29／aafeec411c）更新 pattern 和 input_lifecycle 中严格字面正则的实际寿命。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。当前实际源码测试 10,227／全部 32,753 行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
+以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45更新执行状态，task46以dad1610309／00106bee更新类型化DATE触及的temporal、cast、control及输入输出／engine事实，task 47（451c307f29／aafeec411c）更新 pattern 和 input_lifecycle 中严格字面正则的实际寿命。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。task 48 首版以真实 SQL 验证一条显式开启的投影，补充了 integration、pattern 与 engine 的证据。当前实际源码测试 11,079／全部 33,659 行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
 
 | 原组ID | 当前状态／改变的前提 | 已付事实与未闭合部分 | 本行唯一成本归属 |
 | --- | --- | --- | --- |
 | operator_numeric | 原所有者复用已证 | 当前接纳范围的Decimal加减乘除及紧凑primitive已共用；其余位运算、unsigned／混合签名未闭合 | 数值运算主体与本组诊断；通用转换引用cast |
 | math | 原假设保留，未重估 | Go专用exp/log/trig仍在原expr；不可因datatype可依赖便视为已共享 | 数学主体；RAND状态归input_lifecycle |
 | string | 下层primitive可保留，表达式策略未共享 | 编码／GoString已有所有者；StrUnits、完整载体、packet和coercion仍待接入 | 字符串签名策略；字符集转换引用convert_charset |
-| pattern | 原假设保留，局部已付 | 字面 REGEXP_LIKE 跨批准备与 1105 重放已证；有效排序规则的接纳缺口、LIKE 与替换语义仍待完成 | 匹配／替换主体；缓存寿命归input_lifecycle |
+| pattern | 原假设保留，局部已付 | 字面 REGEXP_LIKE 跨批准备与 1105 重放已证；共享编译器已排除有效排序规则要求忽略大小写的节点，LIKE 与替换语义仍待完成 | 匹配／替换主体；缓存寿命归input_lifecycle |
 | temporal | 类型化DATE原owner复用已证 | 原Time、共用DATE值算法和明确零值／clock政策已付；其他时间函数、解析和DST仍未闭合 | 时间值算法／策略；共用输入转换引用cast |
 | json | 搬迁前提需改，完整所有者未定 | 原BinaryJSON／path可保留；native serde修改与SDK Json仍非共同执行体 | JSON值／路径／呈现；schema服务归exceptions |
 | crypto | 原假设保留，未重估 | 已有MD5路径沿用；AES需求、mode／IV、压缩错误仍需适配 | 加密压缩主体；密码服务归exceptions |
@@ -522,8 +522,8 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 | convert_charset | 原假设保留，未重估 | 旧表本来就保留字符集／collation表；不能再把“不复制表”算新节省 | CONVERT／binary政策及编码适配 |
 | exceptions | 原五项保留，未重估 | codec／parser／password库仍原所有者；schema尚含Expression求值和懒外部引用 | 五项具体服务能力／错误桥接，不搬服务本体 |
 | input_lifecycle | 列／typed参数／已接纳有种子执行状态已付 | 已证有种子 RAND 和严格字面正则的跨批状态／新执行重建；其他缓存寿命、correlation 和默认集成待完成 | 跨族绑定／状态寿命；task45实际端点已计，不重复估价 |
-| integration | 显式输入输出已付，默认与退役未付 | 含Time的owned/direct根输出已付；eval_expression_once仍进入原eval，默认AST/PB／Unistore等未切换 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
-| engine | 单RPN及分发依赖已付，剩余范围未定价 | 共用循环、类型化NativeDate分发及独立表达式包固定Git构建已证；完整签名映射、嵌套PB退役与全workspace检查未完成 | 共享程序／验证／构建余项，不重复计各组算法 |
+| integration | 显式输入输出已付，默认与退役未付 | 含 Time 的 owned/direct 根输出和一次显式 SQL 投影已走通，四项边界仍待修正。默认 SQL、PB／Unistore 等入口和退役待完成 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
+| engine | 单RPN及分发依赖已付，剩余范围未定价 | 借用和执行器自有的程序／状态均短借用进入同一分组求值。类型化 NativeDate 与独立表达式包构建已证，完整签名映射及嵌套 PB 退役待完成 | 共享程序／验证／构建余项，不重复计各组算法 |
 
 状态“未重估”不表示零成本或接受旧区间为当前上限；一处未来帮助函数只有表中一个成本归属，其余行引用。没有逐行删除闭包前，不给原始代码退役额度。已有datatype源码原地被调用可以是零算法搬迁量；尚在expr的函数不能据此声称已是公共leaf。
 
@@ -682,3 +682,29 @@ TiDB rust/运行现有shared_kernel定向集及受影响原regexp用例，独立
 5. **以实际 SQL 验收。** 在已有 shared_execution 集成目标使用本地表和普通 SQL 文本。用限定于测试或该语句的观察手段证明优化后确实选择了共享投影、只编译一次并处理至少两个非空批。对照默认驱动返回的值、结果声明、告警和出错的 MySQL 码／SQLSTATE／消息。包括一个能区分“沿用／重建状态”的例子（如 RAND(固定种子)），以及有已发生副作用的错误，确认其只发生一次。新语句重建状态，空批为 EOF。原生对照覆盖默认关闭及未接纳整组。选择向量或 reopen 不易通过 SQL 构造时，可另用执行器夹具验证。保留实际计划和端点，报告本批及原始两仓完整增删。[现有集成测试位置](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-executor/tests/shared_execution.rs#L9)
 
 TiDB 的 rust 目录运行 `cargo test -p tidb-executor --features shared-kernel --test shared_execution --locked` 和 `cargo test -p tidb-expr --features shared-kernel --lib shared_kernel --locked`。覆盖受影响的默认路径及根 lint。如修改 SDK 执行接口，同步独立 SDK 的 tidb_query_expr 库回归。若实际计划或类型未进入目标投影，保留实际路径并选可达的 SQL 用例。交付结论限于此次串行计算投影。worker、存储执行、完整默认覆盖及吞吐归后续验收。
+
+## task 48 首版复审与修正范围（2026-11-18）
+
+**正则有效排序规则修正通过专项复审。真实 SQL 已验证一条成功路径和三条溢出路径。物理投影接线退回修正。** 固定端点为 TiDB 80ab4b70b0、报告 3beac205bf 和 SDK af3dcf96ad。共享编译按原生函数的有效结果排序规则判断，对忽略大小写的节点整组拒绝。类型化反例在修复前得到原生 1、共享 0，字面与动态模式均有记录。普通 SQL 能否自然生成该正则类型组合仍待验证。[工程师报告](https://github.com/YangKeao/tidb/blob/3beac205bf48c715e4c4ca647638e0945d923ae9/rust/docs/shared-kernel/sql-projection.zh.md) · [固定接纳条件](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-expr/src/shared_kernel.rs#L650)
+
+本地表上的 SELECT 同时计算 RAND(7)、RAND()、n + 1 和 v / 0e0。两次打开各选中一个共享投影组，均返回 2 行、3 行两批。有种子序列从头开始，会话随机流沿用，真实语句各有五条 1365。成功用例比较结果声明和逐行输出，第二次的无种子列与连续参考随机流比较。加法、乘法、嵌套加法各自的失败用例均与原生的 1690、22003、源表达式文本和求值来源标记一致，先前的 RAND() 各前进一步，语句告警为空。选择向量重复及同一程序重建状态有独立适配器用例。每个投影组仍拥有多个根程序，owned 和 borrowed 入口在同一次分组调用中借用其状态。[成功用例](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-executor/tests/shared_execution.rs#L100) · [失败用例](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-executor/tests/shared_execution.rs#L211) · [SDK 执行对象](https://github.com/YangKeao/tikv/blob/af3dcf96ad94a389e4d00fb44fdc799bb2714c3d/components/tidb_query_expr/src/types/expr_eval.rs#L351)
+
+| 首版问题 | 修正版验收 |
+|---|---|
+| 共享投影从构建函数提前返回，错过公共 state.meter 出口，该节点缺少原有的取消检查、panic 转错误和可选运行统计。 | 两种投影进入同一公共出口。对正向选中的共享投影检查该节点的实际行数与循环数。 [提前返回](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-executor/src/driver/physical_builder.rs#L4899) · [公共出口](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-executor/src/driver/physical_builder.rs#L5258) |
+| reader 设置 in_reader 后递归构建子计划。首版的共享选路漏查这一状态，计算投影也可能在 reader 内被选中。 | 核对同形 reader 内、外的选择计数和结果，记录测试采用的真实 SQL 或手工物理计划。 [reader 构建](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-executor/src/driver/physical_builder.rs#L1494) |
+| BIGINT 已检查隐藏来源，DOUBLE／DECIMAL 仍在检查覆盖之前用 NoColumns 渲染诊断。DOUBLE 隐藏列溢出时会丢失当前参数文本，Decimal 隐藏延迟常量可能提前求值。 | 在渲染前识别来源。用大值乘 2、隐藏来源绑定 17 对照 DOUBLE，用隐藏延迟常量对照 Decimal。保留已有类型化 Decimal 参数仅在出错时按当前绑定补诊断的行为。 [算术编译](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-expr/src/shared_kernel.rs#L503) · [Decimal 模板](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-expr/src/shared_kernel.rs#L1406) |
+| 会话绑定 Bytes 和非默认排序规则 String 均生成 getvar_string。已有测试直接证明 SETVAR 嵌套读取它们时原生完整复制，共享编译成功后却报错并漏写目标变量。 | SQL 物理入口在整组执行前排除任何深度的 getvar_string。核对语句实际变量存储值、排序规则、所选路径及普通计算组的正向对照。 [会话绑定](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-session/src/variables.rs#L78) · [已运行的两种额外载体](https://github.com/YangKeao/tidb/blob/80ab4b70b03dd08111fa8157ee612aaf6c9afded/rust/crates/tidb-expr/src/shared_kernel.rs#L4831) |
+
+工程师已报告前三项的修前观察，分别为 EXPLAIN ANALYZE 遗漏投影统计、手工 reader 内误选以及 DOUBLE／DECIMAL 的诊断来源差异。这些后续运行需在修正版交付时核对。首版对第四项已有共享 API 的直接对照，物理 SQL 回归由工程师补充。修正范围在 Raft 消息 8818c507 与 4fd5ebb3，修正版固定复审结束后再决定下一批。
+
+**证据。** 176 份文件的 SHA256 与清单逐项吻合。41 次有结构化收据的命令均可重建双仓跟踪树，34 次退出 0、六次退出 101、一次退出 1。十次最终检查的两仓跟踪树均等于交付端点。另有早期正则失败，对应 TiDB 的 HEAD、补丁、日志及退出码齐备，当次 SDK 版本只能由前一基线推定。早期中断的外层脚本没有终态。另两条修复前反例均有双仓快照。五个既有所有者的 172 条 Git 文件记录保持相同，本批没有新依赖图或逐次可执行文件哈希。Designer 复算源码和证据，产品测试由工程师运行。
+
+终态为共享 SQL 集成 4 项、共享表达式 59 项、正则筛选 26 项另有原 1 项忽略、默认会话和执行器筛选分别 1 和 5 项、独立 SDK 表达式 437 项。限定 Clippy 有警告并通过，根 lint 与改动处格式检查通过。整套 SDK Clippy 最近一次记录仍为 task 43 的 19 条公告失败；这一版没有性能测量。
+
+| 两仓固定端点 | 生产 Rust 新增／删除 | 测试与测量 Rust | 构建 | 材料 | 总增删 |
+|---|---:|---:|---:|---:|---:|
+| 相对 task 47 | 591／167 | 419／11 | 0／0 | 54／0 | 1,242 |
+| 相对原始两仓 | 4,463／330 | 6,282／4 | 1,990／103 | 20,487／0 | 33,659 |
+
+源码及测试相对原始端点共 11,079 行增删。工程师报告与复算的总量一致。复算沿用前版分类，将两仓的 .gitmodules、Makefile、工作流、deny.toml 和工具链声明中的 6 行新增、3 行删除计入构建。本批仅改 Rust 和一份报告。245 族的覆盖、默认路径、旧运行时退役、全范围成本和性能仍待验证。
