@@ -500,6 +500,11 @@ impl SharedExpression {
                     let eval_type = f.ret_type.as_ref().unwrap().eval_type();
                     let real = eval_type == tidb_datatype::EvalType::Real;
                     let integer = eval_type == tidb_datatype::EvalType::Int;
+                    if integer && has_lazy_integer_diagnostic_operand(&f.args) {
+                        return Err(
+                            "integer overflow diagnostic requires execution-time operands".into(),
+                        );
+                    }
                     let class = match eval_type {
                         tidb_datatype::EvalType::Real => "DOUBLE",
                         tidb_datatype::EvalType::Int => "BIGINT",
@@ -1379,6 +1384,21 @@ impl InputColumns for NativeInput<'_> {
             field_type: &schema[offset],
         })
     }
+}
+
+// Native overflow text can inspect a hidden column's source even when
+// the value comes from a materialized chunk column.
+fn has_lazy_integer_diagnostic_operand(args: &[Expression]) -> bool {
+    let mut pending: Vec<_> = args.iter().collect();
+    while let Some(expression) = pending.pop() {
+        match expression {
+            Expression::Constant(c) if c.literal_value().is_none() => return true,
+            Expression::Column(c) if c.is_hidden => pending.extend(c.virtual_expr.as_deref()),
+            Expression::ScalarFunction(f) => pending.extend(&f.args),
+            _ => {}
+        }
+    }
+    false
 }
 
 fn decimal_diagnostic(
@@ -3647,6 +3667,70 @@ mod tests {
             assert!(SharedProjection::compile(&[arithmetic(source)]).is_err());
         }
         assert!(SharedProjection::compile(&[arithmetic(decimal.clone())]).is_ok());
+    }
+
+    #[test]
+    fn shared_kernel_integer_diagnostic_declines_lazy_hidden_sources() {
+        use crate::constant::ParamMarker;
+        use tidb_datatype::FieldTypeCode;
+
+        let ty = FieldType::new(FieldTypeCode::LongLong);
+        let literal = |value| numeric_literal(Datum::Int(value), &ty);
+        let plus = |left, right| {
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("plus"),
+                ty.clone(),
+                vec![left, right],
+            ))
+        };
+        let hidden_column = |source| {
+            let mut column = Column::new(1, ty.clone());
+            column.index = 0;
+            column.is_hidden = true;
+            column.virtual_expr = Some(Box::new(source));
+            Expression::Column(column)
+        };
+        let mut input = Chunk::new_empty(std::slice::from_ref(&ty));
+        input.append_int64(0, i64::MAX);
+        let mut parameter = Constant::new(Datum::Int(99), ty.clone());
+        parameter.param_marker = Some(ParamMarker { order: 0 });
+        let mut deferred = Constant::new(Datum::Int(99), ty.clone());
+        deferred.deferred_expr = Some(Box::new(literal(19)));
+        for (kind, source, shown, reads) in [
+            ("parameter", parameter, 17, 1),
+            ("deferred", deferred, 19, 0),
+        ] {
+            let source = plus(Expression::Constant(source), literal(2));
+            let expression = plus(hidden_column(source), literal(1));
+            let context = ParameterProbe::new(Some(Datum::Int(17)), 4);
+            let native = expression.eval(&context, input.get_row(0)).unwrap_err();
+            assert_eq!(
+                native,
+                crate::EvalError::DataOutOfRange {
+                    value: "BIGINT",
+                    expression: format!("(({shown} + 2) + 1)"),
+                }
+            );
+            let expressions = [plus(literal(2), literal(3)), expression];
+            assert_eq!(
+                SharedProjection::compile(&expressions).unwrap_err(),
+                "integer overflow diagnostic requires execution-time operands",
+                "{kind}"
+            );
+            assert_eq!(context.reads.get(), reads);
+        }
+
+        let expression = plus(hidden_column(plus(literal(5), literal(2))), literal(1));
+        let error = SharedProjection::compile(&[expression])
+            .unwrap()
+            .start_execution(&crate::NoColumns)
+            .evaluate(&input, &[0], &mut EvalContext::default())
+            .unwrap_err();
+        assert_eq!(error.code, Some(1690));
+        assert_eq!(
+            error.message,
+            "BIGINT value is out of range in '((5 + 2) + 1)'"
+        );
     }
 
     #[test]

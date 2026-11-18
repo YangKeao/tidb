@@ -231,6 +231,7 @@ fn shared_sql_projection_preserves_failure_and_declines_whole_groups() {
     for sql in [
         "SELECT RAND(), n + 1 FROM limits_case LIMIT 1",
         "SELECT RAND(), n * 2 FROM limits_case LIMIT 1",
+        "SELECT RAND(), (n + 0) + 1 FROM limits_case LIMIT 1",
     ] {
         let Stmt::Query(query) = tidb_parser::parse(sql).unwrap() else {
             unreachable!();
@@ -263,7 +264,8 @@ fn shared_sql_projection_preserves_failure_and_declines_whole_groups() {
         let next = rng.gen();
         assert_eq!(native_rng.gen(), next);
         assert_eq!(shared_rng.gen(), next);
-        assert_eq!(shared.take_warnings(), native.take_warnings());
+        assert!(native.take_warnings().is_empty());
+        assert!(shared.take_warnings().is_empty());
     }
 
     for sql in [
@@ -273,7 +275,7 @@ fn shared_sql_projection_preserves_failure_and_declines_whole_groups() {
         let shared = StmtContext::for_query().with_shared_projection();
         assert_eq!(
             run_select_meta_on(sql, &catalog, &shared).unwrap(),
-            run_select_meta_on(sql, &catalog, &setup).unwrap()
+            run_select_meta_on(sql, &catalog, &StmtContext::for_query()).unwrap()
         );
         assert_eq!(shared.shared_projection_counts(), Some((0, 0)), "{sql}");
     }
@@ -283,7 +285,7 @@ fn shared_sql_projection_preserves_failure_and_declines_whole_groups() {
     let sql = "SELECT RAND(7) FROM limits_case LIMIT 1";
     assert_eq!(
         run_select_meta_on(sql, &catalog, &oversized).unwrap(),
-        run_select_meta_on(sql, &catalog, &setup).unwrap()
+        run_select_meta_on(sql, &catalog, &StmtContext::for_query()).unwrap()
     );
     assert_eq!(oversized.shared_projection_counts(), Some((0, 0)));
 }
