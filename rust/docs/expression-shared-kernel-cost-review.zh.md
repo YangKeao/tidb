@@ -502,14 +502,14 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 ## 完整预算前提更新：保留原所有者，未完成部分仍需定价
 
 
-以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45更新执行状态，task46以dad1610309／00106bee更新类型化DATE触及的temporal、cast、control及输入输出／engine事实，其余行不领取新增覆盖信用。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。当前实际源码测试9616／全部31419行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
+以下18组判断最初基于TiDB854d47d6／SDK2781f677；task45更新执行状态，task46以dad1610309／00106bee更新类型化DATE触及的temporal、cast、control及输入输出／engine事实，task 47（451c307f29／aafeec411c）更新 pattern 和 input_lifecycle 中严格字面正则的实际寿命。沿用task35的245族身份、五个内含例外和18个原组ID，不生成新清单。当前实际源码测试 10,227／全部 32,753 行增删是已付端点，不与历史批次相加。旧36470–79760仍是cp7条件估计，不能减掉676行旧副本便当作当前余量，也没有足够证据重算一个新总区间。
 
 | 原组ID | 当前状态／改变的前提 | 已付事实与未闭合部分 | 本行唯一成本归属 |
 | --- | --- | --- | --- |
 | operator_numeric | 原所有者复用已证 | 当前接纳范围的Decimal加减乘除及紧凑primitive已共用；其余位运算、unsigned／混合签名未闭合 | 数值运算主体与本组诊断；通用转换引用cast |
 | math | 原假设保留，未重估 | Go专用exp/log/trig仍在原expr；不可因datatype可依赖便视为已共享 | 数学主体；RAND状态归input_lifecycle |
 | string | 下层primitive可保留，表达式策略未共享 | 编码／GoString已有所有者；StrUnits、完整载体、packet和coercion仍待接入 | 字符串签名策略；字符集转换引用convert_charset |
-| pattern | 原假设保留，局部已付 | 已有REGEXP需求／诊断探针保留；全LIKE／替换语义与缓存有效期未闭合 | 匹配／替换主体；缓存寿命归input_lifecycle |
+| pattern | 原假设保留，局部已付 | 字面 REGEXP_LIKE 跨批准备与 1105 重放已证；有效排序规则的接纳缺口、LIKE 与替换语义仍待完成 | 匹配／替换主体；缓存寿命归input_lifecycle |
 | temporal | 类型化DATE原owner复用已证 | 原Time、共用DATE值算法和明确零值／clock政策已付；其他时间函数、解析和DST仍未闭合 | 时间值算法／策略；共用输入转换引用cast |
 | json | 搬迁前提需改，完整所有者未定 | 原BinaryJSON／path可保留；native serde修改与SDK Json仍非共同执行体 | JSON值／路径／呈现；schema服务归exceptions |
 | crypto | 原假设保留，未重估 | 已有MD5路径沿用；AES需求、mode／IV、压缩错误仍需适配 | 加密压缩主体；密码服务归exceptions |
@@ -521,7 +521,7 @@ SDK状态用程序局部节点序号索引有种子RAND槽，按根隔离，首�
 | cast | 精确primitive复用已证，全部类型未闭合 | String→Real、类型化Decimal参数／完整数值载体及Time恒等输入已付；完整时间转换／JSON／enum仍有源签名策略 | 共用值转换／载体，一次计入供各组引用 |
 | convert_charset | 原假设保留，未重估 | 旧表本来就保留字符集／collation表；不能再把“不复制表”算新节省 | CONVERT／binary政策及编码适配 |
 | exceptions | 原五项保留，未重估 | codec／parser／password库仍原所有者；schema尚含Expression求值和懒外部引用 | 五项具体服务能力／错误桥接，不搬服务本体 |
-| input_lifecycle | 列／typed参数／已接纳有种子执行状态已付 | 显式owner跨批延续／新执行重建已证；完整缓存寿命、correlation和默认集成未闭合 | 跨族绑定／状态寿命；task45实际端点已计，不重复估价 |
+| input_lifecycle | 列／typed参数／已接纳有种子执行状态已付 | 已证有种子 RAND 和严格字面正则的跨批状态／新执行重建；其他缓存寿命、correlation 和默认集成待完成 | 跨族绑定／状态寿命；task45实际端点已计，不重复估价 |
 | integration | 显式输入输出已付，默认与退役未付 | 含Time的owned/direct根输出已付；eval_expression_once仍进入原eval，默认AST/PB／Unistore等未切换 | 入口接线与真正旧运行时删除；保留值API不算重复求值器 |
 | engine | 单RPN及分发依赖已付，剩余范围未定价 | 共用循环、类型化NativeDate分发及独立表达式包固定Git构建已证；完整签名映射、嵌套PB退役与全workspace检查未完成 | 共享程序／验证／构建余项，不重复计各组算法 |
 
@@ -653,3 +653,32 @@ TiDB `shared_kernel.rs`中Visit::RegexpLike保留当前全部RegexpArgument守�
 最小语义反例包括：空／死分支不初始化；subject NULL或坏UTF-8使后续参数不被需求；一次非法pattern失败后，NULL subject不重放错误，下一正常subject再报相同code／文本；不同Chunk的动态pattern及match_type改变生效；两个执行交错独立；RAND／变量效果不能被缓存绕过；两种调用模式、乱序重复选择和owned/direct恢复保持。保留PB非法literal pattern原构建期报错以及动态参数原运行期行为，避免把两侧准备时机统一错。每项合并到现有套件，有限状态证据不等于SQL吞吐或完整缓存覆盖。
 
 TiDB rust/运行现有shared_kernel定向集及受影响原regexp用例，独立SDK运行整个tidb_query_expr库测试；格式、根make lint和受影响库Clippy按声明工具链执行。工具链与已知完整SDK公告失败沿用当前记录，不为本批重复未变全workspace检查。原datatype没有改动时不要求重新pin，也不重复DATE全矩阵；仍核对实际固定来源、现有双图关系及完整新增+删除。报告分列生产／测试／构建／材料及RpnExecution静态大小变化，不另建大套计时材料。本批结论最多是这一已有签名的准备次数及生命周期成立；完整性能、M1其余缓存、245族和10K目标继续待证。若必须引入通用缓存协议或改变PB时机，交固定原型和最小反例，在该边界收束范围。
+
+## REGEXP_LIKE 固定版本复审（2026-11-18）
+
+在 TiDB c3f6a19f1c、SDK aafeec411c 上，严格字面模式在同一执行中跨批只准备一次。原生编译器逐个发出参数和 NULL／UTF-8 守卫，然后选择字面专用指令或动态函数。专用指令在本根执行对象内按指令位置缓存 Regex 或内层 1105 错误文本。新执行独立，错误重放保留原消息。SDK 的 PB 入口仍在原有 metadata 构建阶段处理字面模式。SDK 的结构校验依赖前端保证该专用指令的模式和标志确为字面量。手工拼装指令的调用者也需满足此条件。[编译器](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-expr/src/shared_kernel.rs#L709) · [执行对象](https://github.com/YangKeao/tikv/blob/aafeec411c63f8d2da9b2d4fde33cd99b10c629a/components/tidb_query_expr/src/types/expr_eval.rs#L322) · [准备与错误重放](https://github.com/YangKeao/tikv/blob/aafeec411c63f8d2da9b2d4fde33cd99b10c629a/components/tidb_query_expr/src/impl_regexp.rs#L121)
+
+**有一个接纳条件需要修正。** 原生从函数结果类型读取有效排序规则。对于大小写不敏感的规则，先设定 i，再按用户标志从左到右覆盖。共享编译器检查了参数排序规则，匹配时一律以区分大小写开始。将默认字符串类型的 A 与 ^a$ 交给结果类型标有 utf8mb4_general_ci 的 REGEXP_LIKE，无显式标志时，源码给出的预测为原生 1、共享 0。字面和动态模式都会进入这一差异。父提交已有相同接纳条件。此处核对的是输入共享编译器的类型化表达式。普通 SQL 规划器是否产生这一组合须由实际运行回答。[原生排序规则来源](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-expr/src/scalar_function.rs#L1089) · [原生匹配入口](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-expr/src/scalar_function.rs#L1516) · [共享接纳条件](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-expr/src/shared_kernel.rs#L628)
+
+124 份收据记录哈希吻合。用各次固定提交与补丁重建 22 对源码树，逐份比对 5,527 项所选输入，其中 13 次与最终输入集相同。最终清单 SHA256 为 2aff43d40f33b6cc178f60cc65507a381a9f529c9643d8cf42256a047ac65202。双 Cargo 图各有五个唯一原所有者，172 份原文件和 1,421 项 SDK 输入吻合。日志保留了五次失败，包括测试内计数从六次准备降为一次的修复前见证。56 项共享、独立 SDK 表达式库 436 项和原生 regexp 筛选的 24 项通过，后者另有一项原有忽略。筛选间有重叠。限定 Clippy、格式与根 lint 的终态已核对。完整 SDK Clippy 上一轮完整尝试在 19 项依赖公告处退出 2，此批未重跑。[固定报告](https://github.com/YangKeao/tidb/blob/451c307f296bf89c2bead7fdd527ef9ea655470c/rust/docs/shared-kernel/regexp-state.zh.md) · [收据](https://github.com/YangKeao/tidb/blob/451c307f296bf89c2bead7fdd527ef9ea655470c/rust/docs/shared-kernel/regexp-state-validation.json)
+
+快照覆盖选定后缀的跟踪文件。工具链、系统库、已有构建缓存及快照外文件另计。原始目录另有六个未列入收据的文件。x86-64 上每根 SDK 执行对象由 64 增至 112 字节，单表达式执行包装由 88 增至 136 字节，投影包装为 48 字节，堆上的条目和正则对象另计。本轮无吞吐或分配测量。设计复审核了固定源码、差异和保留的运行记录。
+
+| 两仓固定端点 | 生产 Rust 新增／删除 | 测试与测量 Rust | 构建 | 材料 | 总增删 |
+|---|---:|---:|---:|---:|---:|
+| 相对 task 46 | 124／20 | 507／0 | 0／0 | 723／0 | 1,374 |
+| 相对原始基线 | 4,029／320 | 5,874／4 | 1,990／103 | 20,433／0 | 32,753 |
+
+相对原始两仓的源码和测试已增删 10,227 行。245 族的统一、旧运行时退役和全范围规模目标仍待验证。本批的局部状态复用只计入上表实际发生的修改。
+
+## 串行 SQL 投影的实现与验收（task 48）
+
+这次要用真实 SQL 验证同一份程序和执行状态能跨两次 next 使用，错误也能按原语句的方式返回。工程范围按 516aeb64 执行，内部步骤连续实施，在固定版本交一次结果。
+
+1. **修正正则接纳。** 先取得上述类型化反例的原生／共享输出，再按原生有效排序规则的初始大小写策略，在编译整根时排除当前共享实现不能保持语义的输入。对字面模式、列模式、嵌套一个未接纳节点的投影做对照。普通 LongLong 的默认排序规则为 binary。按实际初始策略判断可保留普通调用。用显式 c、i 及其覆盖顺序检查已接纳的模式。
+2. **在物理计划选路。** 沿用 tidb-executor 的 shared-kernel feature，以当前语句显式开启。普通 SELECT 从 run_select_meta_on 进入解析、优化、open_query 和物理构建。保留 reader 下推、列解析、worker 判定和外层计量。仅考虑本地 SELECT 的串行、非空、全为计算结果的 PhysicalProjection。直接列会触发原有所有权交换。编译前核对可用的最大批大小（SDK 当前 1024）和结果 schema，整组在执行前选择一条路。未接纳的整组沿原路径。一旦选中共享程序，任何运行期错误都直接返回。避免将实验开关扩展到进程全局、写语句或 reader 内的 PB 操作。[SQL 入口](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-executor/src/driver.rs#L333) · [构建和 worker 判断](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-executor/src/driver/physical_builder.rs#L4842)
+3. **绑定一次执行。** Executor 需要 Send。SDK 的函数 metadata 只要求 Send。当前 SharedProjectionExecution 借用程序和语句能力，同时持有每根的状态。在串行执行器安全拥有冻结程序、真实 StmtContext 与私有执行状态，单次调用只短借用。将 owned／borrowed 入口接到同一个 eval_group 和原帧循环。把程序和状态绑定，禁止把已填充的状态重新配给别的程序。open 或重新 open 时创建新状态，next 跨批延续，close／drop 释放。已有接口继续支持借用方式。不要引入自引用、裸指针或为单线程路径扩大 Sync 要求。[借用入口](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-expr/src/shared_kernel.rs#L906) · [执行器生命周期](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-executor/src/projection.rs#L341)
+4. **传递行、结果和错误。** 子 Chunk 有 sel 时原样传物理行号，保留重复与次序。无选择向量时取原逻辑行数的恒等映射，含无物理列的虚拟行。保留 required_rows、EOF、关闭、取消与计量的原调用位置，遵守直接输出的列所有权，使用真实结果 FieldType。列优先多根执行不能任意分割超宽批。语句的告警与变量／随机流仍由真实 StmtContext 持有。有 SQL 码的表达式错误按现有 MysqlError 来源标记、码推导 SQLSTATE 和原文本传递。适配器不变量保留内部错误分类。直接输出 helper 的错误保留目标合同与 ProjectionExec 在 next 开头重置调用者缓冲区的合同分别验证。[物理行选择](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-chunk/src/chunk.rs#L475) · [错误分类](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-executor/src/driver/errors/mod.rs#L86)
+5. **以实际 SQL 验收。** 在已有 shared_execution 集成目标使用本地表和普通 SQL 文本。用限定于测试或该语句的观察手段证明优化后确实选择了共享投影、只编译一次并处理至少两个非空批。对照默认驱动返回的值、结果声明、告警和出错的 MySQL 码／SQLSTATE／消息。包括一个能区分“沿用／重建状态”的例子（如 RAND(固定种子)），以及有已发生副作用的错误，确认其只发生一次。新语句重建状态，空批为 EOF。原生对照覆盖默认关闭及未接纳整组。选择向量或 reopen 不易通过 SQL 构造时，可另用执行器夹具验证。保留实际计划和端点，报告本批及原始两仓完整增删。[现有集成测试位置](https://github.com/YangKeao/tidb/blob/c3f6a19f1c718d18a862ff23f43cd844b579ee35/rust/crates/tidb-executor/tests/shared_execution.rs#L9)
+
+TiDB 的 rust 目录运行 `cargo test -p tidb-executor --features shared-kernel --test shared_execution --locked` 和 `cargo test -p tidb-expr --features shared-kernel --lib shared_kernel --locked`。覆盖受影响的默认路径及根 lint。如修改 SDK 执行接口，同步独立 SDK 的 tidb_query_expr 库回归。若实际计划或类型未进入目标投影，保留实际路径并选可达的 SQL 用例。交付结论限于此次串行计算投影。worker、存储执行、完整默认覆盖及吞吐归后续验收。
