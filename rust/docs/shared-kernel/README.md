@@ -26,3 +26,4 @@
 - [原生二进制 JSON 的 JSON_TYPE](typed-json-type.zh.md)
 - [IF 的 MD5 和 JSON_TYPE 共享分支](mixed-string-if.zh.md)
 - [混合 IF 的 release 求值成本](mixed-if-cost.zh.md)
+- [混合 IF 的批量分支](mixed-if-batch.zh.md)
