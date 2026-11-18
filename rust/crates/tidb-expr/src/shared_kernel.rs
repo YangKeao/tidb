@@ -410,10 +410,12 @@ impl SharedExpression {
                             }
                         }
                         if matches!(&f.args[1], Expression::ScalarFunction(value)
-                            if string_conditional_collation(value)
-                                .is_some_and(|collation| collation != tidb_datatype::Collation::DEFAULT))
+                            if string_conditional_collation(value).is_some())
                         {
-                            return Err("SETVAR conditional carrier is outside default-string shared admission".into());
+                            return Err(
+                                "SETVAR conditional carrier is outside shared storage admission"
+                                    .into(),
+                            );
                         }
                         work.push(Visit::Enter(&f.args[1]));
                     }
