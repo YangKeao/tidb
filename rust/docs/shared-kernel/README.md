@@ -67,3 +67,4 @@
 - [二进制与 UTF-8 的 UPPER 和 LOWER](native-case-conversion.zh.md)
 - [TRIM 的三个方向](native-trim.zh.md)
 - [UPDATE 的类型化 BIGINT 赋值](update-arithmetic.zh.md)
+- [INSERT SELECT 的共享算术源投影](insert-select-arithmetic.zh.md)
