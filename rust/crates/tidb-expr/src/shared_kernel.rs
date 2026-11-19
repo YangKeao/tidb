@@ -80,6 +80,7 @@ pub struct SharedExpression {
 enum NativeStringResult {
     Text(tidb_datatype::Collation),
     Bytes,
+    QuotedBinary,
 }
 
 impl SharedExpression {
@@ -176,6 +177,7 @@ impl SharedExpression {
                         f.func_name.lowercase(),
                         "any_value"
                             | "json_valid"
+                            | "quote"
                             | "year"
                             | "month"
                             | "day"
@@ -1863,6 +1865,24 @@ impl SharedExpression {
                     work.push(arg);
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "quote" =>
+                {
+                    let [arg] = f.args.as_slice() else {
+                        return Err("QUOTE requires one string operand".into());
+                    };
+                    if !matches!(arg, Expression::Column(_))
+                        || !is_raw_string_operand(arg)
+                        || !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                    {
+                        return Err("QUOTE requires an admitted typed string column".into());
+                    }
+                    work.push(Visit::BytesCall(
+                        tidb_query_expr::impl_string::native_quote_fn_meta(),
+                        1,
+                    ));
+                    work.push(Visit::ByteOperand(arg));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
                         && matches!(f.func_name.lowercase(), "sha" | "sha1" | "sha2") =>
                 {
@@ -2060,6 +2080,12 @@ impl SharedExpression {
                             if matches!(c.literal_value(), Some(Datum::Bytes(_)))) =>
                 {
                     NativeStringResult::Bytes
+                }
+                Expression::ScalarFunction(f)
+                    if f.func_name.lowercase() == "quote"
+                        && f.args.first().is_some_and(is_binary_string_leaf) =>
+                {
+                    NativeStringResult::QuotedBinary
                 }
                 Expression::ScalarFunction(f) if f.func_name.lowercase() == "any_value" => {
                     NativeStringResult::Text(f.args[0].static_type().unwrap().collation())
@@ -2965,6 +2991,7 @@ fn native_bytes_to_int(
     use tidb_query_expr::impl_math::crc32_fn_meta;
     use tidb_query_expr::impl_string::{
         ascii_fn_meta, bit_length_fn_meta, char_length_fn_meta, length_fn_meta,
+        native_ord_utf8mb4_fn_meta,
     };
 
     if function.pb_signature().is_some() {
@@ -2973,6 +3000,16 @@ fn native_bytes_to_int(
     Some(match function.func_name.lowercase() {
         "length" | "octet_length" => length_fn_meta(),
         "ascii" => ascii_fn_meta(),
+        "ord" => {
+            let [operand] = function.args.as_slice() else {
+                return None;
+            };
+            match operand.static_type()?.charset_name() {
+                "binary" if is_binary_string_leaf(operand) => ascii_fn_meta(),
+                "utf8mb4" if is_raw_string_operand(operand) => native_ord_utf8mb4_fn_meta(),
+                _ => return None,
+            }
+        }
         "bit_length" => bit_length_fn_meta(),
         "crc32" => crc32_fn_meta(),
         "uncompressed_length" => uncompressed_length_fn_meta(),
@@ -3461,7 +3498,11 @@ fn native_output_with_string_result(
             NativeStringResult::Text(collation) => {
                 Datum::new_collation_string(v.to_vec(), collation)
             }
-            NativeStringResult::Bytes => Datum::new_bytes(v.to_vec()),
+            // The only unquoted QUOTE result is the string for a NULL argument.
+            NativeStringResult::QuotedBinary if v == b"NULL" => Datum::new_string(v.to_vec()),
+            NativeStringResult::Bytes | NativeStringResult::QuotedBinary => {
+                Datum::new_bytes(v.to_vec())
+            }
         })
     };
     match result {
@@ -3603,6 +3644,36 @@ mod tests {
                     .unwrap()]
             );
         }
+    }
+
+    #[test]
+    fn quote_owned_binary_output_preserves_null_string_kind() {
+        let ty = native_type().with_collation(tidb_datatype::Collation::Binary);
+        let mut column = Column::new(1, ty.clone());
+        column.index = 0;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("quote"),
+            ty.clone(),
+            vec![Expression::Column(column)],
+        ));
+        let mut input = Chunk::new_with_capacity(&[ty], 3);
+        input.append_null(0);
+        input.append_bytes(0, b"NULL");
+        input.append_bytes(0, &[0xe2, 0x82]);
+        let actual = SharedExpression::compile(&expression)
+            .unwrap()
+            .evaluate(&input, &[0, 1, 2], &mut EvalContext::default())
+            .unwrap();
+        assert!(matches!(actual[0], Datum::String(_)));
+        assert!(matches!(actual[1], Datum::Bytes(_)) && matches!(actual[2], Datum::Bytes(_)));
+        let expected: Vec<_> = (0..3)
+            .map(|i| {
+                expression
+                    .eval(&crate::NoColumns, input.get_row(i))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(actual, expected);
     }
 
     fn md5(arg: Expression) -> Expression {

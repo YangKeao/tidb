@@ -3861,3 +3861,48 @@ fn shared_calendar_parts_keep_typed_zero_and_null_values() {
     );
     assert_eq!(shared.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_ord_and_quote_preserve_typed_strings() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let native = StmtContext::for_query();
+    run_create_table_on(
+        "CREATE TABLE ord_quote (
+            id BIGINT PRIMARY KEY, t VARCHAR(20) CHARACTER SET utf8mb4, b VARBINARY(20)
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO ord_quote VALUES
+            (1,'éx',X'FF00271A5C'),(2,'🙂',X'E282'),(3,'',X''),(4,NULL,NULL)",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+    let shared = native.clone().with_shared_projection();
+    let sql = "SELECT ORD(t),ORD(b),QUOTE(t),QUOTE(b) FROM ord_quote ORDER BY id LIMIT 4";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    use Datum::{Int, Null};
+    let ord = i64::from(u32::from_be_bytes([0xf0, 0x9f, 0x99, 0x82]));
+    let expected = [
+        (Int(50089), Int(255), "'éx'", "'�\\0\\'\\Z\\\\'"),
+        (Int(ord), Int(226), "'🙂'", "'�'"),
+        (Int(0), Int(0), "''", "''"),
+        (Null, Null, "NULL", "NULL"),
+    ];
+    for (row, (text_ord, binary_ord, text_quote, binary_quote)) in actual.1.iter().zip(expected) {
+        assert_eq!(row[..2], [text_ord, binary_ord]);
+        for (value, expected) in row[2..].iter().zip([text_quote, binary_quote]) {
+            let Datum::String(value) = value else {
+                panic!("expected quoted SQL string");
+            };
+            assert_eq!(value.bytes(), expected.as_bytes());
+        }
+    }
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+}
