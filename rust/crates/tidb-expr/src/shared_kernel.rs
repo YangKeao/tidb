@@ -97,7 +97,7 @@ impl SharedExpression {
             ByteOperand(&'a Expression),
             VectorOperand(&'a Expression),
             VectorNorm,
-            VectorFromText,
+            VectorFromText(Option<i32>),
             VectorDistance(tidb_query_expr::impl_vec::NativeVectorDistance),
             JsonOperand(&'a Expression),
             JsonType,
@@ -392,28 +392,49 @@ impl SharedExpression {
                     work.push(Visit::VectorOperand(left));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
-                    if f.pb_signature().is_none() && f.func_name.lowercase() == "vec_from_text" =>
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "vec_from_text" | "cast_vector") =>
                 {
                     let [input] = f.args.as_slice() else {
-                        return Err("VEC_FROM_TEXT requires one operand".into());
+                        return Err("vector conversion requires one operand".into());
                     };
-                    if !is_raw_string_operand(input)
-                        || !f.ret_type.as_ref().is_some_and(|ty| {
-                            ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32
-                                && !ty.is_array()
-                        })
-                    {
-                        return Err("VEC_FROM_TEXT requires a string leaf and vector result".into());
+                    let Some(target) = f.ret_type.as_ref().filter(|ty| {
+                        ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32 && !ty.is_array()
+                    }) else {
+                        return Err("vector conversion requires a vector result".into());
+                    };
+                    if !is_raw_string_operand(input) {
+                        return Err("vector conversion requires a string leaf".into());
                     }
-                    work.push(Visit::VectorFromText);
+                    let dimension = if f.func_name.lowercase() == "cast_vector" {
+                        if target.flen() < tidb_datatype::UNSPECIFIED_LENGTH {
+                            return Err("invalid vector result dimension".into());
+                        }
+                        Some(
+                            i32::try_from(target.flen())
+                                .map_err(|_| "vector dimension too large")?,
+                        )
+                    } else {
+                        None
+                    };
+                    work.push(Visit::VectorFromText(dimension));
                     work.push(Visit::ByteOperand(input));
                 }
-                Visit::VectorFromText => nodes.push(RpnExpressionNode::FnCall {
-                    func_meta: tidb_query_expr::impl_vec::native_vec_from_text_fn_meta(),
-                    args_len: 1,
-                    field_type: FieldTypeTp::TiDbVectorFloat32.into(),
-                    metadata: Box::new(()),
-                }),
+                Visit::VectorFromText(dimension) => {
+                    let mut field_type: tipb::FieldType = FieldTypeTp::TiDbVectorFloat32.into();
+                    let func_meta = if let Some(dimension) = dimension {
+                        field_type.set_flen(dimension);
+                        tidb_query_expr::impl_vec::native_cast_string_as_vector_fn_meta()
+                    } else {
+                        tidb_query_expr::impl_vec::native_vec_from_text_fn_meta()
+                    };
+                    nodes.push(RpnExpressionNode::FnCall {
+                        func_meta,
+                        args_len: 1,
+                        field_type,
+                        metadata: Box::new(()),
+                    });
+                }
                 Visit::VectorDistance(distance) => nodes.push(RpnExpressionNode::FnCall {
                     func_meta: tidb_query_expr::impl_vec::native_vector_distance_fn_meta(),
                     args_len: 2,
@@ -2588,7 +2609,11 @@ fn is_shared_vector_operand(expression: &Expression) -> bool {
     }) && match expression {
         Expression::Column(_) => true,
         Expression::ScalarFunction(function) => {
-            function.pb_signature().is_none() && function.func_name.lowercase() == "vec_from_text"
+            function.pb_signature().is_none()
+                && matches!(
+                    function.func_name.lowercase(),
+                    "vec_from_text" | "cast_vector"
+                )
         }
         _ => false,
     }
