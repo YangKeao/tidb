@@ -1464,11 +1464,21 @@ impl SharedExpression {
                     if f.pb_signature().is_none()
                         && matches!(
                             f.func_name.lowercase(),
-                            "ltrim" | "rtrim" | "reverse" | "left" | "right"
+                            "ltrim"
+                                | "rtrim"
+                                | "reverse"
+                                | "left"
+                                | "right"
+                                | "replace"
+                                | "substring"
+                                | "substr"
+                                | "mid"
                         ) =>
                 {
                     use tidb_query_expr::impl_string::{
-                        left_fn_meta, ltrim_fn_meta, reverse_fn_meta, right_fn_meta, rtrim_fn_meta,
+                        left_fn_meta, ltrim_fn_meta, native_substring_3_args_fn_meta,
+                        replace_fn_meta, reverse_fn_meta, right_fn_meta, rtrim_fn_meta,
+                        substring_2_args_fn_meta,
                     };
                     let [operand, rest @ ..] = f.args.as_slice() else {
                         return Err("binary string operation requires an operand".into());
@@ -1481,26 +1491,40 @@ impl SharedExpression {
                     {
                         return Err("binary string operation requires binary declarations".into());
                     }
-                    let meta = match (f.func_name.lowercase(), rest) {
+                    let name = f.func_name.lowercase();
+                    let signed_leaf = |arg: &Expression| {
+                        matches!(arg, Expression::Column(_) | Expression::Constant(_))
+                            && bigint_operand_signedness(arg) == Some(false)
+                    };
+                    let meta = match (name, rest) {
                         ("ltrim", []) => ltrim_fn_meta(),
                         ("rtrim", []) => rtrim_fn_meta(),
                         ("reverse", []) => reverse_fn_meta(),
-                        ("left" | "right", [length])
-                            if matches!(
-                                length,
-                                Expression::Column(_) | Expression::Constant(_)
-                            ) && bigint_operand_signedness(length) == Some(false) =>
+                        ("left", [length]) if signed_leaf(length) => left_fn_meta(),
+                        ("right", [length]) if signed_leaf(length) => right_fn_meta(),
+                        ("replace", [from, to])
+                            if is_binary_string_leaf(from) && is_binary_string_leaf(to) =>
                         {
-                            if f.func_name.lowercase() == "left" {
-                                left_fn_meta()
-                            } else {
-                                right_fn_meta()
-                            }
+                            replace_fn_meta()
+                        }
+                        ("substring" | "substr" | "mid", [start]) if signed_leaf(start) => {
+                            substring_2_args_fn_meta()
+                        }
+                        ("substring" | "substr" | "mid", [start, length])
+                            if signed_leaf(start) && signed_leaf(length) =>
+                        {
+                            native_substring_3_args_fn_meta()
                         }
                         _ => return Err("unsupported binary string operation arguments".into()),
                     };
                     work.push(Visit::BytesCall(meta, f.args.len()));
-                    work.extend(rest.iter().rev().map(Visit::Enter));
+                    work.extend(rest.iter().rev().map(|arg| {
+                        if name == "replace" {
+                            Visit::ByteOperand(arg)
+                        } else {
+                            Visit::BigIntOperand(arg)
+                        }
+                    }));
                     work.push(Visit::ByteOperand(operand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))

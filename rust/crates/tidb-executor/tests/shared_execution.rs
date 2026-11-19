@@ -2884,3 +2884,49 @@ fn shared_sql_binary_string_search_keeps_byte_order_and_position() {
     );
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_binary_replace_and_substring_preserve_native_boundaries() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE byte_slices (
+            id BIGINT PRIMARY KEY, s VARBINARY(20), f VARBINARY(20), t VARBINARY(20),
+            p BIGINT, n BIGINT
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO byte_slices VALUES
+            (1,X'FF00FF',X'FF',X'80',2,2),
+            (2,'abc','',X'FF',-2,9223372036854775807),
+            (3,'aaaaa','aa',X'FF',-9223372036854775808,1),
+            (4,NULL,'a','b',1,2),(5,'abc',NULL,'x',0,NULL),
+            (6,'abc','b','x',1,9223372036854775807)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let native = StmtContext::for_query();
+    let sql = "SELECT REPLACE(s,f,t), SUBSTRING(s,p), SUBSTRING(s,p,n), SUBSTR(s,p,n), MID(s,p,n)
+        FROM byte_slices ORDER BY id LIMIT 6";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let bytes = |row: usize, column: usize| actual.1[row][column].as_raw_bytes();
+    assert_eq!(bytes(0, 0), Some(&b"\x80\0\x80"[..]));
+    assert_eq!(bytes(0, 1), Some(&b"\0\xff"[..]));
+    assert_eq!(bytes(1, 0), Some(&b"abc"[..]));
+    assert_eq!(bytes(1, 1), Some(&b"bc"[..]));
+    for column in 2..5 {
+        assert_eq!(bytes(1, column), Some(&b""[..]));
+        assert_eq!(bytes(5, column), Some(&b"abc"[..]));
+    }
+    assert_eq!(bytes(2, 0), Some(&b"\xff\xffa"[..]));
+    assert_eq!(bytes(2, 1), Some(&b""[..]));
+    assert_eq!(actual.1[3], vec![Datum::Null; 5]);
+    assert_eq!(actual.1[4][0], Datum::Null);
+    assert_eq!(actual.1[4][2], Datum::Null);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
