@@ -103,6 +103,8 @@ impl SharedExpression {
             BigIntOperand(&'a Expression),
             ByteOperand(&'a Expression),
             VectorOperand(&'a Expression),
+            DurationColumn(&'a Expression),
+            DurationPart(tidb_query_expr::impl_time::DurationPart),
             VectorNorm,
             VectorFromText(Option<i32>),
             VectorArithmetic(tidb_query_expr::RpnFnMeta),
@@ -197,6 +199,11 @@ impl SharedExpression {
                             | "to_seconds"
                             | "dayname"
                             | "monthname"
+                            | "hour"
+                            | "minute"
+                            | "second"
+                            | "microsecond"
+                            | "time_to_sec"
                             | "upper"
                             | "ucase"
                             | "lower"
@@ -321,7 +328,8 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::Constant { value, field_type });
                 }
-                Visit::VectorOperand(Expression::Column(c))
+                Visit::DurationColumn(Expression::Column(c))
+                | Visit::VectorOperand(Expression::Column(c))
                 | Visit::JsonOperand(Expression::Column(c))
                 | Visit::ByteOperand(Expression::Column(c))
                 | Visit::BigIntOperand(Expression::Column(c))
@@ -339,6 +347,8 @@ impl SharedExpression {
                         tidb_datatype::FieldTypeCode::VarString
                             if tp.collation_name() == admitted.collation_name() => {}
                         tidb_datatype::FieldTypeCode::Double if !tp.is_unsigned() => {}
+                        tidb_datatype::FieldTypeCode::Duration
+                            if matches!(visit, Visit::DurationColumn(_)) => {}
                         tidb_datatype::FieldTypeCode::LongLong
                             if !tp.is_unsigned() || bigint_operand => {}
                         tidb_datatype::FieldTypeCode::NewDecimal
@@ -625,6 +635,43 @@ impl SharedExpression {
                 Visit::CalendarName(name) => {
                     nodes.push(tidb_query_expr::native_calendar_name_node(name));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "hour" | "minute" | "second" | "microsecond" | "time_to_sec"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_time::DurationPart;
+
+                    let [column @ Expression::Column(_)] = f.args.as_slice() else {
+                        return Err("duration part requires one typed TIME column".into());
+                    };
+                    if !column.static_type().is_some_and(|ty| {
+                        ty.code() == tidb_datatype::FieldTypeCode::Duration
+                            && !ty.is_array()
+                            && (0..=6).contains(&ty.decimal())
+                    }) || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err(
+                            "duration part requires TIME with a valid FSP and BIGINT result".into(),
+                        );
+                    }
+                    let part = match f.func_name.lowercase() {
+                        "hour" => DurationPart::Hour,
+                        "minute" => DurationPart::Minute,
+                        "second" => DurationPart::Second,
+                        "microsecond" => DurationPart::Microsecond,
+                        "time_to_sec" => DurationPart::TotalSeconds,
+                        _ => unreachable!(),
+                    };
+                    work.push(Visit::DurationPart(part));
+                    work.push(Visit::DurationColumn(column));
+                }
+                Visit::DurationPart(part) => {
+                    nodes.push(tidb_query_expr::native_duration_part_node(part));
+                }
+                Visit::DurationColumn(_) => unreachable!("duration admission has a column"),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.func_name.lowercase() == "benchmark" =>
                 {
@@ -2340,6 +2387,7 @@ impl SharedExpression {
             .map(|(_, tp)| match tp.code() {
                 tidb_datatype::FieldTypeCode::LongLong => bigint_type(tp.is_unsigned()),
                 tidb_datatype::FieldTypeCode::Double => FieldTypeTp::Double.into(),
+                tidb_datatype::FieldTypeCode::Duration => FieldTypeTp::Duration.into(),
                 tidb_datatype::FieldTypeCode::NewDecimal => FieldTypeTp::NewDecimal.into(),
                 tidb_datatype::FieldTypeCode::Json => FieldTypeTp::Json.into(),
                 tidb_datatype::FieldTypeCode::VectorFloat32 => {
@@ -3162,6 +3210,19 @@ impl InputColumns for NativeInput<'_> {
                 field_type: &schema[offset],
             });
         }
+        if eval_type == EvalType::Duration {
+            return Ok(RpnStackNode::ExpressionVector {
+                value: ExpressionVector::Duration(
+                    rows.iter()
+                        .map(|row| {
+                            (!column.is_null(*row))
+                                .then(|| column.get_duration(*row, field_type.decimal()))
+                        })
+                        .collect(),
+                ),
+                field_type: &schema[offset],
+            });
+        }
         if eval_type == EvalType::Real {
             return Ok(RpnStackNode::ExpressionVector {
                 value: ExpressionVector::Real(
@@ -3856,6 +3917,10 @@ fn native_output_with_string_result(
                 .into_iter()
                 .map(|v| v.map_or(Datum::Null, Datum::Time))
                 .collect()),
+            ExpressionVector::Duration(values) => Ok(values
+                .into_iter()
+                .map(|v| v.map_or(Datum::Null, Datum::Duration))
+                .collect()),
             ExpressionVector::Real(values) => Ok(values
                 .into_iter()
                 .map(|v| v.map_or(Datum::Null, Datum::Real))
@@ -4474,6 +4539,51 @@ mod tests {
                 }
             }
             assert!(effects.warnings.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn duration_parts_keep_raw_nanos_fsp_and_overrange_rules() {
+        use tidb_datatype::{FieldTypeCode, MySqlDuration};
+
+        let mut ty = FieldType::new(FieldTypeCode::Duration);
+        ty.set_decimal(3);
+        let result_type = FieldType::new(FieldTypeCode::LongLong);
+        let mut input = Chunk::new_with_capacity(&[ty.clone()], 4);
+        for nanos in [-90_245_123_456_789, 3_020_399_123_456_789, i64::MIN] {
+            input.append_duration(0, MySqlDuration::from_raw_parts(nanos, 6));
+        }
+        input.append_null(0);
+        for name in ["hour", "minute", "second", "microsecond", "time_to_sec"] {
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new(name),
+                result_type.clone(),
+                vec![time_column(0, &ty)],
+            ));
+            let rows = [2, 1, 0, 3, 0];
+            let expected: Vec<_> = rows
+                .iter()
+                .map(|&row| {
+                    expression
+                        .eval(&crate::NoColumns, input.get_row(row))
+                        .unwrap()
+                })
+                .collect();
+            let projection = SharedProjection::compile(&[expression]).unwrap();
+            let mut execution = projection.start_execution(&crate::NoColumns);
+            let actual = execution
+                .evaluate(&input, &rows, &mut EvalContext::default())
+                .unwrap();
+            assert_eq!(actual[0], expected, "{name}");
+            let mut output =
+                Chunk::new_with_capacity(std::slice::from_ref(&result_type), rows.len());
+            execution
+                .evaluate_into_chunk(&input, &rows, &mut EvalContext::default(), &mut output)
+                .unwrap();
+            let written: Vec<_> = (0..rows.len())
+                .map(|row| output.get_row(row).get_datum(0, &result_type))
+                .collect();
+            assert_eq!(written, expected, "{name}");
         }
     }
 

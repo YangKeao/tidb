@@ -4142,3 +4142,34 @@ fn shared_period_calls_keep_bigint_wrap_null_and_errors() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_duration_parts_preserve_magnitude_precision_and_null() {
+    let native = StmtContext::for_query();
+    let catalog = catalog_with_rows(
+        "CREATE TABLE time_parts (id BIGINT PRIMARY KEY, t TIME(3), precise TIME(6))",
+        "INSERT INTO time_parts VALUES
+         (1,'-25:04:05.123','00:00:01.123456'),
+         (2,'838:59:59.000','-00:00:00.000001'),
+         (3,NULL,NULL)",
+        &native,
+    );
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT HOUR(t),MINUTE(t),SECOND(t),MICROSECOND(t),TIME_TO_SEC(t),
+                      MICROSECOND(precise),TIME_TO_SEC(precise)
+               FROM time_parts ORDER BY id LIMIT 3";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(
+        actual.1[0],
+        [25, 4, 5, 123_000, -90_245, 123_456, 1].map(Datum::Int)
+    );
+    assert_eq!(
+        actual.1[1],
+        [838, 59, 59, 0, 3_020_399, 1, 0].map(Datum::Int)
+    );
+    assert_eq!(actual.1[2], vec![Datum::Null; 7]);
+    assert!(native.take_warnings().is_empty());
+    assert!(shared.take_warnings().is_empty());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
