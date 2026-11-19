@@ -2098,7 +2098,7 @@ fn shared_sql_integral_round_and_truncate_preserve_precision_and_scale_sign() {
 }
 
 #[test]
-fn shared_sql_bigint_mod_preserves_signs_and_zero_divisor_fallback() {
+fn shared_sql_bigint_mod_preserves_signs_and_zero_divisor_warnings() {
     use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
     let mut catalog = Catalog::default();
     run_create_table_on(
@@ -2124,12 +2124,16 @@ fn shared_sql_bigint_mod_preserves_signs_and_zero_divisor_fallback() {
     );
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 
-    let fallback = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT MOD(n,d), MOD(n,0) FROM mod_values ORDER BY id LIMIT 2";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
     assert_eq!(
-        run_select_meta_on(sql, &catalog, &fallback).unwrap(),
+        run_select_meta_on(sql, &catalog, &shared).unwrap(),
         run_select_meta_on(sql, &catalog, &native).unwrap()
     );
-    assert_eq!(fallback.take_warnings(), native.take_warnings());
-    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(warnings.len(), 2);
+    assert!(warnings.iter().all(|(_, code, _)| *code == 1365));
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }

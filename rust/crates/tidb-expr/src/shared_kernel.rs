@@ -120,6 +120,7 @@ impl SharedExpression {
             ),
             IntCall(tidb_query_expr::RpnFnMeta, usize, bool),
             SignedAbs(String),
+            IntegerModulo(bool),
             Compare(&'a str, ComparisonOperands, Option<usize>),
             WireComparisonRight(&'static str, &'a Expression),
             LogicalNext(&'a Expression, usize),
@@ -874,23 +875,14 @@ impl SharedExpression {
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none() && f.func_name.lowercase() == "mod" =>
                 {
-                    use tidb_query_expr::impl_arithmetic::{
-                        arithmetic_fn_meta, IntIntMod, IntUintMod, UintIntMod, UintUintMod,
-                    };
-                    let [lhs @ (Expression::Column(_) | Expression::Constant(_)), rhs @ Expression::Constant(divisor)] =
+                    let [lhs @ (Expression::Column(_) | Expression::Constant(_)), rhs @ (Expression::Column(_) | Expression::Constant(_))] =
                         f.args.as_slice()
                     else {
-                        return Err("MOD requires a BIGINT leaf and a literal divisor".into());
+                        return Err("MOD requires two BIGINT leaves".into());
                     };
                     let unsigned =
                         bigint_operand_signedness(lhs).ok_or("MOD dividend must be BIGINT")?;
-                    let divisor_unsigned =
-                        bigint_operand_signedness(rhs).ok_or("MOD divisor must be BIGINT")?;
-                    if !matches!(divisor.literal_value(), Some(Datum::Int(n)) if *n != 0)
-                        && !matches!(divisor.literal_value(), Some(Datum::UInt(n)) if *n != 0)
-                    {
-                        return Err("MOD divisor must be nonzero".into());
-                    }
+                    bigint_operand_signedness(rhs).ok_or("MOD divisor must be BIGINT")?;
                     if !f.ret_type.as_ref().is_some_and(|ty| {
                         ty.code() == tidb_datatype::FieldTypeCode::LongLong
                             && !ty.is_array()
@@ -898,16 +890,16 @@ impl SharedExpression {
                     }) {
                         return Err("MOD needs a matching BIGINT result".into());
                     }
-                    let meta = match (unsigned, divisor_unsigned) {
-                        (false, false) => arithmetic_fn_meta::<IntIntMod>(),
-                        (false, true) => arithmetic_fn_meta::<IntUintMod>(),
-                        (true, false) => arithmetic_fn_meta::<UintIntMod>(),
-                        (true, true) => arithmetic_fn_meta::<UintUintMod>(),
-                    };
-                    work.push(Visit::IntCall(meta, 2, unsigned));
+                    work.push(Visit::IntegerModulo(unsigned));
                     work.push(Visit::BigIntOperand(rhs));
                     work.push(Visit::BigIntOperand(lhs));
                 }
+                Visit::IntegerModulo(unsigned) => nodes.push(RpnExpressionNode::NativeArithmetic {
+                    op: NativeArithmetic::IntegerModulo,
+                    field_type: bigint_type(unsigned),
+                    overflow: String::new(),
+                    diagnostic: Vec::new(),
+                }),
                 Visit::SignedAbs(message) => nodes.push(RpnExpressionNode::FnCall {
                     func_meta: tidb_query_expr::impl_math::native_abs_int_fn_meta(),
                     args_len: 1,
@@ -5716,6 +5708,44 @@ mod tests {
             vec![numeric_literal(left, ty), numeric_literal(right, ty)],
         ))
     }
+    #[test]
+    fn shared_kernel_bigint_mod_obeys_strict_and_ignored_zero_policy() {
+        struct Policy(crate::ErrorLevel);
+        impl crate::context::Columns for Policy {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn division_by_zero_level(&self) -> crate::ErrorLevel {
+                self.0
+            }
+        }
+
+        let ty = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
+        let expression = numeric_binary("mod", &ty, Datum::Int(1), Datum::Int(0));
+        let shared = SharedExpression::compile(&expression).unwrap();
+        let mut input = Chunk::new(&[], 1, 1);
+        input.set_num_virtual_rows(1);
+        for level in [crate::ErrorLevel::Error, crate::ErrorLevel::Ignore] {
+            let policy = Policy(level);
+            let original = expression.eval(&policy, input.physical_row(0));
+            let actual = shared.start_execution(&policy).evaluate(
+                &input,
+                &[0],
+                &mut EvalContext::default(),
+                InvocationMode::Scalar,
+            );
+            match original {
+                Err(crate::EvalError::DivisionByZero) => {
+                    let error = actual.unwrap_err();
+                    assert_eq!(error.code, Some(1365));
+                    assert_eq!(error.message, "Division by 0");
+                }
+                Err(error) => panic!("unexpected original error {error:?}"),
+                Ok(value) => assert_eq!(actual.unwrap(), [value]),
+            }
+        }
+    }
+
     fn assert_same_decimal(actual: &Datum, expected: &Datum) {
         let (Datum::Decimal(a), Datum::Decimal(b)) = (actual, expected) else {
             panic!("decimal results required");
