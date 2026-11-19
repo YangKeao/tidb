@@ -4099,3 +4099,46 @@ fn shared_calendar_names_keep_native_strings_and_invalid_dates() {
     assert!(shared.take_warnings().is_empty());
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_period_calls_keep_bigint_wrap_null_and_errors() {
+    let native = StmtContext::for_query();
+    let catalog = catalog_with_rows(
+        "CREATE TABLE period_inputs (id BIGINT PRIMARY KEY, p BIGINT, n BIGINT, q BIGINT)",
+        "INSERT INTO period_inputs VALUES
+         (1,6912,2,7001),(2,202401,-9223372036854775808,202312),
+         (3,0,NULL,NULL),(4,NULL,1,202401),(5,200001,-24000,1),
+         (6,202413,1,202401),(7,202401,1,-202401)",
+        &native,
+    );
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT PERIOD_ADD(p,n), PERIOD_DIFF(p,q) FROM period_inputs
+               WHERE id<=5 ORDER BY id LIMIT 5";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0], [207002, 1199].map(Datum::Int));
+    assert_eq!(actual.1[1][1], Datum::Int(1));
+    assert_eq!(actual.1[2], vec![Datum::Null; 2]);
+    assert_eq!(actual.1[3], vec![Datum::Null; 2]);
+    assert_eq!(actual.1[4][0], Datum::Int(0));
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    for (name, args, id) in [
+        ("period_add", "p,n", 6),
+        ("period_diff", "p,q", 6),
+        ("period_diff", "p,q", 7),
+    ] {
+        let sql = format!("SELECT {name}({args}) FROM period_inputs WHERE id={id} LIMIT 1");
+        let shared = StmtContext::for_query().with_shared_projection();
+        let expected = run_select_meta_on(&sql, &catalog, &native)
+            .unwrap_err()
+            .to_mysql_error();
+        let actual = run_select_meta_on(&sql, &catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.code, 1210);
+        assert_eq!(actual.message, format!("Incorrect arguments to {name}"));
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}

@@ -1315,6 +1315,34 @@ impl SharedExpression {
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "period_add" | "period_diff") =>
+                {
+                    use tidb_query_expr::impl_time::{
+                        native_period_add_fn_meta, native_period_diff_fn_meta,
+                    };
+                    let [lhs, rhs] = f.args.as_slice() else {
+                        return Err("period functions require two BIGINT inputs".into());
+                    };
+                    if ![lhs, rhs].into_iter().all(|arg| {
+                        matches!(arg, Expression::Column(_) | Expression::Constant(_))
+                            && bigint_operand_signedness(arg).is_some()
+                    }) || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err(
+                            "period functions require typed BIGINT operands and result".into()
+                        );
+                    }
+                    let meta = if f.func_name.lowercase() == "period_add" {
+                        native_period_add_fn_meta()
+                    } else {
+                        native_period_diff_fn_meta()
+                    };
+                    work.push(Visit::IntCall(meta, 2, false));
+                    work.push(Visit::BigIntOperand(rhs));
+                    work.push(Visit::BigIntOperand(lhs));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
                         && matches!(f.func_name.lowercase(), "mod" | "intdiv") =>
                 {
                     let [lhs @ (Expression::Column(_) | Expression::Constant(_)), rhs @ (Expression::Column(_) | Expression::Constant(_))] =
