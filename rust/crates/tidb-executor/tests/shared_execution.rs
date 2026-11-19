@@ -3906,3 +3906,110 @@ fn shared_ord_and_quote_preserve_typed_strings() {
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     assert_eq!(shared.take_warnings(), native.take_warnings());
 }
+
+#[test]
+fn shared_space_and_repeat_keep_packet_diagnostics() {
+    use tidb_ast::CiString;
+    use tidb_chunk::chunk::Chunk;
+    use tidb_datatype::{FieldType, FieldTypeCode};
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    use tidb_expr::{
+        column::Column, expression::Expression, scalar_function::ScalarFunction,
+        shared_kernel::SharedProjection,
+    };
+
+    let mut catalog = Catalog::default();
+    let context = || StmtContext::for_query().with_max_allowed_packet(4);
+    let native = context();
+    run_create_table_on(
+        "CREATE TABLE packet_strings (id BIGINT PRIMARY KEY, s VARBINARY(20), n BIGINT)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO packet_strings VALUES
+            (1,X'FF00',2),(2,X'7879',3),(3,X'',9223372036854775807),
+            (4,X'70',-2),(5,NULL,6),(6,X'61',NULL),(7,X'61',4)",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+
+    let shared = context().with_shared_projection();
+    let sql = "SELECT SPACE(n),REPEAT(s,n) FROM packet_strings ORDER BY id LIMIT 7";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let bytes = |s: &[u8]| Datum::new_string(s.to_vec());
+    use Datum::Null;
+    let expected = [
+        [bytes(b"  "), bytes(&[0xff, 0, 0xff, 0])],
+        [bytes(b"   "), Null],
+        [Null, bytes(b"")],
+        [bytes(b""), bytes(b"")],
+        [Null, Null],
+        [Null, Null],
+        [bytes(b"    "), bytes(b"aaaa")],
+    ];
+    for (actual, expected) in actual.1.iter().zip(expected) {
+        for (actual, expected) in actual.iter().zip(expected) {
+            match (actual, &expected) {
+                (Datum::String(actual), Datum::String(expected)) => {
+                    assert_eq!(actual.bytes(), expected.bytes());
+                }
+                _ => assert_eq!(actual, &expected),
+            }
+        }
+    }
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(
+        warnings
+            .into_iter()
+            .map(|(_, code, message)| (code, message))
+            .collect::<Vec<_>>(),
+        ["space", "space", "repeat"].map(|name| {
+            (
+                1301,
+                format!("Result of {name}() was larger than max_allowed_packet (4) - truncated"),
+            )
+        })
+    );
+
+    let strict = StmtContext::for_dml(true, true, false).with_max_allowed_packet(4);
+    let bigint = FieldType::new(FieldTypeCode::LongLong);
+    let mut column = Column::new(1, bigint.clone());
+    column.index = 0;
+    let expr = Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("space"),
+        FieldType::new(FieldTypeCode::VarString),
+        vec![Expression::Column(column)],
+    ));
+    let mut input = Chunk::new_with_capacity(&[bigint], 1);
+    input.append_int64(0, 5);
+    let expected = expr.eval(&strict, input.get_row(0)).unwrap_err();
+    let program = SharedProjection::compile(std::slice::from_ref(&expr)).unwrap();
+    let error = program
+        .start_execution(&strict)
+        .evaluate(&input, &[0], &mut Default::default())
+        .unwrap_err();
+    assert_eq!(error.code, Some(1301));
+    assert_eq!(
+        expected,
+        tidb_expr::EvalError::AllowedPacketOverflowed(error.message)
+    );
+    assert!(strict.take_warnings().is_empty());
+
+    let wide_packet = StmtContext::for_query().with_max_allowed_packet(32 << 20);
+    input.reset();
+    input.append_int64(0, 16_777_217);
+    assert_eq!(expr.eval(&wide_packet, input.get_row(0)).unwrap(), Null);
+    assert_eq!(
+        program
+            .start_execution(&wide_packet)
+            .evaluate(&input, &[0], &mut Default::default())
+            .unwrap(),
+        vec![vec![Null]]
+    );
+    assert!(wide_packet.take_warnings().is_empty());
+}

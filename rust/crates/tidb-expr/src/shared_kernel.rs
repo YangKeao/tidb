@@ -110,6 +110,7 @@ impl SharedExpression {
             JsonOperand(&'a Expression),
             JsonType,
             BytesCall(tidb_query_expr::RpnFnMeta, usize),
+            PacketString(tidb_query_expr::impl_string::PacketString),
             Date,
             CalendarPart(tidb_query_expr::impl_time::CalendarPart),
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
@@ -1865,6 +1866,35 @@ impl SharedExpression {
                     work.push(arg);
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "space" | "repeat") =>
+                {
+                    use tidb_query_expr::impl_string::PacketString;
+
+                    let (op, count, bytes) = match (f.func_name.lowercase(), f.args.as_slice()) {
+                        ("space", [count]) => (PacketString::Space, count, None),
+                        ("repeat", [bytes, count]) if is_raw_string_operand(bytes) => {
+                            (PacketString::Repeat, count, Some(bytes))
+                        }
+                        _ => return Err("SPACE/REPEAT require typed operands".into()),
+                    };
+                    if bigint_operand_signedness(count).is_none()
+                        || !matches!(count, Expression::Column(_) | Expression::Constant(_))
+                        || !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                    {
+                        return Err("SPACE/REPEAT require a BIGINT count and string result".into());
+                    }
+                    work.push(Visit::PacketString(op));
+                    work.push(Visit::BigIntOperand(count));
+                    work.extend(bytes.map(Visit::ByteOperand));
+                }
+                Visit::PacketString(op) => {
+                    nodes.push(RpnExpressionNode::NativePacketString {
+                        op,
+                        field_type: bytes_type(),
+                    });
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none() && f.func_name.lowercase() == "quote" =>
                 {
                     let [arg] = f.args.as_slice() else {
@@ -2726,6 +2756,17 @@ impl InputColumns for NativeInput<'_> {
         self.effects.date_modes()
     }
 
+    fn max_allowed_packet(&self) -> u64 {
+        self.effects.max_allowed_packet()
+    }
+    fn handle_allowed_packet_overflowed(
+        &self,
+        name: &str,
+    ) -> tidb_query_expr::evaluation_error::Result<()> {
+        self.effects
+            .handle_allowed_packet_overflowed(name)
+            .map_err(native_policy_error)
+    }
     fn handle_truncate(&self, message: &str) -> tidb_query_expr::evaluation_error::Result<()> {
         self.effects
             .handle_truncate(message)
@@ -2975,6 +3016,7 @@ fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_e
     let (code, msg) = match error {
         crate::EvalError::TruncatedWrongValue(message) => (1292, message),
         crate::EvalError::DivisionByZero => (1365, "Division by 0".into()),
+        crate::EvalError::AllowedPacketOverflowed(message) => (1301, message),
         crate::EvalError::Unsupported(message) => (1105, message.into()),
         other => {
             return EvaluateError::Other(format!("unsupported native policy diagnostic: {other:?}"))
