@@ -2350,3 +2350,53 @@ fn shared_sql_vector_text_preserves_fixed_float_format_and_fields() {
     assert!(!actual.1[3][1].as_raw_bytes().unwrap().contains(&b'e'));
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_vector_from_text_preserves_output_bits_and_errors() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_strings (id BIGINT PRIMARY KEY, s VARBINARY(80))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_strings VALUES
+            (1,'[-0.0,1e-39,3e38]'),(2,'[]'),(3,NULL),(4,'[1,x]'),(5,X'FF00')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,VEC_FROM_TEXT(s) FROM vector_strings WHERE id<4 ORDER BY id LIMIT 3";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    assert_eq!(actual, expected);
+    for index in [0, 1] {
+        let Datum::VectorFloat32(a) = &actual.1[index][1] else {
+            panic!("expected vector result");
+        };
+        let Datum::VectorFloat32(b) = &expected.1[index][1] else {
+            panic!("expected native vector result");
+        };
+        assert_eq!(a.serialize(), b.serialize());
+    }
+    assert_eq!(actual.1[2][1], Datum::Null);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    for row in [4, 5] {
+        let sql = format!("SELECT VEC_FROM_TEXT(s) FROM vector_strings WHERE id={row}");
+        let shared = StmtContext::for_query().with_shared_projection();
+        let error = run_select_meta_on(&sql, &catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(
+            error,
+            run_select_meta_on(&sql, &catalog, &native)
+                .unwrap_err()
+                .to_mysql_error()
+        );
+        assert_eq!(error.code, 1105);
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}

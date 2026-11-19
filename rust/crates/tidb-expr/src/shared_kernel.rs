@@ -97,6 +97,7 @@ impl SharedExpression {
             ByteOperand(&'a Expression),
             VectorColumn(&'a crate::column::Column),
             VectorNorm,
+            VectorFromText,
             VectorDistance(tidb_query_expr::impl_vec::NativeVectorDistance),
             JsonOperand(&'a Expression),
             JsonType,
@@ -393,6 +394,29 @@ impl SharedExpression {
                     work.push(Visit::VectorColumn(right));
                     work.push(Visit::VectorColumn(left));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "vec_from_text" =>
+                {
+                    let [input] = f.args.as_slice() else {
+                        return Err("VEC_FROM_TEXT requires one operand".into());
+                    };
+                    if !is_raw_string_operand(input)
+                        || !f.ret_type.as_ref().is_some_and(|ty| {
+                            ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32
+                                && !ty.is_array()
+                        })
+                    {
+                        return Err("VEC_FROM_TEXT requires a string leaf and vector result".into());
+                    }
+                    work.push(Visit::VectorFromText);
+                    work.push(Visit::ByteOperand(input));
+                }
+                Visit::VectorFromText => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta: tidb_query_expr::impl_vec::native_vec_from_text_fn_meta(),
+                    args_len: 1,
+                    field_type: FieldTypeTp::TiDbVectorFloat32.into(),
+                    metadata: Box::new(()),
+                }),
                 Visit::VectorDistance(distance) => nodes.push(RpnExpressionNode::FnCall {
                     func_meta: tidb_query_expr::impl_vec::native_vector_distance_fn_meta(),
                     args_len: 2,
@@ -2903,6 +2927,22 @@ fn native_output(result: RpnStackNode<'_>, rows: usize) -> Result<Vec<Datum>, St
     native_output_with_collation(result, rows, tidb_datatype::Collation::DEFAULT)
 }
 
+fn native_vector_result(
+    value: Option<tidb_query_datatype::codec::data_type::VectorFloat32Ref<'_>>,
+) -> Result<Datum, String> {
+    use tidb_query_datatype::codec::mysql::VectorFloat32Encoder;
+    let Some(value) = value else {
+        return Ok(Datum::Null);
+    };
+    let mut bytes = Vec::with_capacity(value.encoded_len());
+    bytes
+        .write_vector_float32(value)
+        .map_err(|error| error.to_string())?;
+    let (vector, _) =
+        tidb_datatype::deserialize_vector_float32(&bytes).map_err(|error| error.to_string())?;
+    Ok(Datum::new_vector_float32(vector))
+}
+
 fn native_output_with_collation(
     result: RpnStackNode<'_>,
     rows: usize,
@@ -2953,6 +2993,15 @@ fn native_output_with_collation(
             ..
         } => Ok(vec![integer(*v); rows]),
         RpnStackNode::Scalar {
+            value: ScalarValue::VectorFloat32(value),
+            ..
+        } => Ok(vec![
+            native_vector_result(
+                value.as_ref().map(|value| value.as_ref())
+            )?;
+            rows
+        ]),
+        RpnStackNode::Scalar {
             value: ScalarValue::Real(v),
             ..
         } => Ok(vec![
@@ -2978,6 +3027,11 @@ fn native_output_with_collation(
                             .map_or(Datum::Null, |v| Datum::Real(v.into_inner()))
                     })
                     .collect());
+            }
+            if let VectorValue::VectorFloat32(values) = values {
+                return (0..rows)
+                    .map(|r| native_vector_result(values.get(value.logical_rows()[r])))
+                    .collect();
             }
             let VectorValue::Bytes(values) = values else {
                 return Err("expected byte or integer result".into());
