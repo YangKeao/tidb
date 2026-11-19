@@ -79,3 +79,4 @@
 - [SPACE 和 REPEAT 的包大小限制](packet-space-repeat.zh.md)
 - [CONCAT 和 CONCAT_WS 的包大小与 NULL](packet-concat.zh.md)
 - [Base64 的包大小与编码约定](packet-base64.zh.md)
+- [二进制 LPAD 和 RPAD](packet-binary-pad.zh.md)
