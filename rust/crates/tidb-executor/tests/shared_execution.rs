@@ -3659,3 +3659,75 @@ fn shared_parallel_projection_reuses_signed_bigint_program() {
     );
     assert_eq!(shared.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_bigint_xor_and_negation_keep_null_and_overflow() {
+    use tidb_datatype::{Decimal, FieldTypeFlags};
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let native = StmtContext::for_query();
+    run_create_table_on(
+        "CREATE TABLE integer_ops (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT UNSIGNED)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO integer_ops VALUES
+            (1,0,1),(2,-2,9223372036854775808),(3,NULL,0),(4,3,NULL),
+            (5,-9223372036854775808,18446744073709551615)",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+
+    use Datum::{Int, Null};
+    let shared = native.clone().with_shared_projection();
+    let sql = "SELECT a XOR b, -a, -b FROM integer_ops WHERE id<5 ORDER BY id LIMIT 4";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_ne!(actual.0[0].1.flags() & FieldTypeFlags::IS_BOOLEAN, 0);
+    assert_eq!(
+        actual.1,
+        vec![
+            vec![Int(1), Int(0), Int(-1)],
+            vec![Int(0), Int(2), Int(i64::MIN)],
+            vec![Null, Null, Int(0)],
+            vec![Null, Int(-3), Null],
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+
+    let shared = native.clone().with_shared_selection();
+    let sql = "SELECT id FROM (SELECT id,a,b FROM integer_ops ORDER BY id LIMIT 5) AS retained
+               WHERE a XOR b ORDER BY id";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1, vec![vec![Int(1)]]);
+    assert_eq!(shared.shared_selection_counts(), Some((1, 1)));
+
+    for (expr, id) in [("-a", 5), ("-b", 5), ("a XOR (id+9223372036854775806)", 3)] {
+        let shared = native.clone().with_shared_projection();
+        let sql = format!("SELECT {expr} FROM integer_ops WHERE id={id} LIMIT 1");
+        let actual = run_select_meta_on(&sql, &catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        let expected = run_select_meta_on(&sql, &catalog, &native)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.code, 1690);
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+        assert_eq!(shared.take_warnings(), native.take_warnings());
+    }
+
+    let shared = native.clone().with_shared_projection();
+    let sql = "SELECT -(-9223372036854775808)";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(
+        actual.1,
+        vec![vec![Datum::Decimal(Decimal::from_uint(1_u64 << 63))]]
+    );
+}

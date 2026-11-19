@@ -159,18 +159,18 @@ impl SharedExpression {
             let mut truth_test = None;
             let mut bytes_to_int = None;
             let mut binary_search = None;
-            let mut bit_operation = None;
+            let mut integer_operator = None;
             if let Visit::Enter(Expression::ScalarFunction(f)) = &visit {
                 truth_test = native_int_truth_test(f);
                 bytes_to_int = native_bytes_to_int(f);
                 binary_search = native_binary_string_search(f);
-                bit_operation = native_bit_operation(f);
+                integer_operator = native_integer_operator(f);
                 // Direct typed leaves never introduce per-row effects.
                 let pure_call = (is_native_comparison(f)
                     || truth_test.is_some()
                     || bytes_to_int.is_some()
                     || binary_search.is_some()
-                    || bit_operation.is_some()
+                    || integer_operator.is_some()
                     || matches!(
                         f.func_name.lowercase(),
                         "json_valid"
@@ -918,8 +918,8 @@ impl SharedExpression {
                     work.push(Visit::IntCall(func_meta, 1, false));
                     work.push(input);
                 }
-                Visit::Enter(Expression::ScalarFunction(f)) if bit_operation.is_some() => {
-                    let (func_meta, arity, unsigned) = bit_operation.unwrap();
+                Visit::Enter(Expression::ScalarFunction(f)) if integer_operator.is_some() => {
+                    let (func_meta, arity, unsigned) = integer_operator.unwrap();
                     if f.args.len() != arity
                         || f.args
                             .iter()
@@ -930,7 +930,7 @@ impl SharedExpression {
                                 && ty.is_unsigned() == unsigned
                         })
                     {
-                        return Err("bit operations require matching BIGINT declarations".into());
+                        return Err("integer operators require matching BIGINT declarations".into());
                     }
                     work.push(Visit::IntCall(func_meta, arity, unsigned));
                     work.extend(f.args.iter().rev().map(Visit::BigIntOperand));
@@ -3021,12 +3021,13 @@ fn is_shared_sha2_length(length: &Expression) -> bool {
     )
 }
 
-fn native_bit_operation(
+fn native_integer_operator(
     function: &crate::scalar_function::ScalarFunction,
 ) -> Option<(tidb_query_expr::RpnFnMeta, usize, bool)> {
     use tidb_query_expr::impl_op::{
         bit_and_fn_meta, bit_neg_fn_meta, bit_or_fn_meta, bit_xor_fn_meta, left_shift_fn_meta,
-        right_shift_fn_meta,
+        logical_xor_fn_meta, right_shift_fn_meta, unary_minus_int_fn_meta,
+        unary_minus_uint_fn_meta,
     };
     use tidb_query_expr::impl_other::bit_count_fn_meta;
 
@@ -3041,6 +3042,18 @@ fn native_bit_operation(
         "leftshift" => (left_shift_fn_meta(), 2, true),
         "rightshift" => (right_shift_fn_meta(), 2, true),
         "bit_count" => (bit_count_fn_meta(), 1, false),
+        "xor" => (logical_xor_fn_meta(), 2, false),
+        "unaryminus" => {
+            let [argument @ Expression::Column(_)] = function.args.as_slice() else {
+                return None;
+            };
+            let meta = if bigint_operand_signedness(argument)? {
+                unary_minus_uint_fn_meta()
+            } else {
+                unary_minus_int_fn_meta()
+            };
+            (meta, 1, false)
+        }
         _ => return None,
     })
 }
