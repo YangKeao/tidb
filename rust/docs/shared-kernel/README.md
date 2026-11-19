@@ -80,3 +80,4 @@
 - [CONCAT 和 CONCAT_WS 的包大小与 NULL](packet-concat.zh.md)
 - [Base64 的包大小与编码约定](packet-base64.zh.md)
 - [二进制 LPAD 和 RPAD](packet-binary-pad.zh.md)
+- [字符串 INSERT 的二进制替换](packet-binary-insert.zh.md)
