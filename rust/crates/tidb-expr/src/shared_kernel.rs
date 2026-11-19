@@ -73,7 +73,13 @@ pub struct SharedExpression {
     columns: Vec<(usize, tidb_datatype::FieldType)>,
     schema: Vec<tipb::FieldType>,
     result_type: Option<tidb_datatype::FieldType>,
-    result_collation: tidb_datatype::Collation,
+    string_result: NativeStringResult,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NativeStringResult {
+    Text(tidb_datatype::Collation),
+    Bytes,
 }
 
 impl SharedExpression {
@@ -165,7 +171,10 @@ impl SharedExpression {
                     || bytes_to_int.is_some()
                     || binary_search.is_some()
                     || bit_operation.is_some()
-                    || f.func_name.lowercase() == "json_valid")
+                    || matches!(
+                        f.func_name.lowercase(),
+                        "json_valid" | "upper" | "ucase" | "lower" | "lcase"
+                    ))
                     && f.args
                         .iter()
                         .all(|arg| matches!(arg, Expression::Constant(_) | Expression::Column(_)));
@@ -1502,6 +1511,45 @@ impl SharedExpression {
                     if f.pb_signature().is_none()
                         && matches!(
                             f.func_name.lowercase(),
+                            "upper" | "ucase" | "lower" | "lcase"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_string::{
+                        lower_fn_meta, native_lower_utf8_fn_meta, native_upper_utf8_fn_meta,
+                        upper_fn_meta,
+                    };
+
+                    let [input] = f.args.as_slice() else {
+                        return Err("case conversion requires one operand".into());
+                    };
+                    let binary = is_binary_string_leaf(input);
+                    let utf8 = matches!(input, Expression::Column(_))
+                        && input.static_type().is_some_and(|ty| {
+                            is_raw_string_type(ty)
+                                && matches!(ty.charset_name(), "utf8mb4" | "utf8")
+                                && !ty.is_binary_string()
+                        });
+                    if !(binary || utf8)
+                        || !f.ret_type.as_ref().is_some_and(|ty| {
+                            is_raw_string_type(ty) && ty.is_binary_string() == binary
+                        })
+                    {
+                        return Err("case conversion requires matching string declarations".into());
+                    }
+                    let upper = matches!(f.func_name.lowercase(), "upper" | "ucase");
+                    let meta = match (upper, binary) {
+                        (true, true) => upper_fn_meta(),
+                        (false, true) => lower_fn_meta(),
+                        (true, false) => native_upper_utf8_fn_meta(),
+                        (false, false) => native_lower_utf8_fn_meta(),
+                    };
+                    work.push(Visit::BytesCall(meta, 1));
+                    work.push(Visit::ByteOperand(input));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
                             "ltrim"
                                 | "rtrim"
                                 | "reverse"
@@ -1881,11 +1929,22 @@ impl SharedExpression {
             columns,
             schema,
             result_type: expression.static_type().cloned(),
-            result_collation: match expression {
-                Expression::ScalarFunction(f) => {
-                    string_conditional_collation(f).unwrap_or(tidb_datatype::Collation::DEFAULT)
+            string_result: match expression {
+                Expression::ScalarFunction(f)
+                    if matches!(
+                        f.func_name.lowercase(),
+                        "upper" | "ucase" | "lower" | "lcase"
+                    ) && f
+                        .ret_type
+                        .as_ref()
+                        .is_some_and(tidb_datatype::FieldType::is_binary_string) =>
+                {
+                    NativeStringResult::Bytes
                 }
-                _ => tidb_datatype::Collation::DEFAULT,
+                Expression::ScalarFunction(f) => NativeStringResult::Text(
+                    string_conditional_collation(f).unwrap_or(tidb_datatype::Collation::DEFAULT),
+                ),
+                _ => NativeStringResult::Text(tidb_datatype::Collation::DEFAULT),
             },
         })
     }
@@ -2057,7 +2116,7 @@ impl SharedExpressionExecution<'_, '_> {
                 mode,
             )
             .map_err(SharedEvaluationError::from)?;
-        native_output_with_collation(result, rows.len(), self.expression.result_collation)
+        native_output_with_string_result(result, rows.len(), self.expression.string_result)
             .map_err(SharedEvaluationError::from)
     }
 }
@@ -2184,7 +2243,7 @@ impl<'p> SharedProjectionExecution<'p, '_> {
                 .into_iter()
                 .zip(expressions)
                 .map(|(value, expr)| {
-                    native_output_with_collation(value, rows.len(), expr.result_collation)
+                    native_output_with_string_result(value, rows.len(), expr.string_result)
                         .map_err(SharedEvaluationError::from)
                 })
                 .collect()
@@ -3223,7 +3282,11 @@ fn control_type(f: &crate::scalar_function::ScalarFunction) -> Result<tipb::Fiel
 }
 
 fn native_output(result: RpnStackNode<'_>, rows: usize) -> Result<Vec<Datum>, String> {
-    native_output_with_collation(result, rows, tidb_datatype::Collation::DEFAULT)
+    native_output_with_string_result(
+        result,
+        rows,
+        NativeStringResult::Text(tidb_datatype::Collation::DEFAULT),
+    )
 }
 
 fn native_vector_result(
@@ -3242,10 +3305,10 @@ fn native_vector_result(
     Ok(Datum::new_vector_float32(vector))
 }
 
-fn native_output_with_collation(
+fn native_output_with_string_result(
     result: RpnStackNode<'_>,
     rows: usize,
-    collation: tidb_datatype::Collation,
+    string_result: NativeStringResult,
 ) -> Result<Vec<Datum>, String> {
     let unsigned = result.field_type().is_unsigned();
     let integer = |value: Option<i64>| {
@@ -3258,8 +3321,11 @@ fn native_output_with_collation(
         })
     };
     let convert = |v: Option<&[u8]>| {
-        v.map_or(Datum::Null, |v| {
-            Datum::new_collation_string(v.to_vec(), collation)
+        v.map_or(Datum::Null, |v| match string_result {
+            NativeStringResult::Text(collation) => {
+                Datum::new_collation_string(v.to_vec(), collation)
+            }
+            NativeStringResult::Bytes => Datum::new_bytes(v.to_vec()),
         })
     };
     match result {

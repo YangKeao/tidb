@@ -3026,3 +3026,82 @@ fn shared_sql_json_valid_preserves_typed_and_invalid_byte_inputs() {
     assert_eq!(actual.1, vec![vec![Int(1)]]);
     assert_eq!(shared.shared_selection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_case_conversion_preserves_go_mappings_and_binary_bytes() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE case_text (
+            id BIGINT PRIMARY KEY, b VARBINARY(30), s VARCHAR(30) CHARACTER SET utf8mb4
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO case_text VALUES
+            (1,X'614200FF','ßİﬁ'),(2,'','测试'),(3,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let native = StmtContext::for_query();
+    let sql = "SELECT UPPER(b), LCASE(b), UCASE(s), LOWER(s)
+        FROM case_text ORDER BY id LIMIT 3";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0][0].as_raw_bytes(), Some(&b"aB\0\xff"[..]));
+    assert_eq!(actual.1[0][1].as_raw_bytes(), Some(&b"aB\0\xff"[..]));
+    assert_eq!(actual.1[0][2].as_raw_bytes(), Some("ßİﬁ".as_bytes()));
+    assert_eq!(actual.1[0][3].as_raw_bytes(), Some("ßiﬁ".as_bytes()));
+    assert_eq!(actual.1[2], vec![Datum::Null; 4]);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
+
+#[test]
+fn shared_owned_case_conversion_keeps_byte_datums_and_go_decode() {
+    use tidb_ast::CiString;
+    use tidb_chunk::chunk::Chunk;
+    use tidb_datatype::{FieldType, FieldTypeCode};
+    use tidb_expr::{
+        column::Column, expression::Expression, scalar_function::ScalarFunction,
+        shared_kernel::SharedProjection, NoColumns,
+    };
+
+    let mut binary = FieldType::new(FieldTypeCode::VarString);
+    binary.set_charset_name("binary");
+    binary.set_collation_name("binary");
+    let mut utf8 = FieldType::new(FieldTypeCode::VarString);
+    utf8.set_charset_name("utf8mb4");
+    utf8.set_collation_name("utf8mb4_bin");
+    let types = [binary, utf8];
+    let mut chunk = Chunk::new_empty(&types);
+    chunk.append_bytes(0, b"a\xff");
+    chunk.append_bytes(1, b"\xe2\x82x");
+    let roots = types
+        .into_iter()
+        .enumerate()
+        .map(|(index, field_type)| {
+            let mut column = Column::new(index as i64, field_type.clone());
+            column.index = index as i64;
+            Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("upper"),
+                field_type,
+                vec![Expression::Column(column)],
+            ))
+        })
+        .collect::<Vec<_>>();
+    let expected = roots
+        .iter()
+        .map(|root| vec![root.eval(&NoColumns, chunk.get_row(0)).unwrap()])
+        .collect::<Vec<_>>();
+    let actual = SharedProjection::compile(&roots)
+        .unwrap()
+        .start_execution(&NoColumns)
+        .evaluate(&chunk, &[0], &mut Default::default())
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual[0], vec![Datum::new_bytes(b"a\xff")]);
+    assert_eq!(actual[1], vec![Datum::new_string("��X")]);
+}

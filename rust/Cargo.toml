@@ -259,6 +259,7 @@ sysinfo = { git = "https://github.com/tikv/sysinfo", branch = "0.26-fix-cpu" }
 # The SDK Git dependency and native expressions must share one datatype identity.
 [patch."https://github.com/YangKeao/tidb"]
 tidb-datatype = { path = "crates/tidb-datatype" }
+tidb-hack = { path = "crates/tidb-hack" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"        # Phase 0 is safe Rust end-to-end.
