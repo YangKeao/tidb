@@ -2691,3 +2691,42 @@ fn shared_prepared_select_rebinds_decimal_projection_on_cache_hit() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_sql_typed_null_tests_distinguish_empty_values() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE typed_nulls (id BIGINT PRIMARY KEY, v VECTOR, j JSON, s VARBINARY(16))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO typed_nulls VALUES
+            (1,'[]','null',X'FF00'),(2,NULL,NULL,NULL),(3,'[1]','{}','')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT v IS NULL, j IS NULL, s IS NULL, v IS NOT NULL, j IS NOT NULL, s IS NOT NULL
+        FROM typed_nulls ORDER BY id LIMIT 3";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let row = |is_null| {
+        (0..6)
+            .map(|i| Datum::Int(i64::from((i < 3) == is_null)))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(actual.1, vec![row(false), row(true), row(false)]);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let shared = StmtContext::for_query().with_shared_selection();
+    let sql = "SELECT id FROM (SELECT id,v,j,s FROM typed_nulls LIMIT 3) a
+        WHERE v IS NULL AND j IS NULL AND s IS NULL";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1, vec![vec![Datum::Int(2)]]);
+    assert_eq!(shared.shared_selection_counts(), Some((1, 1)));
+}

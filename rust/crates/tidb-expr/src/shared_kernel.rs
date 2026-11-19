@@ -808,13 +808,38 @@ impl SharedExpression {
                     let [operand] = f.args.as_slice() else {
                         return Err("truth tests require one operand".into());
                     };
-                    if bigint_operand_signedness(operand).is_none()
-                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
-                    {
-                        return Err(
-                            "truth tests require a BIGINT operand and signed BIGINT result".into(),
-                        );
+                    if !f.ret_type.as_ref().is_some_and(is_signed_bigint) {
+                        return Err("truth tests require a signed BIGINT result".into());
                     }
+                    let (func_meta, input) = if bigint_operand_signedness(operand).is_some() {
+                        (func_meta, Visit::BigIntOperand(operand))
+                    } else if matches!(
+                        f.func_name.lowercase(),
+                        "isnull" | "isunknown" | "isnotunknown"
+                    ) {
+                        use tidb_query_expr::impl_op::{
+                            is_null_bytes_fn_meta, is_null_json_fn_meta,
+                            is_null_vector_float32_fn_meta,
+                        };
+                        if is_shared_vector_operand(operand) {
+                            (
+                                is_null_vector_float32_fn_meta(),
+                                Visit::VectorOperand(operand),
+                            )
+                        } else if is_raw_string_operand(operand) {
+                            (is_null_bytes_fn_meta(), Visit::ByteOperand(operand))
+                        } else if matches!(operand, Expression::Column(_) | Expression::Constant(_))
+                            && operand.static_type().is_some_and(|ty| {
+                                ty.code() == tidb_datatype::FieldTypeCode::Json && !ty.is_array()
+                            })
+                        {
+                            (is_null_json_fn_meta(), Visit::JsonOperand(operand))
+                        } else {
+                            return Err("NULL test operand is outside shared admission".into());
+                        }
+                    } else {
+                        return Err("truth test requires BIGINT".into());
+                    };
                     if invert {
                         work.push(Visit::IntCall(
                             tidb_query_expr::impl_op::unary_not_int_fn_meta(),
@@ -823,7 +848,7 @@ impl SharedExpression {
                         ));
                     }
                     work.push(Visit::IntCall(func_meta, 1, false));
-                    work.push(Visit::BigIntOperand(operand));
+                    work.push(input);
                 }
                 Visit::Enter(Expression::ScalarFunction(f)) if bit_operation.is_some() => {
                     let (func_meta, arity, unsigned) = bit_operation.unwrap();
