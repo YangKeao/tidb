@@ -91,3 +91,5 @@
 - [类型化日期的星期和年内日序](weekday-year-day.zh.md)
 
 - [类型化日期的 TO_DAYS 和 TO_SECONDS](typed-day-number.zh.md)
+
+- [类型化 DAYNAME 和 MONTHNAME](calendar-names.zh.md)
