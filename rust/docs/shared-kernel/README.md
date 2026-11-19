@@ -44,3 +44,4 @@
 - [BIGINT CEIL、CEILING 和 FLOOR](bigint-integral-rounding.zh.md)
 - [BIGINT ROUND 和 TRUNCATE](bigint-round-truncate.zh.md)
 - [BIGINT MOD](bigint-mod.zh.md)
+- [BIGINT MOD 动态除数](bigint-mod-dynamic.zh.md)
