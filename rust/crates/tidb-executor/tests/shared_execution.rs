@@ -2930,3 +2930,45 @@ fn shared_sql_binary_replace_and_substring_preserve_native_boundaries() {
     assert_eq!(actual.1[4][2], Datum::Null);
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_binary_substring_index_keeps_forward_matches_and_count_domain() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE byte_delimiters (
+            id BIGINT PRIMARY KEY, s VARBINARY(20), d VARBINARY(20), n BIGINT, u BIGINT UNSIGNED
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO byte_delimiters VALUES
+            (1,'aaaaa','aa',-1,1),(2,X'8000FF00FE',X'00',-1,2),
+            (3,'a.b','.',-9223372036854775808,18446744073709551615),
+            (4,'abc','',-1,18446744073709551615),(5,'none','.',NULL,NULL),
+            (6,'abc','b',0,0),(7,NULL,'x',1,1),(8,'abc',NULL,2,2)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let native = StmtContext::for_query();
+    let sql = "SELECT SUBSTRING_INDEX(s,d,n), SUBSTRING_INDEX(s,d,u)
+        FROM byte_delimiters ORDER BY id LIMIT 8";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    for (row, expected) in actual.1.iter().zip([
+        [Some(&b"a"[..]), Some(&b""[..])],
+        [Some(&b"\xfe"[..]), Some(&b"\x80\0\xff"[..])],
+        [Some(&b"a.b"[..]); 2],
+        [Some(&b""[..]); 2],
+        [None; 2],
+        [Some(&b""[..]); 2],
+        [None; 2],
+        [None; 2],
+    ]) {
+        assert_eq!([row[0].as_raw_bytes(), row[1].as_raw_bytes()], expected);
+    }
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}

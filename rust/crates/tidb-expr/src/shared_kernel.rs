@@ -1470,6 +1470,7 @@ impl SharedExpression {
                                 | "left"
                                 | "right"
                                 | "replace"
+                                | "substring_index"
                                 | "substring"
                                 | "substr"
                                 | "mid"
@@ -1477,6 +1478,7 @@ impl SharedExpression {
                 {
                     use tidb_query_expr::impl_string::{
                         left_fn_meta, ltrim_fn_meta, native_substring_3_args_fn_meta,
+                        native_substring_index_fn_meta, native_substring_index_unsigned_fn_meta,
                         replace_fn_meta, reverse_fn_meta, right_fn_meta, rtrim_fn_meta,
                         substring_2_args_fn_meta,
                     };
@@ -1507,6 +1509,19 @@ impl SharedExpression {
                         {
                             replace_fn_meta()
                         }
+                        ("substring_index", [delimiter, count])
+                            if is_binary_string_leaf(delimiter)
+                                && matches!(
+                                    count,
+                                    Expression::Column(_) | Expression::Constant(_)
+                                ) =>
+                        {
+                            match bigint_operand_signedness(count) {
+                                Some(false) => native_substring_index_fn_meta(),
+                                Some(true) => native_substring_index_unsigned_fn_meta(),
+                                None => return Err("SUBSTRING_INDEX count requires BIGINT".into()),
+                            }
+                        }
                         ("substring" | "substr" | "mid", [start]) if signed_leaf(start) => {
                             substring_2_args_fn_meta()
                         }
@@ -1518,8 +1533,8 @@ impl SharedExpression {
                         _ => return Err("unsupported binary string operation arguments".into()),
                     };
                     work.push(Visit::BytesCall(meta, f.args.len()));
-                    work.extend(rest.iter().rev().map(|arg| {
-                        if name == "replace" {
+                    work.extend(rest.iter().enumerate().rev().map(|(index, arg)| {
+                        if name == "replace" || (name == "substring_index" && index == 0) {
                             Visit::ByteOperand(arg)
                         } else {
                             Visit::BigIntOperand(arg)
