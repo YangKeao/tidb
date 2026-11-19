@@ -141,13 +141,12 @@ impl SharedExpression {
         let batch_mixed_string_if = can_batch_mixed_string_if(expression);
         let mut row_fallback = false;
         let bytes_type = || tipb::FieldType::from(FieldTypeTp::VarString);
-        let result_operand = |value, field_type: &tipb::FieldType| {
-            if field_type.as_accessor().tp() == FieldTypeTp::VarString {
-                Visit::ByteOperand(value)
-            } else {
-                Visit::Enter(value)
-            }
-        };
+        let result_operand =
+            |value, field_type: &tipb::FieldType| match field_type.as_accessor().tp() {
+                FieldTypeTp::VarString => Visit::ByteOperand(value),
+                FieldTypeTp::TiDbVectorFloat32 => Visit::VectorOperand(value),
+                _ => Visit::Enter(value),
+            };
         while let Some(visit) = work.pop() {
             let mut truth_test = None;
             let mut byte_count = None;
@@ -319,6 +318,14 @@ impl SharedExpression {
                         }
                     };
                     nodes.push(RpnExpressionNode::ColumnRef { offset });
+                }
+                Visit::VectorOperand(Expression::Constant(c))
+                    if matches!(c.literal_value(), Some(Datum::Null)) =>
+                {
+                    nodes.push(RpnExpressionNode::Constant {
+                        value: ScalarValue::VectorFloat32(None),
+                        field_type: FieldTypeTp::TiDbVectorFloat32.into(),
+                    });
                 }
                 Visit::VectorOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::BigIntOperand(expression) => work.push(Visit::Enter(expression)),
@@ -1108,9 +1115,11 @@ impl SharedExpression {
                             ) && !ty.is_unsigned()
                                 && !ty.is_array()
                                 || is_raw_string_type(ty)
+                                || (f.pb_signature().is_none() && is_vector_type(ty))
                         })
-                        .ok_or("conditional result requires matching BIGINT, DOUBLE, DECIMAL or string")?;
+                        .ok_or("conditional result type is outside shared admission")?;
                     let string_result = is_raw_string_type(declared);
+                    let vector_result = is_vector_type(declared);
                     if string_result && string_conditional_collation(f).is_none() {
                         return Err("string conditional requires matching string results".into());
                     }
@@ -1119,6 +1128,8 @@ impl SharedExpression {
                             name == "case" && index % 2 == 0 && index + 1 < f.args.len();
                         if condition {
                             bigint_operand_signedness(arg) != Some(false)
+                        } else if vector_result {
+                            !is_vector_branch(arg)
                         } else {
                             !string_result && !matches_typed_operand(arg, declared.code())
                         }
@@ -1190,6 +1201,13 @@ impl SharedExpression {
                         work.push(Visit::Conditional(&f.args, control_type(f)?));
                         continue;
                     }
+                    if f.pb_signature().is_none()
+                        && is_vector_type(declared)
+                        && f.args[1..].iter().all(is_vector_branch)
+                    {
+                        work.push(Visit::Conditional(&f.args, control_type(f)?));
+                        continue;
+                    }
                     if !matches!(
                         declared.code(),
                         tidb_datatype::FieldTypeCode::LongLong
@@ -1238,6 +1256,10 @@ impl SharedExpression {
                         },
                         FieldTypeTp::VarString => RpnExpressionNode::Constant {
                             value: ScalarValue::Bytes(None),
+                            field_type,
+                        },
+                        FieldTypeTp::TiDbVectorFloat32 => RpnExpressionNode::Constant {
+                            value: ScalarValue::VectorFloat32(None),
                             field_type,
                         },
                         _ => RpnExpressionNode::Constant {
@@ -2603,20 +2625,28 @@ fn native_byte_count(
     })
 }
 
+fn is_vector_type(ty: &tidb_datatype::FieldType) -> bool {
+    ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32 && !ty.is_array()
+}
+
 fn is_shared_vector_operand(expression: &Expression) -> bool {
-    expression.static_type().is_some_and(|ty| {
-        ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32 && !ty.is_array()
-    }) && match expression {
-        Expression::Column(_) => true,
-        Expression::ScalarFunction(function) => {
-            function.pb_signature().is_none()
-                && matches!(
-                    function.func_name.lowercase(),
-                    "vec_from_text" | "cast_vector"
-                )
+    expression.static_type().is_some_and(is_vector_type)
+        && match expression {
+            Expression::Column(_) => true,
+            Expression::ScalarFunction(function) => {
+                function.pb_signature().is_none()
+                    && matches!(
+                        function.func_name.lowercase(),
+                        "vec_from_text" | "cast_vector" | "if" | "case" | "ifnull" | "coalesce"
+                    )
+            }
+            _ => false,
         }
-        _ => false,
-    }
+}
+
+fn is_vector_branch(expression: &Expression) -> bool {
+    matches!(expression, Expression::Constant(c) if matches!(c.literal_value(), Some(Datum::Null)))
+        || is_shared_vector_operand(expression)
 }
 
 fn is_raw_string_type(ty: &tidb_datatype::FieldType) -> bool {
@@ -2964,6 +2994,7 @@ fn control_type(f: &crate::scalar_function::ScalarFunction) -> Result<tipb::Fiel
         NativeType::Real => FieldTypeTp::Double,
         NativeType::Decimal => FieldTypeTp::NewDecimal,
         NativeType::String => FieldTypeTp::VarString,
+        NativeType::VectorFloat32 => FieldTypeTp::TiDbVectorFloat32,
         _ => return Err("IF result type is outside shared admission".into()),
     }
     .into())

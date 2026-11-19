@@ -2534,3 +2534,73 @@ fn shared_sql_cast_vector_keeps_declared_dimension_and_diagnostics() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_sql_vector_conditionals_evaluate_only_demanded_branches() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_choice (id BIGINT PRIMARY KEY, flag BIGINT, v VECTOR, s VARBINARY(80))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_choice VALUES
+            (1,1,'[-0.0,1]','broken'),(2,0,NULL,'[3,4]'),(3,NULL,NULL,NULL),(4,0,NULL,'broken')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    for (expression, expected_lengths) in [
+        ("IF(flag,v,CAST(s AS VECTOR))", [Some(2), Some(2), None]),
+        ("CASE WHEN flag THEN v END", [Some(2), None, None]),
+        ("IF(flag,v,NULL)", [Some(2), None, None]),
+        ("IFNULL(v,CAST(s AS VECTOR))", [Some(2), Some(2), None]),
+        ("COALESCE(v,CAST(s AS VECTOR))", [Some(2), Some(2), None]),
+        (
+            "VEC_DIMS(IF(flag,v,CAST(s AS VECTOR)))",
+            [Some(2), Some(2), None],
+        ),
+    ] {
+        let sql = format!("SELECT {expression} FROM vector_choice WHERE id<4 ORDER BY id LIMIT 3");
+        let shared = StmtContext::for_query().with_shared_projection();
+        let actual = run_select_meta_on(&sql, &catalog, &shared).unwrap();
+        let expected = run_select_meta_on(&sql, &catalog, &native).unwrap();
+        assert_eq!(actual, expected, "{expression}");
+        for ((a, b), length) in actual.1.iter().zip(&expected.1).zip(expected_lengths) {
+            match (&a[0], &b[0], length) {
+                (Datum::Null, Datum::Null, None) => {}
+                (Datum::Int(value), _, Some(length)) => assert_eq!(*value, length as i64),
+                (Datum::VectorFloat32(a), Datum::VectorFloat32(b), Some(length)) => {
+                    assert_eq!(a.elements().len(), length);
+                    assert_eq!(a.serialize(), b.serialize());
+                }
+                _ => panic!("wrong result for {expression}: {a:?}"),
+            }
+        }
+        assert_eq!(
+            shared.shared_projection_counts(),
+            Some((1, 1)),
+            "{expression}"
+        );
+    }
+    for expression in [
+        "IF(flag,v,CAST(s AS VECTOR))",
+        "CASE WHEN flag THEN v ELSE CAST(s AS VECTOR) END",
+        "IFNULL(v,CAST(s AS VECTOR))",
+        "COALESCE(v,CAST(s AS VECTOR))",
+    ] {
+        let shared = StmtContext::for_query().with_shared_projection();
+        let sql = format!("SELECT {expression} FROM vector_choice WHERE id=4");
+        let actual = run_select_meta_on(&sql, &catalog, &shared).map_err(|e| e.to_mysql_error());
+        let expected = run_select_meta_on(&sql, &catalog, &native).map_err(|e| e.to_mysql_error());
+        assert_eq!(actual.as_ref().unwrap_err().code, 1105);
+        assert_eq!(actual, expected);
+        assert_eq!(
+            shared.shared_projection_counts(),
+            Some((1, 1)),
+            "{expression}"
+        );
+    }
+}
