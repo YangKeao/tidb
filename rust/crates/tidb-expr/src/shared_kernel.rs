@@ -841,6 +841,8 @@ impl SharedExpression {
                             && [left, right].into_iter().all(is_binary_string_leaf)
                         {
                             Some(ComparisonOperands::Binary)
+                        } else if [left, right].into_iter().all(is_shared_vector_operand) {
+                            Some(ComparisonOperands::Vector)
                         } else {
                             None
                         };
@@ -849,10 +851,13 @@ impl SharedExpression {
                                 return Err("comparison requires a signed BIGINT result".into());
                             }
                             let binary = matches!(operands, ComparisonOperands::Binary);
+                            let vector = matches!(operands, ComparisonOperands::Vector);
                             work.push(Visit::Compare(name, operands, None));
                             work.extend([right, left].into_iter().map(|arg| {
                                 if binary {
                                     Visit::ByteOperand(arg)
+                                } else if vector {
+                                    Visit::VectorOperand(arg)
                                 } else {
                                     Visit::Enter(arg)
                                 }
@@ -2710,13 +2715,14 @@ enum ComparisonOperands {
     Double,
     Decimal,
     Binary,
+    Vector,
 }
 
 fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNode {
     use tidb_query_datatype::codec::collation::collator::CollatorBinary;
     use tidb_query_expr::impl_compare::{
-        compare_bytes_fn_meta, CmpOp, CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe,
-        CmpOpNullEq,
+        compare_bytes_fn_meta, compare_vector_float32_fn_meta, CmpOp, CmpOpEq, CmpOpGe, CmpOpGt,
+        CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq,
     };
     use tidb_query_expr::{
         integer_comparison_fn_meta, native_decimal_comparison_node, native_real_comparison_node,
@@ -2734,6 +2740,12 @@ fn comparison_node(name: &str, operands: ComparisonOperands) -> RpnExpressionNod
             },
             ComparisonOperands::Double => native_real_comparison_node::<F>(),
             ComparisonOperands::Decimal => native_decimal_comparison_node::<F>(),
+            ComparisonOperands::Vector => RpnExpressionNode::FnCall {
+                func_meta: compare_vector_float32_fn_meta::<F>(),
+                args_len: 2,
+                field_type: FieldTypeTp::LongLong.into(),
+                metadata: Box::new(()),
+            },
             ComparisonOperands::Binary => RpnExpressionNode::FnCall {
                 func_meta: compare_bytes_fn_meta::<CollatorBinary, F>(),
                 args_len: 2,

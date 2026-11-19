@@ -2440,3 +2440,45 @@ fn shared_sql_vector_program_composes_parse_and_calculation() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_sql_vector_comparison_uses_lexical_order_and_null() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_cmp (id BIGINT PRIMARY KEY, a VECTOR, b VECTOR)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_cmp VALUES
+            (1,'[1]','[1,0]'),(2,'[-0.0]','[0.0]'),(3,NULL,NULL),(4,NULL,'[]'),(5,'[2]','[1,9]')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT a=b,a<>b,a<b,a<=b,a>b,a>=b,a<=>b FROM vector_cmp ORDER BY id LIMIT 5";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Int(0), Int(1), Int(1), Int(1), Int(0), Int(0), Int(0)],
+            vec![Int(1), Int(0), Int(0), Int(1), Int(0), Int(1), Int(1)],
+            vec![Null, Null, Null, Null, Null, Null, Int(1)],
+            vec![Null, Null, Null, Null, Null, Null, Int(0)],
+            vec![Int(0), Int(1), Int(0), Int(0), Int(1), Int(1), Int(0)],
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let shared = StmtContext::for_query().with_shared_selection();
+    let sql = "SELECT id FROM (SELECT id,a,b FROM vector_cmp ORDER BY id LIMIT 5) q WHERE a<b ORDER BY id";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1, [vec![Int(1)]]);
+    assert_eq!(shared.shared_selection_counts(), Some((1, 1)));
+}
