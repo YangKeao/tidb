@@ -98,6 +98,7 @@ impl SharedExpression {
             VectorOperand(&'a Expression),
             VectorNorm,
             VectorFromText(Option<i32>),
+            VectorArithmetic(tidb_query_expr::RpnFnMeta),
             VectorDistance(tidb_query_expr::impl_vec::NativeVectorDistance),
             JsonOperand(&'a Expression),
             JsonType,
@@ -623,6 +624,37 @@ impl SharedExpression {
                     seeded,
                     constant_seed,
                     field_type: FieldTypeTp::Double.into(),
+                }),
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "plus" | "minus" | "mul")
+                        && f.ret_type.as_ref().is_some_and(is_vector_type) =>
+                {
+                    use tidb_query_expr::impl_vec::{
+                        native_vec_add_fn_meta, native_vec_mul_fn_meta, native_vec_sub_fn_meta,
+                    };
+
+                    let [left, right] = f.args.as_slice() else {
+                        return Err("vector arithmetic requires two operands".into());
+                    };
+                    if !is_shared_vector_operand(left) || !is_shared_vector_operand(right) {
+                        return Err("vector arithmetic requires typed vector operands".into());
+                    }
+                    let meta = match f.func_name.lowercase() {
+                        "plus" => native_vec_add_fn_meta(),
+                        "minus" => native_vec_sub_fn_meta(),
+                        _ => native_vec_mul_fn_meta(),
+                    };
+                    row_fallback = true;
+                    work.push(Visit::VectorArithmetic(meta));
+                    work.push(Visit::VectorOperand(right));
+                    work.push(Visit::VectorOperand(left));
+                }
+                Visit::VectorArithmetic(func_meta) => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta,
+                    args_len: 2,
+                    field_type: FieldTypeTp::TiDbVectorFloat32.into(),
+                    metadata: Box::new(()),
                 }),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if matches!(f.func_name.lowercase(), "plus" | "minus" | "mul" | "div") =>
@@ -2662,7 +2694,15 @@ fn is_shared_vector_operand(expression: &Expression) -> bool {
                 function.pb_signature().is_none()
                     && matches!(
                         function.func_name.lowercase(),
-                        "vec_from_text" | "cast_vector" | "if" | "case" | "ifnull" | "coalesce"
+                        "vec_from_text"
+                            | "cast_vector"
+                            | "if"
+                            | "case"
+                            | "ifnull"
+                            | "coalesce"
+                            | "plus"
+                            | "minus"
+                            | "mul"
                     )
             }
             _ => false,

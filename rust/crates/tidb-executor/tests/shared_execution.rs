@@ -2730,3 +2730,64 @@ fn shared_sql_typed_null_tests_distinguish_empty_values() {
     assert_eq!(actual.1, vec![vec![Datum::Int(2)]]);
     assert_eq!(shared.shared_selection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_vector_arithmetic_preserves_output_and_error_order() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_arithmetic (id BIGINT PRIMARY KEY, a VECTOR, b VECTOR, s VARBINARY(80))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_arithmetic VALUES
+            (1,'[-0.0,2]','[-0.0,3]','[0,1]'),(2,NULL,'[1]','broken'),(3,'[]','[]','[]'),
+            (4,'[1]','[2,3]',''),(5,'[3e38]','[3e38]','')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT a+b, a-b, a*b, VEC_DIMS(a+b) FROM vector_arithmetic
+        WHERE id<4 ORDER BY id LIMIT 3";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    let expected = run_select_meta_on(sql, &catalog, &native).unwrap();
+    assert_eq!(actual, expected);
+    for row in [0, 2] {
+        for col in 0..3 {
+            let (Datum::VectorFloat32(a), Datum::VectorFloat32(b)) =
+                (&actual.1[row][col], &expected.1[row][col])
+            else {
+                panic!("expected vector result");
+            };
+            assert_eq!(a.serialize(), b.serialize());
+        }
+    }
+    assert_eq!(actual.1[0][3], Datum::Int(2));
+    assert_eq!(actual.1[1], vec![Datum::Null; 4]);
+    assert_eq!(actual.1[2][3], Datum::Int(0));
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    for (expression, row) in [
+        ("a+CAST(s AS VECTOR)", 2),
+        ("a+b", 4),
+        ("a-b", 4),
+        ("a*b", 4),
+        ("a+b", 5),
+        ("a*b", 5),
+    ] {
+        let shared = StmtContext::for_query().with_shared_projection();
+        let sql = format!("SELECT {expression} FROM vector_arithmetic WHERE id={row}");
+        let actual = run_select_meta_on(&sql, &catalog, &shared).map_err(|e| e.to_mysql_error());
+        let expected = run_select_meta_on(&sql, &catalog, &native).map_err(|e| e.to_mysql_error());
+        assert_eq!(
+            actual.as_ref().unwrap_err().code,
+            1105,
+            "{expression}, row {row}"
+        );
+        assert_eq!(actual, expected, "{expression}, row {row}");
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}
