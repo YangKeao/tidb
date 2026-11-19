@@ -59,3 +59,4 @@
 - [类型化向量、JSON 和字符串的空值判断](typed-null-tests.zh.md)
 - [类型化向量加、减和乘](native-vector-arithmetic.zh.md)
 - [Unistore 的 BIGINT 比较符号组合](unistore-integer-signs.zh.md)
+- [CRC32 与 UNCOMPRESSED_LENGTH](byte-checksum-length.zh.md)
