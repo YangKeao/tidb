@@ -183,7 +183,7 @@ impl SelectionExec<crate::StmtContext> {
         let admitted = match self.ctx.statement_class() {
             StatementClass::Select => true,
             StatementClass::Update | StatementClass::Delete => {
-                self.filters.iter().all(is_shared_write_comparison)
+                self.filters.iter().all(is_direct_signed_bigint_comparison)
             }
             _ => false,
         };
@@ -209,7 +209,7 @@ impl SelectionExec<crate::StmtContext> {
 }
 
 #[cfg(feature = "shared-kernel")]
-fn is_shared_write_comparison(expression: &Expression) -> bool {
+pub(crate) fn is_direct_signed_bigint_comparison(expression: &Expression) -> bool {
     let Expression::ScalarFunction(function) = expression else {
         return false;
     };

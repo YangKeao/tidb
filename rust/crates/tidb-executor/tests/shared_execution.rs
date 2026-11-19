@@ -3372,3 +3372,103 @@ fn shared_write_selection_preserves_nulls_order_and_changed_rows() {
         ]
     );
 }
+
+#[test]
+fn shared_hash_join_v2_residual_preserves_inner_and_outer_rows() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    use tidb_planner::find_best_task::coster::CostEnv;
+
+    let mut catalog = Catalog::default();
+    let setup = StmtContext::for_query();
+    for table in ["residual_left", "residual_right"] {
+        run_create_table_on(
+            &format!("CREATE TABLE {table} (id BIGINT PRIMARY KEY, k BIGINT, v BIGINT)"),
+            &mut catalog,
+        )
+        .unwrap();
+    }
+    run_insert_on(
+        "INSERT INTO residual_left VALUES (1,1,2),(2,1,3),(3,1,NULL),(4,2,0)",
+        &mut catalog,
+        &setup,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO residual_right VALUES (11,1,3),(12,1,4),(13,1,NULL),(14,3,0)",
+        &mut catalog,
+        &setup,
+    )
+    .unwrap();
+
+    let context = |v2| {
+        let mut env = CostEnv::default();
+        env.session.use_hash_join_v2 = v2;
+        StmtContext::for_query()
+            .with_optimizer_cost_env(env)
+            .with_executor_chunk_sizes(1, 2)
+    };
+    use Datum::{Int, Null};
+    let matches = vec![
+        vec![Int(1), Int(11)],
+        vec![Int(1), Int(12)],
+        vec![Int(2), Int(12)],
+    ];
+    for (join, expected) in [
+        ("JOIN", matches.clone()),
+        (
+            "LEFT JOIN",
+            [
+                matches.clone(),
+                vec![vec![Int(3), Null], vec![Int(4), Null]],
+            ]
+            .concat(),
+        ),
+        (
+            "RIGHT JOIN",
+            [vec![vec![Null, Int(13)], vec![Null, Int(14)]], matches].concat(),
+        ),
+    ] {
+        let sql = format!(
+            "SELECT /*+ HASH_JOIN(l,r) */ l.id,r.id FROM residual_left l {join} residual_right r
+             ON l.k=r.k AND l.v<r.v"
+        );
+        let original = context(true);
+        let shared = context(true).with_shared_selection();
+        let legacy = context(false).with_shared_selection();
+        let run = |context| {
+            let (fields, mut rows) = run_select_meta_on(&sql, &catalog, context).unwrap();
+            let key = |datum: &Datum| match datum {
+                Int(value) => Some(*value),
+                Null => None,
+                _ => panic!("expected nullable BIGINT"),
+            };
+            rows.sort_by_key(|row| (key(&row[0]), key(&row[1])));
+            (fields, rows)
+        };
+        let actual = run(&shared);
+        assert_eq!(actual, run(&original));
+        assert_eq!(actual, run(&legacy));
+        assert_eq!(actual.1, expected);
+        assert_eq!(shared.take_warnings(), original.take_warnings());
+        assert_eq!(legacy.shared_selection_counts(), Some((0, 0)));
+        let (programs, batches) = shared.shared_selection_counts().unwrap();
+        assert!(
+            programs > 0 && batches > 1,
+            "{join}: {programs} plans, {batches} batches"
+        );
+    }
+
+    let sql = "SELECT l.id FROM residual_left l WHERE NOT EXISTS (
+        SELECT 1 FROM residual_right r WHERE r.k=l.k AND l.v<r.v
+    ) ORDER BY l.id";
+    let shared = context(true).with_shared_selection();
+    let original = context(true);
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(
+        actual,
+        run_select_meta_on(sql, &catalog, &original).unwrap()
+    );
+    assert_eq!(actual.1, vec![vec![Int(3)], vec![Int(4)]]);
+    assert_eq!(shared.take_warnings(), original.take_warnings());
+    assert_eq!(shared.shared_selection_counts(), Some((0, 0)));
+}

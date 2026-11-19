@@ -3286,7 +3286,7 @@ fn build_hash_join_v2(
             .map(|&index| output_schema.columns[index].clone())
             .collect(),
     );
-    let mut executor: Box<dyn Executor> = Box::new(HashJoinV2Executor::new(
+    let executor = HashJoinV2Executor::new(
         meta(ctx, plan, native_schema),
         HashJoinV2Plan {
             concurrency: join.concurrency,
@@ -3309,7 +3309,10 @@ fn build_hash_join_v2(
         right,
         ctx.clone(),
         ctx.statement_memory(),
-    ));
+    );
+    #[cfg(feature = "shared-kernel")]
+    let executor = executor.with_shared_selection();
+    let mut executor: Box<dyn Executor> = Box::new(executor);
     if output_order
         .iter()
         .enumerate()

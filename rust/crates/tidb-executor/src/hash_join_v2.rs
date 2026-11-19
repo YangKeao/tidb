@@ -1115,11 +1115,11 @@ fn collect_outer_join_candidates_mode<
 /// The scratch schema keeps original left columns followed by right columns.
 pub struct JoinOtherCondition<'a> {
     chunk: Chunk,
-    evaluate: Box<
-        dyn Fn(&Chunk, Vec<bool>, Vec<bool>, bool) -> Result<(Vec<bool>, Vec<bool>), ProbeError>
-            + 'a,
-    >,
+    evaluate: Box<JoinConditionEvaluator<'a>>,
 }
+
+type JoinConditionEvaluator<'a> = dyn FnMut(&Chunk, Vec<bool>, Vec<bool>, bool) -> Result<(Vec<bool>, Vec<bool>), ProbeError>
+    + 'a;
 
 impl<'a> JoinOtherCondition<'a> {
     /// Binds the statement expression context once per probe worker.
@@ -1130,15 +1130,10 @@ impl<'a> JoinOtherCondition<'a> {
         max_chunk_size: usize,
         vectorized: bool,
     ) -> Self {
-        let mut chunk = Chunk::new(
+        Self::with_evaluator(
             joined_types,
-            tidb_chunk::chunk::INITIAL_CAPACITY,
             max_chunk_size,
-        );
-        chunk.set_incomplete_chunk(true);
-        Self {
-            chunk,
-            evaluate: Box::new(move |chunk, selected, nulls, consider_null| {
+            Box::new(move |chunk, selected, nulls, consider_null| {
                 if consider_null {
                     tidb_expr::evaluator::vec_eval_bool(
                         &context,
@@ -1160,7 +1155,51 @@ impl<'a> JoinOtherCondition<'a> {
                 }
                 .map_err(ProbeError::Expression)
             }),
-        }
+        )
+    }
+
+    fn with_evaluator(
+        joined_types: &[tidb_datatype::FieldType],
+        max_chunk_size: usize,
+        evaluate: Box<JoinConditionEvaluator<'a>>,
+    ) -> Self {
+        let mut chunk = Chunk::new(
+            joined_types,
+            tidb_chunk::chunk::INITIAL_CAPACITY,
+            max_chunk_size,
+        );
+        chunk.set_incomplete_chunk(true);
+        Self { chunk, evaluate }
+    }
+
+    #[cfg(feature = "shared-kernel")]
+    fn new_shared<C: tidb_expr::Columns + 'a>(
+        context: C,
+        predicates: &[tidb_expr::expression::Expression],
+        joined_types: &[tidb_datatype::FieldType],
+        max_chunk_size: usize,
+        counts: std::sync::Arc<crate::stmt_context::SharedProgramCounts>,
+    ) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        use tidb_expr::shared_kernel::SharedProjection;
+
+        let program = SharedProjection::compile_selection(predicates, joined_types).ok()?;
+        let mut execution = program.into_owned_execution(context);
+        let predicates = predicates.to_vec();
+        counts.programs.fetch_add(1, Ordering::Relaxed);
+        Some(Self::with_evaluator(
+            joined_types,
+            max_chunk_size,
+            Box::new(move |chunk, mut selected, nulls, consider_null| {
+                debug_assert!(!consider_null);
+                counts.batches.fetch_add(1, Ordering::Relaxed);
+                execution
+                    .evaluate_selection_mask(&predicates, chunk, &mut selected)
+                    .map_err(crate::ExecError::from)?;
+                // Inner and outer probes only consume the selected mask.
+                Ok((selected, nulls))
+            }),
+        ))
     }
 
     /// Retained scratch-column storage for the owning worker's memory tracker.

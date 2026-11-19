@@ -82,6 +82,8 @@ pub struct HashJoinV2Executor<C> {
     plan: Arc<HashJoinV2Plan>,
     children: [Option<Box<dyn Executor>>; 2],
     context: C,
+    #[cfg(feature = "shared-kernel")]
+    shared_selection: Option<Arc<crate::stmt_context::SharedProgramCounts>>,
     memory: StatementMemory,
     runtime: Option<Arc<Runtime>>,
     probe: Option<ProbeStage>,
@@ -103,6 +105,8 @@ impl<C> HashJoinV2Executor<C> {
             plan: Arc::new(plan),
             children: [Some(left), Some(right)],
             context,
+            #[cfg(feature = "shared-kernel")]
+            shared_selection: None,
             memory,
             runtime: None,
             probe: None,
@@ -269,6 +273,32 @@ impl<C> HashJoinV2Executor<C> {
     }
 }
 
+#[cfg(feature = "shared-kernel")]
+impl HashJoinV2Executor<crate::StmtContext> {
+    pub(crate) fn with_shared_selection(mut self) -> Self {
+        use crate::stmt_context::StatementClass;
+        use tidb_expr::shared_kernel::SharedProjection;
+
+        if self.context.statement_class() == StatementClass::Select
+            && self.plan.vectorized
+            && matches!(
+                self.plan.join_type,
+                JoinType::Inner | JoinType::LeftOuter | JoinType::RightOuter
+            )
+            && (1..=SharedProjection::MAX_BATCH_SIZE).contains(&self.meta.max_chunk_size())
+            && !self.plan.other_condition.is_empty()
+            && self
+                .plan
+                .other_condition
+                .iter()
+                .all(crate::selection::is_direct_signed_bigint_comparison)
+        {
+            self.shared_selection = self.context.shared_selection.clone();
+        }
+        self
+    }
+}
+
 impl<C: Columns + Clone + Send + Sync + 'static> HashJoinV2Executor<C> {
     fn prepare(&mut self, required_rows: usize) -> Result<(), ExecError> {
         let plan = &self.plan;
@@ -378,6 +408,8 @@ impl<C: Columns + Clone + Send + Sync + 'static> HashJoinV2Executor<C> {
         let shared = Arc::clone(runtime);
         let plan = Arc::clone(plan);
         let context = self.context.clone();
+        #[cfg(feature = "shared-kernel")]
+        let shared_selection = self.shared_selection.clone();
         let max_chunk_size = self.meta.max_chunk_size();
         let build_state = runtime
             .build_state
@@ -426,6 +458,18 @@ impl<C: Columns + Clone + Send + Sync + 'static> HashJoinV2Executor<C> {
                     JoinFilter::new(context.clone(), plan.probe_filter.clone(), plan.vectorized)
                 });
                 let condition = (!plan.other_condition.is_empty()).then(|| {
+                    #[cfg(feature = "shared-kernel")]
+                    if let Some(condition) = shared_selection.as_ref().and_then(|counts| {
+                        JoinOtherCondition::new_shared(
+                            context.clone(),
+                            &plan.other_condition,
+                            &runtime.joined_types,
+                            max_chunk_size,
+                            Arc::clone(counts),
+                        )
+                    }) {
+                        return condition;
+                    }
                     JoinOtherCondition::new(
                         context.clone(),
                         plan.other_condition.clone(),
