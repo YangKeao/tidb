@@ -3731,3 +3731,79 @@ fn shared_bigint_xor_and_negation_keep_null_and_overflow() {
         vec![vec![Datum::Decimal(Decimal::from_uint(1_u64 << 63))]]
     );
 }
+
+#[test]
+fn shared_any_value_preserves_typed_column_identity() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let native = StmtContext::for_query().with_only_full_group_by(true);
+    run_create_table_on(
+        "CREATE TABLE any_values (
+            id BIGINT PRIMARY KEY, i BIGINT, u BIGINT UNSIGNED, r DOUBLE, d DECIMAL(31,9),
+            t DATETIME(6), s VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+            b VARBINARY(20), j JSON, v VECTOR
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO any_values VALUES
+            (1,-5,18446744073709551615,-1.5,12345678901234567890.123456789,
+             '2020-01-02 03:04:05.678901','图',X'FF0001','{\"x\":[1,null]}','[-0.0,1.25]'),
+            (2,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+
+    let sql = "SELECT ANY_VALUE(i),ANY_VALUE(u),ANY_VALUE(r),ANY_VALUE(d),ANY_VALUE(t),
+                      ANY_VALUE(s),ANY_VALUE(b),ANY_VALUE(j),ANY_VALUE(v)
+               FROM any_values ORDER BY id LIMIT 2";
+    let shared = native.clone().with_shared_projection();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let direct = run_select_meta_on(
+        "SELECT i,u,r,d,t,s,b,j,v FROM any_values ORDER BY id LIMIT 2",
+        &catalog,
+        &native,
+    )
+    .unwrap();
+    for (column, ((_, actual_ty), (_, direct_ty))) in actual.0.iter().zip(&direct.0).enumerate() {
+        if column != 6 {
+            assert_eq!(actual_ty, direct_ty);
+            assert_eq!(actual.1[0][column], direct.1[0][column]);
+        }
+    }
+    let Datum::String(binary) = &actual.1[0][6] else {
+        panic!("expected raw byte string");
+    };
+    assert_eq!(binary.bytes(), &[0xff, 0, 1]);
+    assert_eq!(actual.1[1], vec![Datum::Null; 9]);
+    let (Datum::Json(actual_json), Datum::Json(direct_json)) = (&actual.1[0][7], &direct.1[0][7])
+    else {
+        panic!("expected JSON datums");
+    };
+    assert_eq!(actual_json.type_code(), direct_json.type_code());
+    assert_eq!(actual_json.value(), direct_json.value());
+    let (Datum::VectorFloat32(actual_vector), Datum::VectorFloat32(direct_vector)) =
+        (&actual.1[0][8], &direct.1[0][8])
+    else {
+        panic!("expected vector datums");
+    };
+    assert_eq!(actual_vector.serialize(), direct_vector.serialize());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+
+    let sql = "SELECT ANY_VALUE(i),COUNT(*) FROM any_values GROUP BY s ORDER BY MIN(id)";
+    let shared = native.clone().with_shared_projection();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(
+        actual.1,
+        vec![
+            vec![Datum::Int(-5), Datum::Int(1)],
+            vec![Datum::Null, Datum::Int(1)]
+        ]
+    );
+}

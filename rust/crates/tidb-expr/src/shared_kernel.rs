@@ -173,7 +173,8 @@ impl SharedExpression {
                     || integer_operator.is_some()
                     || matches!(
                         f.func_name.lowercase(),
-                        "json_valid"
+                        "any_value"
+                            | "json_valid"
                             | "upper"
                             | "ucase"
                             | "lower"
@@ -351,6 +352,39 @@ impl SharedExpression {
                 }
                 Visit::VectorOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::BigIntOperand(expression) => work.push(Visit::Enter(expression)),
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "any_value" =>
+                {
+                    use tidb_datatype::FieldTypeCode;
+
+                    let [column @ Expression::Column(_)] = f.args.as_slice() else {
+                        return Err("ANY_VALUE requires a typed column".into());
+                    };
+                    let ty = column
+                        .static_type()
+                        .filter(|ty| !ty.is_array())
+                        .ok_or("ANY_VALUE requires a column declaration")?;
+                    let result = f
+                        .ret_type
+                        .as_ref()
+                        .ok_or("ANY_VALUE requires a result declaration")?;
+                    // The native planner can assign a different collation to the result
+                    // while the function still returns its argument's unmodified bytes.
+                    if ty != result
+                        && (!is_raw_string_type(ty)
+                            || &ty.clone().with_collation(result.collation()) != result)
+                    {
+                        return Err("ANY_VALUE requires matching value types".into());
+                    }
+                    let input = match ty.code() {
+                        FieldTypeCode::LongLong => Visit::BigIntOperand(column),
+                        FieldTypeCode::Json => Visit::JsonOperand(column),
+                        FieldTypeCode::VectorFloat32 => Visit::VectorOperand(column),
+                        _ if is_raw_string_type(ty) => Visit::ByteOperand(column),
+                        _ => Visit::Enter(column),
+                    };
+                    work.push(input);
+                }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
                         && matches!(
@@ -1987,6 +2021,9 @@ impl SharedExpression {
                 {
                     NativeStringResult::Bytes
                 }
+                Expression::ScalarFunction(f) if f.func_name.lowercase() == "any_value" => {
+                    NativeStringResult::Text(f.args[0].static_type().unwrap().collation())
+                }
                 Expression::ScalarFunction(f) => NativeStringResult::Text(
                     string_conditional_collation(f).unwrap_or(tidb_datatype::Collation::DEFAULT),
                 ),
@@ -3452,6 +3489,20 @@ fn native_output_with_string_result(
                     })
                     .collect());
             }
+            if let VectorValue::Json(values) = values {
+                return Ok((0..rows)
+                    .map(|r| {
+                        values
+                            .get(value.logical_rows()[r])
+                            .map_or(Datum::Null, |json| {
+                                Datum::Json(tidb_datatype::BinaryJSON::from_encoded_parts(
+                                    json.get_type() as u8,
+                                    json.value(),
+                                ))
+                            })
+                    })
+                    .collect());
+            }
             if let VectorValue::VectorFloat32(values) = values {
                 return (0..rows)
                     .map(|r| native_vector_result(values.get(value.logical_rows()[r])))
@@ -3479,6 +3530,41 @@ mod tests {
     fn native_type() -> FieldType {
         FieldType::new(tidb_datatype::FieldTypeCode::VarString)
     }
+    #[test]
+    fn any_value_owned_output_preserves_the_column_collation() {
+        for collation in [
+            tidb_datatype::Collation::Binary,
+            tidb_datatype::Collation::Utf8Mb4Bin,
+        ] {
+            let ty = native_type().with_collation(collation);
+            let mut column = Column::new(1, ty.clone());
+            column.index = 0;
+            let expression = Expression::ScalarFunction(ScalarFunction::new(
+                CiString::new("any_value"),
+                ty.clone()
+                    .with_collation(tidb_datatype::Collation::Utf8Mb4Bin),
+                vec![Expression::Column(column)],
+            ));
+            let shared = SharedExpression::compile(&expression).unwrap();
+            let mut input = Chunk::new_with_capacity(&[ty], 1);
+            input.append_bytes(0, &[0xff, 0, 1]);
+            let actual = shared
+                .evaluate(&input, &[0], &mut EvalContext::default())
+                .unwrap();
+            let [Datum::String(value)] = actual.as_slice() else {
+                panic!("expected the original string datum");
+            };
+            assert_eq!(value.bytes(), &[0xff, 0, 1]);
+            assert_eq!(value.collation(), collation);
+            assert_eq!(
+                actual,
+                vec![expression
+                    .eval(&crate::NoColumns, input.get_row(0))
+                    .unwrap()]
+            );
+        }
+    }
+
     fn md5(arg: Expression) -> Expression {
         Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("md5"),
