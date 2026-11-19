@@ -3149,6 +3149,8 @@ fn run_update_with_physical(
                 }
             }
         };
+        #[cfg(feature = "shared-kernel")]
+        let expression = expression.with_shared_pure_arithmetic(ctx);
         set_exprs.push((*offset, expression));
     }
     let on_update_now =
@@ -3583,7 +3585,6 @@ impl UpdateRowEvaluator<'_> {
         let physical_chunk = physical_input
             .map(|(values, field_types)| row_chunk(values, field_types))
             .transpose()?;
-        let physical_row = physical_chunk.as_ref().map(|chunk| chunk.get_row(0));
         if let Some(predicate) = self.predicate {
             let selected = predicate.eval(row, self.catalog, self.current_db, self.ctx)?;
             if !datum_is_true(&selected) {
@@ -3606,8 +3607,8 @@ impl UpdateRowEvaluator<'_> {
         for (offset, expr) in self.set_exprs {
             let value = expr.eval(
                 row,
-                chunk.get_row(0),
-                physical_row,
+                &chunk,
+                physical_chunk.as_ref(),
                 self.catalog,
                 self.current_db,
                 self.ctx,

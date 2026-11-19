@@ -1014,7 +1014,7 @@ context_configuration! {
         self
     }
 
-    /// Enables the shared serial projection experiment for this statement.
+    /// Enables the shared serial projection and typed UPDATE assignment experiments.
     #[cfg(feature = "shared-kernel")]
     #[must_use]
     pub fn with_shared_projection(mut self) -> Self {
@@ -2093,7 +2093,7 @@ impl StmtContext {
         self.statement_class
     }
 
-    /// Returns the number of shared projection programs selected and batches attempted.
+    /// Returns the shared projection and UPDATE assignment program and invocation counts.
     #[cfg(feature = "shared-kernel")]
     pub fn shared_projection_counts(&self) -> Option<(u64, u64)> {
         self.shared_projection

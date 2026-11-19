@@ -105,6 +105,11 @@ pub(super) enum UpdateExpression {
     Scalar(Expression),
     Physical(Expression),
     Applied(DmlExpression),
+    #[cfg(feature = "shared-kernel")]
+    Shared {
+        program: Box<tidb_expr::shared_kernel::SharedExpression>,
+        uses_physical_input: bool,
+    },
 }
 
 impl UpdateExpression {
@@ -120,30 +125,95 @@ impl UpdateExpression {
         Self::Physical(expression)
     }
 
+    #[cfg(feature = "shared-kernel")]
+    pub(super) fn with_shared_pure_arithmetic(self, ctx: &crate::StmtContext) -> Self {
+        use std::sync::atomic::Ordering;
+        use tidb_expr::shared_kernel::SharedExpression;
+
+        let Some(counts) = &ctx.shared_projection else {
+            return self;
+        };
+        let (expression, uses_physical_input) = match &self {
+            Self::Scalar(expression) => (expression, false),
+            Self::Physical(expression) => (expression, true),
+            _ => return self,
+        };
+        let Expression::ScalarFunction(function) = expression else {
+            return self;
+        };
+        let signed_bigint = |expression: &Expression| {
+            expression.static_type().is_some_and(|ty| {
+                ty.code() == tidb_datatype::FieldTypeCode::LongLong
+                    && !ty.is_unsigned()
+                    && !ty.is_array()
+            })
+        };
+        // This entry evaluates one write-row value at a time. Direct typed
+        // integer operands have no session effects and no scalar/vector
+        // demand differences observable at the assignment boundary.
+        if function.pb_signature().is_some()
+            || !matches!(function.func_name.lowercase(), "plus" | "minus" | "mul")
+            || function.args.len() != 2
+            || !signed_bigint(expression)
+            || !function.args.iter().all(|arg| {
+                signed_bigint(arg) && matches!(arg, Expression::Column(_) | Expression::Constant(_))
+            })
+        {
+            return self;
+        }
+        let Ok(program) = SharedExpression::compile(expression) else {
+            return self;
+        };
+        counts.programs.fetch_add(1, Ordering::Relaxed);
+        Self::Shared {
+            program: Box::new(program),
+            uses_physical_input,
+        }
+    }
+
     pub(super) fn eval(
         &self,
         row: &[Datum],
-        scalar_row: tidb_chunk::row::Row<'_>,
-        physical_row: Option<tidb_chunk::row::Row<'_>>,
+        scalar_chunk: &tidb_chunk::chunk::Chunk,
+        physical_chunk: Option<&tidb_chunk::chunk::Chunk>,
         catalog: &Catalog,
         current_db: &str,
         ctx: &crate::StmtContext,
     ) -> Result<Datum, DriverError> {
+        let require_physical = || {
+            physical_chunk.ok_or_else(|| {
+                DriverError::unsupported("a planned UPDATE expression has no physical input row")
+            })
+        };
         match self {
             Self::Scalar(expression) => expression
-                .eval(ctx, scalar_row)
+                .eval(ctx, scalar_chunk.get_row(0))
                 .map_err(|error| DriverError::Exec(ExecError::Eval(error))),
             Self::Physical(expression) => expression
-                .eval(
-                    ctx,
-                    physical_row.ok_or_else(|| {
-                        DriverError::unsupported(
-                            "a planned UPDATE expression has no physical input row",
-                        )
-                    })?,
-                )
+                .eval(ctx, require_physical()?.get_row(0))
                 .map_err(|error| DriverError::Exec(ExecError::Eval(error))),
             Self::Applied(expression) => expression.eval(row, catalog, current_db, ctx),
+            #[cfg(feature = "shared-kernel")]
+            Self::Shared {
+                program,
+                uses_physical_input,
+            } => {
+                if let Some(counts) = &ctx.shared_projection {
+                    counts
+                        .batches
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                let input = if *uses_physical_input {
+                    require_physical()?
+                } else {
+                    scalar_chunk
+                };
+                program
+                    .evaluate(input, &[0], &mut Default::default())
+                    .map_err(ExecError::from)?
+                    .pop()
+                    .ok_or_else(|| DriverError::unsupported("shared UPDATE returned no value"))
+            }
         }
     }
 }

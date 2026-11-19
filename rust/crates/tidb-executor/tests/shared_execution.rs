@@ -3145,3 +3145,76 @@ fn shared_sql_trim_preserves_direction_overlap_raw_bytes_and_null() {
     assert_eq!(actual.1[4], vec![Datum::Null; 5]);
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_update_arithmetic_preserves_preimages_casts_and_atomicity() {
+    use tidb_executor::{
+        run_create_table_on, run_insert_on, run_select_meta_on, run_update_on, Catalog,
+        StatementClass,
+    };
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE update_arithmetic (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT, s TINYINT)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO update_arithmetic VALUES (1,2,10,0),(2,3,20,0)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let mut native_catalog = catalog.clone();
+    let select = "SELECT id,a,b,s FROM update_arithmetic ORDER BY id";
+    let base = || StmtContext::for_query().with_statement_class(StatementClass::Update);
+    let native = base();
+    let shared = base().with_shared_projection();
+    let sql = "UPDATE update_arithmetic SET a=b+1,b=a*2,s=a-1 ORDER BY id";
+    assert_eq!(run_update_on(sql, &mut catalog, &shared).unwrap(), 2);
+    assert_eq!(run_update_on(sql, &mut native_catalog, &native).unwrap(), 2);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    assert_eq!(shared.shared_projection_counts(), Some((3, 6)));
+    let query = StmtContext::for_query();
+    let original = run_select_meta_on(select, &catalog, &query).unwrap();
+    assert_eq!(
+        original,
+        run_select_meta_on(select, &native_catalog, &query).unwrap()
+    );
+    use Datum::Int;
+    assert_eq!(
+        original.1,
+        vec![
+            vec![Int(1), Int(11), Int(4), Int(1)],
+            vec![Int(2), Int(21), Int(6), Int(2)]
+        ]
+    );
+
+    for (sql, code) in [
+        (
+            "UPDATE update_arithmetic SET a=a+9223372036854775790 ORDER BY id",
+            1690,
+        ),
+        ("UPDATE update_arithmetic SET s=a+110 ORDER BY id", 1264),
+    ] {
+        let shared = base().with_shared_projection();
+        let native = base();
+        let actual = run_update_on(sql, &mut catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        let expected = run_update_on(sql, &mut native_catalog, &native)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.code, code);
+        assert_eq!(shared.take_warnings(), native.take_warnings());
+        assert_eq!(shared.shared_projection_counts(), Some((1, 2)));
+        assert_eq!(
+            run_select_meta_on(select, &catalog, &query).unwrap(),
+            original
+        );
+        assert_eq!(
+            run_select_meta_on(select, &native_catalog, &query).unwrap(),
+            original
+        );
+    }
+}
