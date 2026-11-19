@@ -4159,3 +4159,70 @@ fn shared_base64_keeps_wrapping_padding_and_packet_policy() {
         }
     }
 }
+
+#[test]
+fn shared_binary_padding_keeps_empty_and_packet_cases() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let context = || StmtContext::for_query().with_max_allowed_packet(4);
+    let native = context();
+    let shared = context().with_shared_projection();
+    run_create_table_on(
+        "CREATE TABLE packet_pad (
+            id BIGINT PRIMARY KEY, s VARBINARY(20), n BIGINT, p VARBINARY(20)
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO packet_pad VALUES
+            (1,X'FF00',4,X'1A27'),(2,X'FF0041',2,X''),(3,X'FF00',2,X''),
+            (4,X'FF00',3,X''),(5,X'FF00',-1,X'AA'),(6,NULL,2,NULL),
+            (7,NULL,2,X'AA'),(8,'A',5,'x'),(9,'A',NULL,'x')",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+
+    let sql = "SELECT LPAD(s,n,p),RPAD(s,n,p) FROM packet_pad ORDER BY id LIMIT 9";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let expected: [[Option<&[u8]>; 2]; 9] = [
+        [Some(&[0x1a, 0x27, 0xff, 0]), Some(&[0xff, 0, 0x1a, 0x27])],
+        [Some(&[0xff, 0]), Some(&[0xff, 0])],
+        [Some(&[0xff, 0]), Some(&[0xff, 0])],
+        [Some(b""), Some(b"")],
+        [None; 2],
+        [None; 2],
+        [None; 2],
+        [None; 2],
+        [None; 2],
+    ];
+    assert_eq!(actual.1.len(), expected.len());
+    for (row, expected) in actual.1.iter().zip(expected) {
+        for (actual, expected) in row.iter().zip(expected) {
+            match actual {
+                Datum::String(value) => assert_eq!(Some(value.bytes()), expected),
+                Datum::Bytes(value) => assert_eq!(Some(value.as_slice()), expected),
+                Datum::Null => assert_eq!(expected, None),
+                _ => panic!("expected padded bytes or NULL"),
+            }
+        }
+    }
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(
+        warnings
+            .into_iter()
+            .map(|(_, code, message)| (code, message))
+            .collect::<Vec<_>>(),
+        ["lpad", "lpad", "lpad", "rpad", "rpad", "rpad"].map(|name| {
+            (
+                1301,
+                format!("Result of {name}() was larger than max_allowed_packet (4) - truncated"),
+            )
+        })
+    );
+}

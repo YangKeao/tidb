@@ -1933,6 +1933,35 @@ impl SharedExpression {
                     work.push(Visit::PacketString(op));
                     work.push(Visit::ByteOperand(input));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "lpad" | "rpad") =>
+                {
+                    use tidb_query_expr::impl_string::PacketString;
+
+                    let [source, length, pad] = f.args.as_slice() else {
+                        return Err("padding requires three operands".into());
+                    };
+                    if !is_binary_string_leaf(source)
+                        || !is_binary_string_leaf(pad)
+                        || bigint_operand_signedness(length) != Some(false)
+                        || !matches!(length, Expression::Column(_) | Expression::Constant(_))
+                        || !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                    {
+                        return Err(
+                            "padding requires binary leaves and a signed BIGINT length".into()
+                        );
+                    }
+                    let op = if f.func_name.lowercase() == "lpad" {
+                        PacketString::Lpad
+                    } else {
+                        PacketString::Rpad
+                    };
+                    work.push(Visit::PacketString(op));
+                    work.push(Visit::ByteOperand(pad));
+                    work.push(Visit::BigIntOperand(length));
+                    work.push(Visit::ByteOperand(source));
+                }
                 Visit::PacketString(op) => {
                     nodes.push(RpnExpressionNode::NativePacketString {
                         op,
@@ -2165,7 +2194,9 @@ impl SharedExpression {
                 Expression::ScalarFunction(f) if f.func_name.lowercase() == "any_value" => {
                     NativeStringResult::Text(f.args[0].static_type().unwrap().collation())
                 }
-                Expression::ScalarFunction(f) if f.func_name.lowercase() == "from_base64" => {
+                Expression::ScalarFunction(f)
+                    if matches!(f.func_name.lowercase(), "from_base64" | "lpad" | "rpad") =>
+                {
                     NativeStringResult::Bytes
                 }
                 Expression::ScalarFunction(f) => NativeStringResult::Text(
