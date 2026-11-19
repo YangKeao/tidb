@@ -40,3 +40,4 @@
 - [IPv4 二进制前缀判断](ip-prefix.zh.md)
 - [文本 IP 函数的共享求值](ip-text.zh.md)
 - [BIN 和 OCT 的 BIGINT 格式化](integer-radix.zh.md)
+- [BIGINT ABS](bigint-abs.zh.md)
