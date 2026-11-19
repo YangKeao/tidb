@@ -82,3 +82,4 @@
 - [二进制 LPAD 和 RPAD](packet-binary-pad.zh.md)
 - [字符串 INSERT 的二进制替换](packet-binary-insert.zh.md)
 - [ELT 和 MAKE_SET 的类型化字符串选择](string-choices.zh.md)
+- [DOUBLE 的 ASIN、ACOS、SQRT 和 SIGN](double-domain-math.zh.md)
