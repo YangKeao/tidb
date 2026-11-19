@@ -66,3 +66,4 @@
 - [类型化 JSON_VALID](json-valid.zh.md)
 - [二进制与 UTF-8 的 UPPER 和 LOWER](native-case-conversion.zh.md)
 - [TRIM 的三个方向](native-trim.zh.md)
+- [UPDATE 的类型化 BIGINT 赋值](update-arithmetic.zh.md)
