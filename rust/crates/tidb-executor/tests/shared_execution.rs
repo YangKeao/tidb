@@ -4226,3 +4226,70 @@ fn shared_binary_padding_keeps_empty_and_packet_cases() {
         })
     );
 }
+
+#[test]
+fn shared_binary_insert_preserves_original_bytes_and_packet_size() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let context = || StmtContext::for_query().with_max_allowed_packet(4);
+    let native = context();
+    let shared = context().with_shared_projection();
+    run_create_table_on(
+        "CREATE TABLE packet_insert (
+            id BIGINT PRIMARY KEY, s VARBINARY(20), p BIGINT, n BIGINT, r VARBINARY(20)
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO packet_insert VALUES
+            (1,X'FF0041',2,1,X'80'),(2,'abcd',2,-1,'_'),(3,'abcde',0,1,'X'),
+            (4,'abc',4,1,'XXXXX'),(5,'abc',2,0,'XY'),(6,NULL,1,1,'X'),
+            (7,'abc',-1,NULL,'X'),(8,'abcde',1,9223372036854775807,'Z'),
+            (9,'abc',2,0,'X')",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+
+    let sql = "SELECT INSERT(s,p,n,r) FROM packet_insert ORDER BY id LIMIT 9";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let expected: [Option<&[u8]>; 9] = [
+        Some(&[0xff, 0x80, b'A']),
+        Some(b"a_"),
+        None,
+        Some(b"abc"),
+        None,
+        None,
+        None,
+        Some(b"Z"),
+        Some(b"aXbc"),
+    ];
+    assert_eq!(actual.1.len(), expected.len());
+    for (row, expected) in actual.1.iter().zip(expected) {
+        match &row[0] {
+            Datum::String(value) => assert_eq!(Some(value.bytes()), expected),
+            Datum::Bytes(value) => assert_eq!(Some(value.as_slice()), expected),
+            Datum::Null => assert_eq!(expected, None),
+            _ => panic!("expected bytes or NULL"),
+        }
+    }
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(
+        warnings
+            .into_iter()
+            .map(|(_, code, message)| (code, message))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                1301,
+                "Result of insert() was larger than max_allowed_packet (4) - truncated".to_owned()
+            );
+            2
+        ],
+    );
+}

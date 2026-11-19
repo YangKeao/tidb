@@ -1962,6 +1962,32 @@ impl SharedExpression {
                     work.push(Visit::BigIntOperand(length));
                     work.push(Visit::ByteOperand(source));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "insert_func" =>
+                {
+                    let [source, position, length, replacement] = f.args.as_slice() else {
+                        return Err("INSERT requires four operands".into());
+                    };
+                    if !is_binary_string_leaf(source)
+                        || !is_binary_string_leaf(replacement)
+                        || [position, length].iter().any(|arg| {
+                            !matches!(arg, Expression::Column(_) | Expression::Constant(_))
+                                || bigint_operand_signedness(arg).is_none()
+                        })
+                        || !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                    {
+                        return Err(
+                            "INSERT requires binary leaves and BIGINT position and length".into(),
+                        );
+                    }
+                    work.push(Visit::PacketString(
+                        tidb_query_expr::impl_string::PacketString::Insert,
+                    ));
+                    work.push(Visit::ByteOperand(replacement));
+                    work.push(Visit::BigIntOperand(length));
+                    work.push(Visit::BigIntOperand(position));
+                    work.push(Visit::ByteOperand(source));
+                }
                 Visit::PacketString(op) => {
                     nodes.push(RpnExpressionNode::NativePacketString {
                         op,
@@ -2195,7 +2221,10 @@ impl SharedExpression {
                     NativeStringResult::Text(f.args[0].static_type().unwrap().collation())
                 }
                 Expression::ScalarFunction(f)
-                    if matches!(f.func_name.lowercase(), "from_base64" | "lpad" | "rpad") =>
+                    if matches!(
+                        f.func_name.lowercase(),
+                        "from_base64" | "lpad" | "rpad" | "insert_func"
+                    ) =>
                 {
                     NativeStringResult::Bytes
                 }
