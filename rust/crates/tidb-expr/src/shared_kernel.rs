@@ -95,7 +95,7 @@ impl SharedExpression {
             DecimalOperand(&'a Expression),
             BigIntOperand(&'a Expression),
             ByteOperand(&'a Expression),
-            VectorColumn(&'a crate::column::Column),
+            VectorOperand(&'a Expression),
             VectorNorm,
             VectorFromText,
             VectorDistance(tidb_query_expr::impl_vec::NativeVectorDistance),
@@ -277,7 +277,7 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::Constant { value, field_type });
                 }
-                Visit::VectorColumn(c)
+                Visit::VectorOperand(Expression::Column(c))
                 | Visit::JsonOperand(Expression::Column(c))
                 | Visit::ByteOperand(Expression::Column(c))
                 | Visit::BigIntOperand(Expression::Column(c))
@@ -290,7 +290,7 @@ impl SharedExpression {
                     match tp.code() {
                         _ if matches!(
                             visit,
-                            Visit::ByteOperand(_) | Visit::JsonOperand(_) | Visit::VectorColumn(_)
+                            Visit::ByteOperand(_) | Visit::JsonOperand(_) | Visit::VectorOperand(_)
                         ) => {}
                         tidb_datatype::FieldTypeCode::VarString
                             if tp.collation_name() == admitted.collation_name() => {}
@@ -320,6 +320,7 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::ColumnRef { offset });
                 }
+                Visit::VectorOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::BigIntOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
@@ -328,21 +329,21 @@ impl SharedExpression {
                             "vec_dims" | "vec_l2_norm" | "vec_as_text"
                         ) =>
                 {
-                    let [Expression::Column(column)] = f.args.as_slice() else {
-                        return Err("vector function requires a vector column".into());
+                    let [input] = f.args.as_slice() else {
+                        return Err("vector function requires one operand".into());
                     };
                     let name = f.func_name.lowercase();
-                    if !column.ret_type.as_ref().is_some_and(|ty| {
-                        ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32 && !ty.is_array()
-                    }) || !f.ret_type.as_ref().is_some_and(|ty| match name {
-                        "vec_dims" => is_signed_bigint(ty),
-                        "vec_as_text" => is_raw_string_type(ty),
-                        _ => {
-                            ty.code() == tidb_datatype::FieldTypeCode::Double
-                                && !ty.is_array()
-                                && !ty.is_unsigned()
-                        }
-                    }) {
+                    if !is_shared_vector_operand(input)
+                        || !f.ret_type.as_ref().is_some_and(|ty| match name {
+                            "vec_dims" => is_signed_bigint(ty),
+                            "vec_as_text" => is_raw_string_type(ty),
+                            _ => {
+                                ty.code() == tidb_datatype::FieldTypeCode::Double
+                                    && !ty.is_array()
+                                    && !ty.is_unsigned()
+                            }
+                        })
+                    {
                         return Err("vector function input or result type mismatch".into());
                     }
                     let visit = match name {
@@ -355,7 +356,7 @@ impl SharedExpression {
                         _ => Visit::VectorNorm,
                     };
                     work.push(visit);
-                    work.push(Visit::VectorColumn(column));
+                    work.push(Visit::VectorOperand(input));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
@@ -368,20 +369,16 @@ impl SharedExpression {
                         ) =>
                 {
                     use tidb_query_expr::impl_vec::NativeVectorDistance;
-                    let [Expression::Column(left), Expression::Column(right)] = f.args.as_slice()
-                    else {
-                        return Err("vector distance requires two vector columns".into());
+                    let [left, right] = f.args.as_slice() else {
+                        return Err("vector distance requires two operands".into());
                     };
-                    if ![left, right].iter().all(|column| {
-                        column.ret_type.as_ref().is_some_and(|ty| {
-                            ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32
+                    if ![left, right].into_iter().all(is_shared_vector_operand)
+                        || !f.ret_type.as_ref().is_some_and(|ty| {
+                            ty.code() == tidb_datatype::FieldTypeCode::Double
                                 && !ty.is_array()
+                                && !ty.is_unsigned()
                         })
-                    }) || !f.ret_type.as_ref().is_some_and(|ty| {
-                        ty.code() == tidb_datatype::FieldTypeCode::Double
-                            && !ty.is_array()
-                            && !ty.is_unsigned()
-                    }) {
+                    {
                         return Err("vector distance input or result type mismatch".into());
                     }
                     let distance = match f.func_name.lowercase() {
@@ -391,8 +388,8 @@ impl SharedExpression {
                         _ => NativeVectorDistance::Cosine,
                     };
                     work.push(Visit::VectorDistance(distance));
-                    work.push(Visit::VectorColumn(right));
-                    work.push(Visit::VectorColumn(left));
+                    work.push(Visit::VectorOperand(right));
+                    work.push(Visit::VectorOperand(left));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none() && f.func_name.lowercase() == "vec_from_text" =>
@@ -2578,6 +2575,18 @@ fn native_byte_count(
         }
         _ => return None,
     })
+}
+
+fn is_shared_vector_operand(expression: &Expression) -> bool {
+    expression.static_type().is_some_and(|ty| {
+        ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32 && !ty.is_array()
+    }) && match expression {
+        Expression::Column(_) => true,
+        Expression::ScalarFunction(function) => {
+            function.pb_signature().is_none() && function.func_name.lowercase() == "vec_from_text"
+        }
+        _ => false,
+    }
 }
 
 fn is_raw_string_type(ty: &tidb_datatype::FieldType) -> bool {

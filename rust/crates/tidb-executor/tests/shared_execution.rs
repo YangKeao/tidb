@@ -2400,3 +2400,43 @@ fn shared_sql_vector_from_text_preserves_output_bits_and_errors() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_sql_vector_program_composes_parse_and_calculation() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_program (id BIGINT PRIMARY KEY, s VARBINARY(80), t VARBINARY(80))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_program VALUES
+            (1,'[3,4]','[0,0]'),(2,NULL,'[]'),(3,'[1,x]',X'FF00'),(4,NULL,X'FF00')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT VEC_FROM_TEXT(s), VEC_DIMS(VEC_FROM_TEXT(s)), VEC_L2_NORM(VEC_FROM_TEXT(s)),
+        VEC_AS_TEXT(VEC_FROM_TEXT(s)), VEC_L2_DISTANCE(VEC_FROM_TEXT(s),VEC_FROM_TEXT(t))
+        FROM vector_program WHERE id<3 ORDER BY id LIMIT 2";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0][1], Datum::Int(2));
+    assert_eq!(actual.1[0][2], Datum::Real(5.0));
+    assert_eq!(actual.1[0][3].as_raw_bytes(), Some(&b"[3,4]"[..]));
+    assert_eq!(actual.1[0][4], Datum::Real(5.0));
+    assert_eq!(actual.1[1], vec![Datum::Null; 5]);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    for row in [3, 4] {
+        let sql = format!("SELECT VEC_L2_DISTANCE(VEC_FROM_TEXT(s),VEC_FROM_TEXT(t)) FROM vector_program WHERE id={row}");
+        let shared = StmtContext::for_query().with_shared_projection();
+        let expected = run_select_meta_on(&sql, &catalog, &native).map_err(|e| e.to_mysql_error());
+        let actual = run_select_meta_on(&sql, &catalog, &shared).map_err(|e| e.to_mysql_error());
+        assert_eq!(actual, expected);
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}
