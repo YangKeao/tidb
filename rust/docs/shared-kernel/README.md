@@ -61,3 +61,4 @@
 - [Unistore 的 BIGINT 比较符号组合](unistore-integer-signs.zh.md)
 - [CRC32 与 UNCOMPRESSED_LENGTH](byte-checksum-length.zh.md)
 - [二进制字符串比较和查找](binary-string-search.zh.md)
+- [二进制 REPLACE 和 SUBSTRING](binary-replace-substring.zh.md)
