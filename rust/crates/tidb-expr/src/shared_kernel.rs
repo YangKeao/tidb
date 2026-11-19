@@ -322,18 +322,21 @@ impl SharedExpression {
                 Visit::BigIntOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
-                        && matches!(f.func_name.lowercase(), "vec_dims" | "vec_l2_norm") =>
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "vec_dims" | "vec_l2_norm" | "vec_as_text"
+                        ) =>
                 {
                     let [Expression::Column(column)] = f.args.as_slice() else {
                         return Err("vector function requires a vector column".into());
                     };
-                    let dims = f.func_name.lowercase() == "vec_dims";
+                    let name = f.func_name.lowercase();
                     if !column.ret_type.as_ref().is_some_and(|ty| {
                         ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32 && !ty.is_array()
-                    }) || !f.ret_type.as_ref().is_some_and(|ty| {
-                        if dims {
-                            is_signed_bigint(ty)
-                        } else {
+                    }) || !f.ret_type.as_ref().is_some_and(|ty| match name {
+                        "vec_dims" => is_signed_bigint(ty),
+                        "vec_as_text" => is_raw_string_type(ty),
+                        _ => {
                             ty.code() == tidb_datatype::FieldTypeCode::Double
                                 && !ty.is_array()
                                 && !ty.is_unsigned()
@@ -341,15 +344,16 @@ impl SharedExpression {
                     }) {
                         return Err("vector function input or result type mismatch".into());
                     }
-                    if dims {
-                        work.push(Visit::IntCall(
-                            tidb_query_expr::impl_vec::vec_dims_fn_meta(),
-                            1,
-                            false,
-                        ));
-                    } else {
-                        work.push(Visit::VectorNorm);
-                    }
+                    let visit = match name {
+                        "vec_dims" => {
+                            Visit::IntCall(tidb_query_expr::impl_vec::vec_dims_fn_meta(), 1, false)
+                        }
+                        "vec_as_text" => {
+                            Visit::BytesCall(tidb_query_expr::impl_vec::vec_as_text_fn_meta(), 1)
+                        }
+                        _ => Visit::VectorNorm,
+                    };
+                    work.push(visit);
                     work.push(Visit::VectorColumn(column));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))

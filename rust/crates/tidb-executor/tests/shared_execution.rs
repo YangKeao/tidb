@@ -2323,3 +2323,30 @@ fn shared_sql_vector_distances_preserve_null_and_dimension_errors() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_sql_vector_text_preserves_fixed_float_format_and_fields() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_text (id BIGINT PRIMARY KEY, v VECTOR)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_text VALUES (1,'[-0.0,1.25]'),(2,'[]'),(3,NULL),(4,'[1e-39,3e38]')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,VEC_AS_TEXT(v) FROM vector_text ORDER BY id LIMIT 4";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0][1].as_raw_bytes(), Some(&b"[-0,1.25]"[..]));
+    assert_eq!(actual.1[1][1].as_raw_bytes(), Some(&b"[]"[..]));
+    assert_eq!(actual.1[2][1], Datum::Null);
+    assert!(!actual.1[3][1].as_raw_bytes().unwrap().contains(&b'e'));
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
