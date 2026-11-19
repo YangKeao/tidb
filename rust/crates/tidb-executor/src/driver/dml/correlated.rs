@@ -138,7 +138,7 @@ impl UpdateExpression {
             Self::Physical(expression) => (expression, true),
             _ => return self,
         };
-        if !crate::projection::is_shared_write_arithmetic(expression) {
+        if !crate::projection::is_direct_signed_bigint_arithmetic(expression) {
             return self;
         }
         let Ok(program) = SharedExpression::compile(expression) else {

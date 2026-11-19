@@ -4888,30 +4888,49 @@ fn build_with_state(
                 let batch_range = 1..=SharedProjection::MAX_BATCH_SIZE;
                 if !state.in_reader
                     && ctx.shared_projection.is_some()
-                    && workers == 0
                     && batch_range.contains(&meta.max_chunk_size())
                     && batch_range.contains(&child.max_chunk_size())
-                    && match ctx.statement_class() {
-                        StatementClass::Select => true,
-                        StatementClass::Insert => expressions.iter().all(|expression| {
-                            matches!(expression, Expression::Column(_))
-                                || crate::projection::is_shared_write_arithmetic(expression)
-                        }),
-                        _ => false,
-                    }
                 {
-                    if let Some((shared, mixed_columns)) = ProjectionExec::compile_shared_projection(
-                        &expressions,
-                        &meta,
-                        child.ret_field_types(),
-                    ) {
-                        break 'projection Ok(Box::new(ProjectionExec::with_shared_projection(
-                            meta,
-                            child,
-                            ctx.clone(),
-                            shared,
-                            mixed_columns,
-                        )) as Box<dyn Executor>);
+                    let class = ctx.statement_class();
+                    let typed_arithmetic = || {
+                        expressions.iter().all(|expression| {
+                            matches!(expression, Expression::Column(_))
+                                || crate::projection::is_direct_signed_bigint_arithmetic(expression)
+                        })
+                    };
+
+                    if workers > 0
+                        && class == StatementClass::Select
+                        && ctx.enable_vectorized_expression()
+                        && typed_arithmetic()
+                    {
+                        let executor =
+                            ProjectionExec::new(meta, expressions.clone(), child, ctx.clone())
+                                .with_workers(workers)
+                                .with_shared_parallel_projection(expressions);
+                        break 'projection Ok(Box::new(executor) as Box<dyn Executor>);
+                    }
+
+                    if workers == 0
+                        && (class == StatementClass::Select
+                            || (class == StatementClass::Insert && typed_arithmetic()))
+                    {
+                        if let Some((shared, mixed_columns)) =
+                            ProjectionExec::compile_shared_projection(
+                                &expressions,
+                                &meta,
+                                child.ret_field_types(),
+                            )
+                        {
+                            break 'projection Ok(Box::new(ProjectionExec::with_shared_projection(
+                                meta,
+                                child,
+                                ctx.clone(),
+                                shared,
+                                mixed_columns,
+                            ))
+                                as Box<dyn Executor>);
+                        }
                     }
                 }
             }

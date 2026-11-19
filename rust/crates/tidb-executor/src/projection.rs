@@ -15,8 +15,8 @@
 //! `pkg/executor` `ProjectionExec`: evaluates a list of expressions over each
 //! input row to form the output rows.
 //!
-//! This is the serial path: one child batch per `Next`, each input row producing
-//! one output row. Go's parallel projection (worker pool) is deferred.
+//! Parallel workers evaluate child batches while the executor releases results
+//! in fetch order.
 
 use crate::executor::{ExecError, Executor, ExecutorMeta};
 #[cfg(feature = "shared-kernel")]
@@ -78,20 +78,16 @@ impl ProjectionContext for crate::StmtContext {
     }
 }
 
-/// The `'static` snapshot every projection worker task borrows: Go's workers
-/// share the executor's `evaluatorSuit` and its evaluation context.
-struct ParallelProjectionShared<C> {
-    program: Arc<EvaluatorProgram>,
-    ctx: C,
-}
+/// The evaluator and statement context are retained by every queued task.
+type ParallelEvaluation = dyn Fn(&mut Chunk, &mut Chunk) -> Result<(), ExecError> + Send + Sync;
 
 /// Go `projectionInputFetcher` + `projectionWorker`s, driven from the session
 /// thread: the parent's `Next` fetches a child chunk into a free input chunk,
 /// hands the pair to a pool worker, and releases finished outputs in fetch
 /// order. `numWorkers` input and output chunks circulate, so the fetch runs at
 /// most that far ahead of the parent, as Go's `inputCh`/`outputCh` bound it.
-struct ParallelProjection<C> {
-    shared: Arc<ParallelProjectionShared<C>>,
+struct ParallelProjection {
+    evaluate: Arc<ParallelEvaluation>,
     result_tx: Sender<(u64, Result<(Chunk, Chunk), ExecError>)>,
     result_rx: Receiver<(u64, Result<(Chunk, Chunk), ExecError>)>,
     /// Finished pairs waiting for their turn (`output.done` in fetch order).
@@ -139,7 +135,12 @@ pub struct ProjectionExec<C: Columns> {
     child_chunk: Chunk,
     /// Go `numWorkers`: the projection workers, zero for the serial path.
     num_workers: usize,
-    parallel: Option<ParallelProjection<C>>,
+    parallel: Option<ParallelProjection>,
+    #[cfg(feature = "shared-kernel")]
+    shared_parallel: Option<(
+        Vec<Expression>,
+        Arc<crate::stmt_context::SharedProgramCounts>,
+    )>,
 }
 
 impl<C: Columns> ProjectionExec<C> {
@@ -188,6 +189,8 @@ impl<C: Columns> ProjectionExec<C> {
             child_chunk,
             num_workers: 0,
             parallel: None,
+            #[cfg(feature = "shared-kernel")]
+            shared_parallel: None,
         }
     }
 
@@ -220,10 +223,9 @@ pub(crate) fn is_direct_signed_bigint_leaf(expression: &Expression) -> bool {
         && matches!(expression, Expression::Column(_) | Expression::Constant(_))
 }
 
-/// Integer leaves have no host effects or scalar/vector demand differences
-/// at a write boundary. Both write entrypoints use the same admission rule.
+/// Admit native BIGINT arithmetic with no nested operand evaluation.
 #[cfg(feature = "shared-kernel")]
-pub(crate) fn is_shared_write_arithmetic(expression: &Expression) -> bool {
+pub(crate) fn is_direct_signed_bigint_arithmetic(expression: &Expression) -> bool {
     let Expression::ScalarFunction(function) = expression else {
         return false;
     };
@@ -304,6 +306,16 @@ impl ProjectionExec<crate::StmtContext> {
         ))
     }
 
+    pub(crate) fn with_shared_parallel_projection(mut self, expressions: Vec<Expression>) -> Self {
+        let counts = self
+            .ctx
+            .shared_projection
+            .as_ref()
+            .expect("shared projection opted in");
+        self.shared_parallel = Some((expressions, Arc::clone(counts)));
+        self
+    }
+
     pub(crate) fn with_shared_projection(
         meta: ExecutorMeta,
         child: Box<dyn Executor>,
@@ -328,7 +340,101 @@ impl ProjectionExec<crate::StmtContext> {
     }
 }
 
+#[cfg(feature = "shared-kernel")]
+impl MixedProjectionColumns {
+    fn transfer(
+        &mut self,
+        input: &mut Chunk,
+        output: &mut Chunk,
+        parallel_batch: bool,
+    ) -> Result<(), ExecError> {
+        let rows = input.num_rows();
+        self.calculated_columns
+            .swap_columns(&mut self.calculated, output)
+            .map_err(ExecError::internal)?;
+        let fresh;
+        let direct = if parallel_batch {
+            // Like the native worker, merge aliases for the current input chunk.
+            fresh = ColumnSwapHelper::from_mapping(
+                self.direct_columns.input_idx_to_output_idxes.clone(),
+            );
+            &fresh
+        } else {
+            &self.direct_columns
+        };
+        direct
+            .swap_columns(input, output)
+            .map_err(ExecError::internal)?;
+        output.set_num_virtual_rows(rows);
+        Ok(())
+    }
+}
+
 impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
+    #[cfg(feature = "shared-kernel")]
+    fn shared_parallel_evaluator(&self) -> Option<Arc<ParallelEvaluation>> {
+        use std::sync::{atomic::Ordering, Mutex};
+
+        let (expressions, counts) = self.shared_parallel.as_ref()?;
+        // RPN metadata is Send. Move complete executions into each task so
+        // parallel evaluation neither shares mutable state nor holds the pool lock.
+        let lanes = (0..self.num_workers)
+            .map(|_| {
+                let (program, mixed) =
+                    ProjectionExec::<crate::StmtContext>::compile_shared_projection(
+                        expressions,
+                        &self.meta,
+                        self.child.ret_field_types(),
+                    )?;
+                Some((program.into_owned_execution(self.ctx.clone()), mixed))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        counts
+            .programs
+            .fetch_add(lanes.len() as u64, Ordering::Relaxed);
+        let counts = Arc::clone(counts);
+        let available = Mutex::new(lanes);
+        Some(Arc::new(move |input, output| {
+            let (mut program, mut mixed) = available.lock().unwrap().pop().ok_or_else(|| {
+                ExecError::internal("no prepared projection execution for this task")
+            })?;
+            counts.batches.fetch_add(1, Ordering::Relaxed);
+            let result = match &mut mixed {
+                Some(columns) => program
+                    .evaluate_into_chunk(input, &mut columns.calculated)
+                    .map_err(ExecError::from)
+                    .and_then(|()| columns.transfer(input, output, true)),
+                None => program
+                    .evaluate_into_chunk(input, output)
+                    .map_err(ExecError::from),
+            };
+            available.lock().unwrap().push((program, mixed));
+            result
+        }))
+    }
+
+    fn parallel_evaluator(&self) -> Result<Arc<ParallelEvaluation>, ExecError> {
+        #[cfg(feature = "shared-kernel")]
+        if let Some(evaluate) = self.shared_parallel_evaluator() {
+            return Ok(evaluate);
+        }
+        let program = match &self.evaluator {
+            ProjectionEvaluator::Native { program, .. } => Arc::clone(program),
+            #[cfg(feature = "shared-kernel")]
+            ProjectionEvaluator::Shared { .. } => {
+                return Err(ExecError::internal(
+                    "shared serial projection cannot run with workers",
+                ));
+            }
+        };
+        let ctx = self.ctx.clone();
+        Ok(Arc::new(move |input, output| {
+            EvaluatorSuite::from_program(Arc::clone(&program))
+                .run(&ctx, input, output)
+                .map_err(Self::evaluator_error)
+        }))
+    }
+
     /// Go `parallelExecute`: the next finished output in fetch order, fetching
     /// and dispatching further child chunks while a free input and output
     /// chunk exist (`projectionInputFetcher.run`), else waiting on a worker.
@@ -336,21 +442,10 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
         let max_chunk_size = self.meta.max_chunk_size();
         req.grow_and_reset(max_chunk_size);
         if self.parallel.is_none() {
-            let program = match &self.evaluator {
-                ProjectionEvaluator::Native { program, .. } => Arc::clone(program),
-                #[cfg(feature = "shared-kernel")]
-                ProjectionEvaluator::Shared { .. } => {
-                    return Err(ExecError::internal(
-                        "shared projection cannot run with workers",
-                    ));
-                }
-            };
+            let evaluate = self.parallel_evaluator()?;
             let (result_tx, result_rx) = std::sync::mpsc::channel();
             self.parallel = Some(ParallelProjection {
-                shared: Arc::new(ParallelProjectionShared {
-                    program,
-                    ctx: self.ctx.clone(),
-                }),
+                evaluate,
                 result_tx,
                 result_rx,
                 reorder: BTreeMap::new(),
@@ -460,17 +555,13 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
         let seq = pipeline.next_seq;
         pipeline.next_seq += 1;
         pipeline.in_flight += 1;
-        let shared = Arc::clone(&pipeline.shared);
+        let evaluate = Arc::clone(&pipeline.evaluate);
         let result_tx = pipeline.result_tx.clone();
         crate::worker_pool::enqueue_public(Box::new(move || {
             let mut input = input;
             let mut output = output;
             let result = crate::sort_util::recover_worker_panic(|| {
-                let suite = EvaluatorSuite::from_program(Arc::clone(&shared.program));
-                suite
-                    .run(&shared.ctx, &mut input, &mut output)
-                    .map(|()| (input, output))
-                    .map_err(Self::evaluator_error)
+                evaluate(&mut input, &mut output).map(|()| (input, output))
             });
             // A dropped receiver means the projection is already closed.
             let _ = result_tx.send((seq, result));
@@ -567,16 +658,7 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if let Some(columns) = mixed_columns {
                     projection.evaluate_into_chunk(&self.child_chunk, &mut columns.calculated)?;
-                    columns
-                        .calculated_columns
-                        .swap_columns(&mut columns.calculated, req)
-                        .map_err(ExecError::internal)?;
-                    columns
-                        .direct_columns
-                        .swap_columns(&mut self.child_chunk, req)
-                        .map_err(ExecError::internal)?;
-                    req.set_num_virtual_rows(child_rows);
-                    Ok(())
+                    columns.transfer(&mut self.child_chunk, req, false)
                 } else {
                     projection
                         .evaluate_into_chunk(&self.child_chunk, req)
