@@ -7,8 +7,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tidb_datatype::Datum;
-use tidb_executor::StmtContext;
+use tidb_executor::{run_select_meta_on, StmtContext};
 use tidb_expr::{Columns, MysqlRng};
+
+fn catalog_with_rows(ddl: &str, insert: &str, setup: &StmtContext) -> tidb_executor::Catalog {
+    let mut catalog = tidb_executor::Catalog::default();
+    tidb_executor::run_create_table_on(ddl, &mut catalog).unwrap();
+    tidb_executor::run_insert_on(insert, &mut catalog, setup).unwrap();
+    catalog
+}
 
 #[test]
 fn shared_execution_borrows_real_statement_effects() {
@@ -100,24 +107,14 @@ fn shared_execution_borrows_real_statement_effects() {
 fn shared_sql_projection_keeps_state_across_batches() {
     use tidb_ast::Stmt;
     use tidb_executor::driver::open_query_meta_stmt_with_physical;
-    use tidb_executor::{
-        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
-        DEFAULT_DATABASE,
-    };
+    use tidb_executor::{plan_query_meta_stmt, DEFAULT_DATABASE};
 
-    let mut catalog = Catalog::default();
     let setup = StmtContext::for_query();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE samples (n BIGINT PRIMARY KEY, v DOUBLE)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO samples VALUES (1,1),(2,2),(3,3),(4,4),(5,5)",
-        &mut catalog,
         &setup,
-    )
-    .unwrap();
+    );
     let sql = "SELECT RAND(7), RAND(), n + 1, v / 0e0 FROM samples ORDER BY n LIMIT 5";
     let context = |rng| {
         StmtContext::for_query()
@@ -210,24 +207,14 @@ fn shared_sql_projection_keeps_state_across_batches() {
 #[test]
 fn shared_sql_projection_preserves_failure_and_declines_whole_groups() {
     use tidb_ast::Stmt;
-    use tidb_executor::{
-        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
-        DEFAULT_DATABASE,
-    };
+    use tidb_executor::{plan_query_meta_stmt, DEFAULT_DATABASE};
 
-    let mut catalog = Catalog::default();
     let setup = StmtContext::for_query();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE limits_case (n BIGINT PRIMARY KEY)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO limits_case VALUES (9223372036854775807)",
-        &mut catalog,
         &setup,
-    )
-    .unwrap();
+    );
     for sql in [
         "SELECT RAND(), n + 1 FROM limits_case LIMIT 1",
         "SELECT RAND(), n * 2 FROM limits_case LIMIT 1",
@@ -423,7 +410,7 @@ fn shared_projection_declines_reader_child_plan() {
 #[test]
 fn shared_sql_projection_declines_nested_string_variable_reads() {
     use tidb_datatype::Collation;
-    use tidb_executor::{run_select_meta_on, Catalog};
+    use tidb_executor::Catalog;
 
     // getvar_string is the read emitted by the session binder for both carriers.
     let sql = "SELECT RAND(), @copy := getvar_string('v')";
@@ -470,8 +457,8 @@ fn shared_sql_projection_runs_signed_logic_and_declines_unsigned_group() {
     use tidb_ast::Stmt;
     use tidb_datatype::{FieldTypeCode, FieldTypeFlags};
     use tidb_executor::{
-        driver::open_query_meta_stmt_with_physical, run_create_table_on, run_insert_on,
-        run_select_meta_on, Catalog, DEFAULT_DATABASE,
+        driver::open_query_meta_stmt_with_physical, run_create_table_on, run_insert_on, Catalog,
+        DEFAULT_DATABASE,
     };
 
     let mut catalog = Catalog::default();
@@ -563,23 +550,14 @@ fn shared_sql_projection_runs_signed_logic_and_declines_unsigned_group() {
 
 #[test]
 fn shared_sql_selection_keeps_filter_demand_and_declines_decimal() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE filter_samples (
           id BIGINT PRIMARY KEY, a BIGINT, b BIGINT, u BIGINT UNSIGNED
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO filter_samples VALUES
           (1,-5,-7,0),(2,-1,1,1),(3,NULL,NULL,2),(4,3,1,3),(5,4,5,4),(6,7,3,5)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT id FROM
         (SELECT id,a,b,u FROM filter_samples ORDER BY id LIMIT 6) AS retained
@@ -627,8 +605,8 @@ fn shared_sql_selection_keeps_filter_demand_and_declines_decimal() {
 fn shared_sql_projection_runs_bigint_conditionals() {
     use tidb_ast::Stmt;
     use tidb_executor::{
-        driver::open_query_meta_stmt_with_physical, run_create_table_on, run_insert_on,
-        run_select_meta_on, Catalog, DEFAULT_DATABASE,
+        driver::open_query_meta_stmt_with_physical, run_create_table_on, run_insert_on, Catalog,
+        DEFAULT_DATABASE,
     };
 
     let mut catalog = Catalog::default();
@@ -702,22 +680,13 @@ fn shared_sql_projection_runs_bigint_conditionals() {
 
 #[test]
 fn shared_sql_projection_runs_real_and_decimal_conditionals() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE numeric_choice (id BIGINT PRIMARY KEY, r DOUBLE, s DOUBLE,
           d DECIMAL(20,8), e DECIMAL(20,8))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO numeric_choice VALUES
           (1,NULL,2.5,NULL,1.22500000),(2,0,NULL,-1.23123456,0.0),(3,NULL,NULL,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT CASE WHEN id < 3 THEN r END, IFNULL(r,s), COALESCE(d,e)
         FROM numeric_choice ORDER BY id LIMIT 3";
@@ -738,28 +707,18 @@ fn shared_sql_projection_runs_real_and_decimal_conditionals() {
 #[test]
 fn shared_sql_projection_passes_columns_to_topn_with_computed_keys() {
     use tidb_ast::Stmt;
-    use tidb_executor::{
-        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
-        DEFAULT_DATABASE,
-    };
+    use tidb_executor::{plan_query_meta_stmt, DEFAULT_DATABASE};
     use tidb_planner::physical::PhysicalPlan;
 
     fn has_topn(plan: &PhysicalPlan) -> bool {
         matches!(plan, PhysicalPlan::TopN(_)) || plan.children().iter().any(has_topn)
     }
 
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE mixed_projection (id BIGINT PRIMARY KEY, v BIGINT, b VARBINARY(8))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO mixed_projection VALUES (1,8,'a'),(2,NULL,NULL),(3,4,'b'),(4,0,'c')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT b, COALESCE(v,id) AS k, id, b
         FROM mixed_projection ORDER BY k, id LIMIT 3";
@@ -843,20 +802,11 @@ fn shared_sql_projection_passes_columns_to_topn_with_computed_keys() {
 
 #[test]
 fn shared_sql_bigint_truth_tests_run_in_projection_and_selection() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE truth_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO truth_values VALUES (1,NULL,NULL),(2,0,0),(3,-1,18446744073709551615),(4,1,1)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     let ctx = StmtContext::for_query();
     let shared = ctx.clone().with_shared_projection().with_shared_selection();
@@ -911,20 +861,11 @@ fn shared_sql_bigint_truth_tests_run_in_projection_and_selection() {
 
 #[test]
 fn shared_sql_byte_counts_preserve_invalid_utf8() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE byte_counts (id BIGINT PRIMARY KEY, b VARBINARY(8), t VARCHAR(8))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO byte_counts VALUES (1,X'FF00','界'),(2,'',''),(3,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id, LENGTH(b), OCTET_LENGTH(b), BIT_LENGTH(b), ASCII(b), CHAR_LENGTH(b)
         FROM byte_counts ORDER BY id LIMIT 3";
     let native = StmtContext::for_query();
@@ -969,10 +910,7 @@ fn shared_sql_byte_counts_preserve_invalid_utf8() {
 #[test]
 fn shared_sql_materializes_aggregate_arguments_and_keys() {
     use tidb_ast::Stmt;
-    use tidb_executor::{
-        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
-        DEFAULT_DATABASE,
-    };
+    use tidb_executor::{plan_query_meta_stmt, DEFAULT_DATABASE};
     use tidb_expr::expression::Expression;
     use tidb_planner::physical::PhysicalPlan;
 
@@ -996,18 +934,11 @@ fn shared_sql_materializes_aggregate_arguments_and_keys() {
             .find_map(|child| input_projection_id(child, stream, computed))
     }
 
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE shared_agg (id BIGINT PRIMARY KEY, g BIGINT, a BIGINT)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO shared_agg VALUES (1,1,8),(2,NULL,NULL),(3,1,4),(4,2,NULL),(5,NULL,-3),(6,9,99)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     use Datum::Int;
     for (sql, stream, computed, expected_rows) in [
@@ -1058,20 +989,11 @@ fn shared_sql_materializes_aggregate_arguments_and_keys() {
 
 #[test]
 fn shared_sql_signed_subtraction_keeps_null_demand_and_overflow() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE sub_values (id BIGINT PRIMARY KEY, n BIGINT)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO sub_values VALUES (1,5),(2,NULL),(3,-9223372036854775808),(4,9223372036854775807)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT id, n - BENCHMARK(2,RAND()) FROM sub_values ORDER BY id LIMIT 4";
     let native_rng = Arc::new(MysqlRng::new_with_seed(7));
@@ -1134,20 +1056,11 @@ fn shared_sql_signed_subtraction_keeps_null_demand_and_overflow() {
 
 #[test]
 fn shared_sql_string_conditionals_keep_non_utf8_results() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE string_choices (id BIGINT PRIMARY KEY, flag BIGINT, b VARBINARY(8), c VARBINARY(8))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO string_choices VALUES (1,1,NULL,X'80'),(2,0,X'FF00',''),(3,NULL,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     let sql =
         "SELECT id, IF(flag,b,c), CASE WHEN flag THEN b ELSE c END, IFNULL(b,c), COALESCE(b,c)
@@ -1182,7 +1095,7 @@ fn shared_sql_string_conditionals_keep_non_utf8_results() {
 
 #[test]
 fn shared_sql_json_type_reads_binary_json_column() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    use tidb_executor::{run_create_table_on, run_insert_on, Catalog};
 
     let mut catalog = Catalog::default();
     run_create_table_on(
@@ -1228,21 +1141,12 @@ fn shared_sql_json_type_reads_binary_json_column() {
 
 #[test]
 fn shared_sql_mixed_string_if_runs_md5_and_json_type() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE mixed_string_if (id BIGINT PRIMARY KEY, flag BIGINT, s VARBINARY(8), j JSON)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO mixed_string_if VALUES
          (1,1,'abc','true'),(2,0,X'FF','18446744073709551615'),(3,NULL,'abc',NULL),(4,1,NULL,'true')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT id, IF(flag, MD5(s), JSON_TYPE(j)) FROM mixed_string_if ORDER BY id LIMIT 4";
     let native = StmtContext::for_query();
@@ -1271,21 +1175,12 @@ fn shared_sql_mixed_string_if_runs_md5_and_json_type() {
 
 #[test]
 fn shared_sql_bit_operations_keep_raw_bigint_bits() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE bit_values (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT UNSIGNED)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO bit_values VALUES (1,-1,63),(2,-9223372036854775808,64),
          (3,NULL,1),(4,1,18446744073709551615)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT id, a & b, a | b, a ^ b, ~a, a << b, a >> b, BIT_COUNT(a)
         FROM bit_values ORDER BY id LIMIT 4";
@@ -1339,21 +1234,12 @@ fn shared_sql_bit_operations_keep_raw_bigint_bits() {
 
 #[test]
 fn shared_sql_double_comparisons_run_in_projection_and_selection() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE compare_doubles (id BIGINT PRIMARY KEY, a DOUBLE, b DOUBLE)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO compare_doubles VALUES
           (1,-0e0,0e0),(2,NULL,NULL),(3,3.25,-1.5),(4,-2,6),(5,NULL,0)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,a=b,a<>b,a<b,a<=b,a>b,a>=b,a<=>b
         FROM (SELECT id,a,b FROM compare_doubles ORDER BY id LIMIT 5) AS kept
         WHERE a>=b OR a<=>b ORDER BY id";
@@ -1401,23 +1287,14 @@ fn shared_sql_double_comparisons_run_in_projection_and_selection() {
 
 #[test]
 fn shared_sql_decimal_comparisons_keep_precision_in_selection() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE compare_decimals (id BIGINT PRIMARY KEY, a DECIMAL(60,8), b DECIMAL(65,10))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO compare_decimals VALUES
           (1,1.5,1.50),(2,NULL,NULL),
           (3,184467440737095516160000000000000000000001.26,184467440737095516160000000000000000000001.25),
           (4,-2,6),(5,NULL,0)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,a=b,a<>b,a<b,a<=b,a>b,a>=b,a<=>b
         FROM (SELECT id,a,b FROM compare_decimals ORDER BY id LIMIT 5) AS kept
         WHERE a>=b OR a<=>b ORDER BY id";
@@ -1465,21 +1342,12 @@ fn shared_sql_decimal_comparisons_keep_precision_in_selection() {
 
 #[test]
 fn shared_sql_binary_comparisons_preserve_no_pad_and_invalid_utf8() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE compare_bytes (id BIGINT PRIMARY KEY, a VARBINARY(8), b VARBINARY(8))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO compare_bytes VALUES
           (1,X'FF00',X'FF01'),(2,'A','A '),(3,NULL,NULL),(4,'Z','A'),(5,NULL,'')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,a=b,a<>b,a<b,a<=b,a>b,a>=b,a<=>b
         FROM (SELECT id,a,b FROM compare_bytes ORDER BY id LIMIT 5) AS kept
         WHERE a<b OR a<=>b ORDER BY id";
@@ -1527,20 +1395,11 @@ fn shared_sql_binary_comparisons_preserve_no_pad_and_invalid_utf8() {
 
 #[test]
 fn shared_sql_sha_keep_bytes_fields_and_invalid_length_semantics() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE hash_bytes (id BIGINT PRIMARY KEY, s VARBINARY(8), t VARCHAR(8), n BIGINT)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO hash_bytes VALUES (1,X'FF00','界',-1),(2,'','',256),(3,NULL,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql =
@@ -1577,24 +1436,15 @@ fn shared_sql_sha_keep_bytes_fields_and_invalid_length_semantics() {
 
 #[test]
 fn shared_sql_hex_unhex_keep_raw_bytes_and_integer_bits() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE hex_values
          (id BIGINT PRIMARY KEY, b VARBINARY(8), s VARCHAR(8), n BIGINT, u BIGINT UNSIGNED)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO hex_values VALUES
          (1,X'FF00','abc',-1,18446744073709551615),
          (2,'','G',-9223372036854775808,9223372036854775808),
          (3,X'FF','',0,0),(4,NULL,NULL,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,HEX(b),HEX(s),HEX(n),HEX(u),UNHEX(s),UNHEX(b)
         FROM hex_values ORDER BY id LIMIT 4";
     let native = StmtContext::for_query();
@@ -1656,22 +1506,13 @@ fn shared_sql_hex_unhex_keep_raw_bytes_and_integer_bits() {
 
 #[test]
 fn shared_sql_binary_string_operations_keep_bytes_and_counts() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE byte_ops (id BIGINT PRIMARY KEY, b VARBINARY(8), n BIGINT, t VARCHAR(8))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO byte_ops VALUES
          (1,X'20FF000920',2,'界a'),(2,'  ',-1,'a'),(3,X'E7958C',9223372036854775807,'界'),
          (4,'a',NULL,'a'),(5,NULL,1,NULL),(6,'',0,'')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT id,LTRIM(b),RTRIM(b),REVERSE(b),LEFT(b,n),RIGHT(b,n)
@@ -1723,26 +1564,17 @@ fn shared_sql_binary_string_operations_keep_bytes_and_counts() {
 
 #[test]
 fn shared_sql_ip_conversions_keep_typed_values_and_fields() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE ip_values
          (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, ip VARBINARY(64), bin VARBINARY(16))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO ip_values VALUES
          (1,4294967295,2130706433,'127.0.0.1',X'7F000001'),
          (2,-1,18446744073709551615,'::ffff:127.0.0.1',X'00000000000000000000FFFF7F000001'),
          (3,4294967296,0,'2001:db8::1',X'20010DB8000000000000000000000001'),
          (4,0,4294967296,X'FF00',X'FF00'),
          (5,NULL,NULL,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT id,INET_NTOA(n),INET_NTOA(u),INET6_ATON(ip),INET6_NTOA(bin)
@@ -1800,24 +1632,15 @@ fn shared_sql_ip_conversions_keep_typed_values_and_fields() {
 
 #[test]
 fn shared_sql_ipv4_prefix_predicates_preserve_null_and_raw_bytes() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE ip_prefixes (id BIGINT PRIMARY KEY, b VARBINARY(20))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO ip_prefixes VALUES
          (1,X'0000000000000000000000007F000001'),
          (2,X'00000000000000000000FFFF7F000001'),
          (3,X'7F000001'),(4,X'FF00000000000000000000007F000001'),
          (5,NULL),(6,''),(7,X'00000000000000000000FFFF7F00000100')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,IS_IPV4_COMPAT(b),IS_IPV4_MAPPED(b)
         FROM ip_prefixes ORDER BY id LIMIT 7";
     let native = StmtContext::for_query();
@@ -1846,22 +1669,13 @@ fn shared_sql_ipv4_prefix_predicates_preserve_null_and_raw_bytes() {
 
 #[test]
 fn shared_sql_ip_text_functions_keep_legacy_parse_and_diagnostics() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE ip_text (id BIGINT PRIMARY KEY, b VARBINARY(64))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO ip_text VALUES
          (1,'001.002.003.004'),(2,'127.1'),(3,'::ffff:127.0.0.1'),(4,'255.255.255.255'),
          (5,'1..2.3'),(6,'256.1.1.1'),(7,NULL),(8,''),(9,X'FF00')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,INET_ATON(b),IS_IPV4(b),IS_IPV6(b)
         FROM ip_text ORDER BY id LIMIT 8";
     let native = StmtContext::for_query();
@@ -1914,23 +1728,14 @@ fn shared_sql_ip_text_functions_keep_legacy_parse_and_diagnostics() {
 
 #[test]
 fn shared_sql_bin_and_oct_keep_integer_bits_and_string_conversion() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE radix_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, s VARCHAR(8))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO radix_values VALUES
          (1,-1,18446744073709551615,'12bad'),
          (2,-9223372036854775808,9223372036854775808,''),
          (3,0,0,'0'),(4,NULL,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,BIN(n),BIN(u),OCT(n),OCT(u)
         FROM radix_values ORDER BY id LIMIT 4";
     let native = StmtContext::for_query();
@@ -1965,17 +1770,11 @@ fn shared_sql_bin_and_oct_keep_integer_bits_and_string_conversion() {
 
 #[test]
 fn shared_sql_abs_preserves_bigint_sign_and_overflow_diagnostic() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE abs_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO abs_values VALUES (1,-7,18446744073709551615),(2,NULL,NULL),(3,-9223372036854775808,0)",
-        &mut catalog, &StmtContext::for_query(),
-    ).unwrap();
+        &StmtContext::for_query(),
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT id,ABS(n),ABS(u) FROM abs_values WHERE id<3 ORDER BY id";
@@ -2007,17 +1806,11 @@ fn shared_sql_abs_preserves_bigint_sign_and_overflow_diagnostic() {
 
 #[test]
 fn shared_sql_integral_ceil_and_floor_preserve_bigint_bits() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE integral_rounding (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO integral_rounding VALUES (1,-9223372036854775808,18446744073709551615),(2,NULL,NULL)",
-        &mut catalog, &StmtContext::for_query(),
-    ).unwrap();
+        &StmtContext::for_query(),
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql =
@@ -2052,20 +1845,13 @@ fn shared_sql_integral_ceil_and_floor_preserve_bigint_bits() {
 
 #[test]
 fn shared_sql_integral_round_and_truncate_preserve_precision_and_scale_sign() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE rounding_precision (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, d BIGINT, ud BIGINT UNSIGNED)",
-        &mut catalog,
-    ).unwrap();
-    run_insert_on(
         "INSERT INTO rounding_precision VALUES
             (1,9223372036854775806,18446744073709551615,-1,18446744073709551615),
             (2,-9223372036854775808,1,-9223372036854775808,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT ROUND(n),ROUND(u),TRUNCATE(n,d),TRUNCATE(u,d),TRUNCATE(n,ud),TRUNCATE(u,ud)
@@ -2099,17 +1885,11 @@ fn shared_sql_integral_round_and_truncate_preserve_precision_and_scale_sign() {
 
 #[test]
 fn shared_sql_bigint_mod_preserves_signs_and_zero_divisor_warnings() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE mod_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, d BIGINT)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO mod_values VALUES (1,-9223372036854775808,18446744073709551615,0),(2,NULL,NULL,0)",
-        &mut catalog, &StmtContext::for_query(),
-    ).unwrap();
+        &StmtContext::for_query(),
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql =
@@ -2140,19 +1920,12 @@ fn shared_sql_bigint_mod_preserves_signs_and_zero_divisor_warnings() {
 
 #[test]
 fn shared_sql_integer_division_keeps_runtime_diagnostics() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE div_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, d BIGINT, ud BIGINT UNSIGNED)",
-        &mut catalog,
-    ).unwrap();
-    run_insert_on(
         "INSERT INTO div_values VALUES (1,17,18446744073709551615,10,10),(2,NULL,NULL,0,0),
          (3,1,1,0,0),(4,-9223372036854775808,99,-1,1)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql =
@@ -2197,19 +1970,11 @@ fn shared_sql_integer_division_keeps_runtime_diagnostics() {
 
 #[test]
 fn shared_sql_vector_dims_reads_native_vector_columns() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_dims (id BIGINT PRIMARY KEY, v VECTOR)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_dims VALUES (1,'[1,2,3]'),(2,'[]'),(3,NULL),(4,'[-0.5]')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,VEC_DIMS(v) FROM vector_dims ORDER BY id LIMIT 4";
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
@@ -2238,19 +2003,11 @@ fn shared_sql_vector_dims_reads_native_vector_columns() {
 
 #[test]
 fn shared_sql_vector_norm_preserves_double_range() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_norm (id BIGINT PRIMARY KEY, v VECTOR)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_norm VALUES (1,'[3,4]'),(2,'[]'),(3,NULL),(4,'[3e38,-3e38]')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,VEC_L2_NORM(v),VEC_DIMS(v),VEC_L2_NORM(v)+1e0 FROM vector_norm ORDER BY id LIMIT 4";
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
@@ -2270,20 +2027,12 @@ fn shared_sql_vector_norm_preserves_double_range() {
 
 #[test]
 fn shared_sql_vector_distances_preserve_null_and_dimension_errors() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_distances (id BIGINT PRIMARY KEY, a VECTOR, b VECTOR)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_distances VALUES
             (1,'[3,0]','[0,4]'),(2,'[0,0]','[0,0]'),(3,NULL,'[1,2]'),(4,'[1]','[2,3]')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT VEC_L1_DISTANCE(a,b),VEC_L2_DISTANCE(a,b),
@@ -2326,19 +2075,11 @@ fn shared_sql_vector_distances_preserve_null_and_dimension_errors() {
 
 #[test]
 fn shared_sql_vector_text_preserves_fixed_float_format_and_fields() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_text (id BIGINT PRIMARY KEY, v VECTOR)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_text VALUES (1,'[-0.0,1.25]'),(2,'[]'),(3,NULL),(4,'[1e-39,3e38]')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,VEC_AS_TEXT(v) FROM vector_text ORDER BY id LIMIT 4";
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
@@ -2353,20 +2094,12 @@ fn shared_sql_vector_text_preserves_fixed_float_format_and_fields() {
 
 #[test]
 fn shared_sql_vector_from_text_preserves_output_bits_and_errors() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_strings (id BIGINT PRIMARY KEY, s VARBINARY(80))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_strings VALUES
             (1,'[-0.0,1e-39,3e38]'),(2,'[]'),(3,NULL),(4,'[1,x]'),(5,X'FF00')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,VEC_FROM_TEXT(s) FROM vector_strings WHERE id<4 ORDER BY id LIMIT 3";
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
@@ -2403,20 +2136,12 @@ fn shared_sql_vector_from_text_preserves_output_bits_and_errors() {
 
 #[test]
 fn shared_sql_vector_program_composes_parse_and_calculation() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_program (id BIGINT PRIMARY KEY, s VARBINARY(80), t VARBINARY(80))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_program VALUES
             (1,'[3,4]','[0,0]'),(2,NULL,'[]'),(3,'[1,x]',X'FF00'),(4,NULL,X'FF00')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT VEC_FROM_TEXT(s), VEC_DIMS(VEC_FROM_TEXT(s)), VEC_L2_NORM(VEC_FROM_TEXT(s)),
@@ -2443,20 +2168,12 @@ fn shared_sql_vector_program_composes_parse_and_calculation() {
 
 #[test]
 fn shared_sql_vector_comparison_uses_lexical_order_and_null() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_cmp (id BIGINT PRIMARY KEY, a VECTOR, b VECTOR)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_cmp VALUES
             (1,'[1]','[1,0]'),(2,'[-0.0]','[0.0]'),(3,NULL,NULL),(4,NULL,'[]'),(5,'[2]','[1,9]')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT a=b,a<>b,a<b,a<=b,a>b,a>=b,a<=>b FROM vector_cmp ORDER BY id LIMIT 5";
@@ -2485,20 +2202,12 @@ fn shared_sql_vector_comparison_uses_lexical_order_and_null() {
 
 #[test]
 fn shared_sql_cast_vector_keeps_declared_dimension_and_diagnostics() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_cast (id BIGINT PRIMARY KEY, s VARBINARY(80), t VARCHAR(80))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_cast VALUES
             (1,'[-0.0,3]','[4,3]'),(2,NULL,NULL),(3,'[]','[]'),(4,'[1,x]',NULL),(5,X'FF00',NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT CAST(s AS VECTOR(2)), CAST(t AS VECTOR),
@@ -2537,20 +2246,12 @@ fn shared_sql_cast_vector_keeps_declared_dimension_and_diagnostics() {
 
 #[test]
 fn shared_sql_vector_conditionals_evaluate_only_demanded_branches() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_choice (id BIGINT PRIMARY KEY, flag BIGINT, v VECTOR, s VARBINARY(80))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_choice VALUES
             (1,1,'[-0.0,1]','broken'),(2,0,NULL,'[3,4]'),(3,NULL,NULL,NULL),(4,0,NULL,'broken')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     for (expression, expected_lengths) in [
         ("IF(flag,v,CAST(s AS VECTOR))", [Some(2), Some(2), None]),
@@ -2610,24 +2311,16 @@ fn shared_prepared_select_rebinds_decimal_projection_on_cache_hit() {
     use tidb_ast::Stmt;
     use tidb_datatype::Decimal;
     use tidb_executor::{
-        build_prepared_select_plan, run_create_table_on, run_insert_on,
-        run_query_meta_stmt_with_physical, run_select_meta_on, Catalog,
+        build_prepared_select_plan, run_query_meta_stmt_with_physical,
         PreparedPlanCacheEnvironment, DEFAULT_DATABASE,
     };
 
-    let mut catalog = Catalog::default();
     let native = StmtContext::for_query();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE prepared_decimal_projection (id BIGINT PRIMARY KEY, d DECIMAL(12,2))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO prepared_decimal_projection VALUES (1,12.25),(2,NULL),(3,-4.50)",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
     let statement = tidb_parser::parse(
         "SELECT id, d * ? AS amount FROM prepared_decimal_projection ORDER BY id LIMIT 3",
     )
@@ -2694,20 +2387,12 @@ fn shared_prepared_select_rebinds_decimal_projection_on_cache_hit() {
 
 #[test]
 fn shared_sql_typed_null_tests_distinguish_empty_values() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE typed_nulls (id BIGINT PRIMARY KEY, v VECTOR, j JSON, s VARBINARY(16))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO typed_nulls VALUES
             (1,'[]','null',X'FF00'),(2,NULL,NULL,NULL),(3,'[1]','{}','')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT v IS NULL, j IS NULL, s IS NULL, v IS NOT NULL, j IS NOT NULL, s IS NOT NULL
@@ -2733,21 +2418,13 @@ fn shared_sql_typed_null_tests_distinguish_empty_values() {
 
 #[test]
 fn shared_sql_vector_arithmetic_preserves_output_and_error_order() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE vector_arithmetic (id BIGINT PRIMARY KEY, a VECTOR, b VECTOR, s VARBINARY(80))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO vector_arithmetic VALUES
             (1,'[-0.0,2]','[-0.0,3]','[0,1]'),(2,NULL,'[1]','broken'),(3,'[]','[]','[]'),
             (4,'[1]','[2,3]',''),(5,'[3e38]','[3e38]','')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT a+b, a-b, a*b, VEC_DIMS(a+b) FROM vector_arithmetic
@@ -2794,20 +2471,12 @@ fn shared_sql_vector_arithmetic_preserves_output_and_error_order() {
 
 #[test]
 fn shared_sql_byte_checksum_and_zlib_length_keep_payload_and_warnings() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE byte_payloads (id BIGINT PRIMARY KEY, s VARBINARY(20))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO byte_payloads VALUES
             (1,NULL),(2,''),(3,X'FF'),(4,X'05000000'),(5,X'05000000FF'),(6,X'FFFFFFFF00')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
     let sql = "SELECT CRC32(s), UNCOMPRESSED_LENGTH(s) FROM byte_payloads ORDER BY id LIMIT 6";
@@ -2847,23 +2516,15 @@ fn shared_sql_byte_checksum_and_zlib_length_keep_payload_and_warnings() {
 
 #[test]
 fn shared_sql_binary_string_search_keeps_byte_order_and_position() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE byte_search (
             id BIGINT PRIMARY KEY, a VARBINARY(20), b VARBINARY(20), l VARBINARY(20)
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO byte_search VALUES
             (1,X'FF4100','A',X'2C412CFF'),(2,'a ','a','a ,a'),(3,'','',','),
             (4,NULL,'x',NULL),(5,'x','y',''),(6,'x',X'FF',X'612CFF')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let shared = StmtContext::for_query().with_shared_projection();
     let native = StmtContext::for_query();
     let sql = "SELECT STRCMP(a,b), INSTR(a,b), LOCATE(b,a), FIND_IN_SET(b,l)
@@ -2887,27 +2548,19 @@ fn shared_sql_binary_string_search_keeps_byte_order_and_position() {
 
 #[test]
 fn shared_sql_binary_replace_and_substring_preserve_native_boundaries() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE byte_slices (
             id BIGINT PRIMARY KEY, s VARBINARY(20), f VARBINARY(20), t VARBINARY(20),
             p BIGINT, n BIGINT
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO byte_slices VALUES
             (1,X'FF00FF',X'FF',X'80',2,2),
             (2,'abc','',X'FF',-2,9223372036854775807),
             (3,'aaaaa','aa',X'FF',-9223372036854775808,1),
             (4,NULL,'a','b',1,2),(5,'abc',NULL,'x',0,NULL),
             (6,'abc','b','x',1,9223372036854775807)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let shared = StmtContext::for_query().with_shared_projection();
     let native = StmtContext::for_query();
     let sql = "SELECT REPLACE(s,f,t), SUBSTRING(s,p), SUBSTRING(s,p,n), SUBSTR(s,p,n), MID(s,p,n)
@@ -2933,25 +2586,17 @@ fn shared_sql_binary_replace_and_substring_preserve_native_boundaries() {
 
 #[test]
 fn shared_sql_binary_substring_index_keeps_forward_matches_and_count_domain() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE byte_delimiters (
             id BIGINT PRIMARY KEY, s VARBINARY(20), d VARBINARY(20), n BIGINT, u BIGINT UNSIGNED
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO byte_delimiters VALUES
             (1,'aaaaa','aa',-1,1),(2,X'8000FF00FE',X'00',-1,2),
             (3,'a.b','.',-9223372036854775808,18446744073709551615),
             (4,'abc','',-1,18446744073709551615),(5,'none','.',NULL,NULL),
             (6,'abc','b',0,0),(7,NULL,'x',1,1),(8,'abc',NULL,2,2)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let shared = StmtContext::for_query().with_shared_projection();
     let native = StmtContext::for_query();
     let sql = "SELECT SUBSTRING_INDEX(s,d,n), SUBSTRING_INDEX(s,d,u)
@@ -2976,24 +2621,16 @@ fn shared_sql_binary_substring_index_keeps_forward_matches_and_count_domain() {
 #[test]
 fn shared_sql_json_valid_preserves_typed_and_invalid_byte_inputs() {
     use tidb_datatype::FieldTypeFlags;
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE json_valid_inputs (
             id BIGINT PRIMARY KEY, j JSON, s VARBINARY(80), i BIGINT, u BIGINT UNSIGNED
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO json_valid_inputs VALUES
             (1,'null','[1]',-9223372036854775808,18446744073709551615),
             (2,'{}',X'FF',0,0),(3,NULL,'{} trailing',NULL,NULL),
             (4,'[null]',X'225C754438303022',2,2),(5,NULL,NULL,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let shared = StmtContext::for_query().with_shared_projection();
     let native = StmtContext::for_query();
     let sql = "SELECT JSON_VALID(j), JSON_VALID(s), JSON_VALID(i), JSON_VALID(u)
@@ -3029,22 +2666,14 @@ fn shared_sql_json_valid_preserves_typed_and_invalid_byte_inputs() {
 
 #[test]
 fn shared_sql_case_conversion_preserves_go_mappings_and_binary_bytes() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE case_text (
             id BIGINT PRIMARY KEY, b VARBINARY(30), s VARCHAR(30) CHARACTER SET utf8mb4
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO case_text VALUES
             (1,X'614200FF','ßİﬁ'),(2,'','测试'),(3,NULL,NULL)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let shared = StmtContext::for_query().with_shared_projection();
     let native = StmtContext::for_query();
     let sql = "SELECT UPPER(b), LCASE(b), UCASE(s), LOWER(s)
@@ -3108,21 +2737,13 @@ fn shared_owned_case_conversion_keeps_byte_datums_and_go_decode() {
 
 #[test]
 fn shared_sql_trim_preserves_direction_overlap_raw_bytes_and_null() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE trim_values (id BIGINT PRIMARY KEY, s VARBINARY(30), p VARBINARY(10))",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO trim_values VALUES
             (1,'aaaaa','aaa'),(2,X'8020FF2080',X'80'),(3,X'200920',''),
             (4,'  x  ',NULL),(5,NULL,'x')",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let shared = StmtContext::for_query().with_shared_projection();
     let native = StmtContext::for_query();
     let sql = "SELECT TRIM(s), TRIM(p FROM s), TRIM(BOTH p FROM s),
@@ -3148,22 +2769,12 @@ fn shared_sql_trim_preserves_direction_overlap_raw_bytes_and_null() {
 
 #[test]
 fn shared_update_arithmetic_preserves_preimages_casts_and_atomicity() {
-    use tidb_executor::{
-        run_create_table_on, run_insert_on, run_select_meta_on, run_update_on, Catalog,
-        StatementClass,
-    };
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    use tidb_executor::{run_update_on, StatementClass};
+    let mut catalog = catalog_with_rows(
         "CREATE TABLE update_arithmetic (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT, s TINYINT)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO update_arithmetic VALUES (1,2,10,0),(2,3,20,0)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let mut native_catalog = catalog.clone();
     let select = "SELECT id,a,b,s FROM update_arithmetic ORDER BY id";
     let base = || StmtContext::for_query().with_statement_class(StatementClass::Update);
@@ -3221,9 +2832,7 @@ fn shared_update_arithmetic_preserves_preimages_casts_and_atomicity() {
 
 #[test]
 fn shared_insert_select_arithmetic_preserves_source_order_and_atomicity() {
-    use tidb_executor::{
-        run_create_table_on, run_insert_on, run_select_meta_on, Catalog, StatementClass,
-    };
+    use tidb_executor::{run_create_table_on, run_insert_on, Catalog, StatementClass};
     let mut catalog = Catalog::default();
     for sql in [
         "CREATE TABLE insert_source (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT)",
@@ -3301,24 +2910,14 @@ fn shared_insert_select_arithmetic_preserves_source_order_and_atomicity() {
 
 #[test]
 fn shared_write_selection_preserves_nulls_order_and_changed_rows() {
-    use tidb_executor::{
-        run_create_table_on, run_delete_on, run_insert_on, run_select_meta_on, run_update_on,
-        Catalog, StatementClass,
-    };
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    use tidb_executor::{run_delete_on, run_update_on, StatementClass};
+    let mut catalog = catalog_with_rows(
         "CREATE TABLE write_filter (
             id BIGINT PRIMARY KEY, a BIGINT, b BIGINT, tag BIGINT NOT NULL
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO write_filter VALUES (1,1,2,0),(2,2,2,0),(3,NULL,4,0),(4,5,1,0),(5,NULL,NULL,0)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     let mut native_catalog = catalog.clone();
     let inspect = "SELECT id,tag FROM write_filter ORDER BY id";
     let query = StmtContext::for_query();
@@ -3375,7 +2974,7 @@ fn shared_write_selection_preserves_nulls_order_and_changed_rows() {
 
 #[test]
 fn shared_hash_join_v2_residual_preserves_inner_and_outer_rows() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    use tidb_executor::{run_create_table_on, run_insert_on, Catalog};
     use tidb_planner::find_best_task::coster::CostEnv;
 
     let mut catalog = Catalog::default();
@@ -3476,10 +3075,7 @@ fn shared_hash_join_v2_residual_preserves_inner_and_outer_rows() {
 #[test]
 fn shared_sql_materializes_window_partition_and_order_keys() {
     use tidb_ast::Stmt;
-    use tidb_executor::{
-        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
-        DEFAULT_DATABASE,
-    };
+    use tidb_executor::{plan_query_meta_stmt, DEFAULT_DATABASE};
     use tidb_expr::expression::Expression;
     use tidb_planner::find_best_task::coster::CostEnv;
     use tidb_planner::physical::PhysicalPlan;
@@ -3518,18 +3114,11 @@ fn shared_sql_materializes_window_partition_and_order_keys() {
             .any(|child| window_input_has_computed_keys(child, shuffled))
     }
 
-    let mut catalog = Catalog::default();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE shared_window (id BIGINT PRIMARY KEY, g BIGINT, v BIGINT)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO shared_window VALUES (1,1,5),(2,NULL,2),(3,1,NULL),(4,1,5),(5,NULL,1)",
-        &mut catalog,
         &StmtContext::for_query(),
-    )
-    .unwrap();
+    );
     use Datum::Int;
     for (shuffled, pipelined, parallel_projection) in [
         (false, false, false),
@@ -3583,29 +3172,19 @@ fn shared_sql_materializes_window_partition_and_order_keys() {
 #[test]
 fn shared_parallel_projection_reuses_signed_bigint_program() {
     use tidb_ast::Stmt;
-    use tidb_executor::{
-        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
-        DEFAULT_DATABASE,
-    };
+    use tidb_executor::{plan_query_meta_stmt, run_insert_on, DEFAULT_DATABASE};
     use tidb_planner::{find_best_task::coster::CostEnv, physical::PhysicalPlan};
 
-    let mut catalog = Catalog::default();
     let mut env = CostEnv::default();
     env.session.projection_concurrency = 2.0;
     let native = StmtContext::for_query()
         .with_executor_chunk_sizes(1, 1)
         .with_optimizer_cost_env(env);
-    run_create_table_on(
+    let mut catalog = catalog_with_rows(
         "CREATE TABLE parallel_int (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO parallel_int VALUES (1,3,1),(2,NULL,2),(3,-5,5),(4,7,NULL),(5,9,1)",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
     let sql = "SELECT id,a+b,id,a-b,a*b FROM parallel_int";
     let Stmt::Query(query) = tidb_parser::parse(sql).unwrap() else {
         unreachable!();
@@ -3663,23 +3242,14 @@ fn shared_parallel_projection_reuses_signed_bigint_program() {
 #[test]
 fn shared_bigint_xor_and_negation_keep_null_and_overflow() {
     use tidb_datatype::{Decimal, FieldTypeFlags};
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let native = StmtContext::for_query();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE integer_ops (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT UNSIGNED)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO integer_ops VALUES
             (1,0,1),(2,-2,9223372036854775808),(3,NULL,0),(4,3,NULL),
             (5,-9223372036854775808,18446744073709551615)",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
 
     use Datum::{Int, Null};
     let shared = native.clone().with_shared_projection();
@@ -3734,28 +3304,19 @@ fn shared_bigint_xor_and_negation_keep_null_and_overflow() {
 
 #[test]
 fn shared_any_value_preserves_typed_column_identity() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let native = StmtContext::for_query().with_only_full_group_by(true);
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE any_values (
             id BIGINT PRIMARY KEY, i BIGINT, u BIGINT UNSIGNED, r DOUBLE, d DECIMAL(31,9),
             t DATETIME(6), s VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
             b VARBINARY(20), j JSON, v VECTOR
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO any_values VALUES
             (1,-5,18446744073709551615,-1.5,12345678901234567890.123456789,
              '2020-01-02 03:04:05.678901','图',X'FF0001','{\"x\":[1,null]}','[-0.0,1.25]'),
             (2,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT ANY_VALUE(i),ANY_VALUE(u),ANY_VALUE(r),ANY_VALUE(d),ANY_VALUE(t),
                       ANY_VALUE(s),ANY_VALUE(b),ANY_VALUE(j),ANY_VALUE(v)
@@ -3811,7 +3372,7 @@ fn shared_any_value_preserves_typed_column_identity() {
 #[test]
 fn shared_calendar_parts_keep_typed_zero_and_null_values() {
     use tidb_datatype::DateModes;
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    use tidb_executor::{run_create_table_on, run_insert_on, Catalog};
 
     let mut catalog = Catalog::default();
     run_create_table_on(
@@ -3864,24 +3425,15 @@ fn shared_calendar_parts_keep_typed_zero_and_null_values() {
 
 #[test]
 fn shared_ord_and_quote_preserve_typed_strings() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let native = StmtContext::for_query();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE ord_quote (
             id BIGINT PRIMARY KEY, t VARCHAR(20) CHARACTER SET utf8mb4, b VARBINARY(20)
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO ord_quote VALUES
             (1,'éx',X'FF00271A5C'),(2,'🙂',X'E282'),(3,'',X''),(4,NULL,NULL)",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
     let shared = native.clone().with_shared_projection();
     let sql = "SELECT ORD(t),ORD(b),QUOTE(t),QUOTE(b) FROM ord_quote ORDER BY id LIMIT 4";
     let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
@@ -3912,28 +3464,20 @@ fn shared_space_and_repeat_keep_packet_diagnostics() {
     use tidb_ast::CiString;
     use tidb_chunk::chunk::Chunk;
     use tidb_datatype::{FieldType, FieldTypeCode};
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
     use tidb_expr::{
         column::Column, expression::Expression, scalar_function::ScalarFunction,
         shared_kernel::SharedProjection,
     };
 
-    let mut catalog = Catalog::default();
     let context = || StmtContext::for_query().with_max_allowed_packet(4);
     let native = context();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE packet_strings (id BIGINT PRIMARY KEY, s VARBINARY(20), n BIGINT)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO packet_strings VALUES
             (1,X'FF00',2),(2,X'7879',3),(3,X'',9223372036854775807),
             (4,X'70',-2),(5,NULL,6),(6,X'61',NULL),(7,X'61',4)",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
 
     let shared = context().with_shared_projection();
     let sql = "SELECT SPACE(n),REPEAT(s,n) FROM packet_strings ORDER BY id LIMIT 7";
@@ -4016,29 +3560,20 @@ fn shared_space_and_repeat_keep_packet_diagnostics() {
 
 #[test]
 fn shared_concat_keeps_prefix_size_and_null_rules() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let context = || StmtContext::for_query().with_max_allowed_packet(4);
     let native = context();
     let shared = context().with_shared_projection();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE packet_concat (
             id BIGINT PRIMARY KEY, a VARBINARY(20), b VARBINARY(20),
             c VARBINARY(20), sep VARBINARY(20)
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO packet_concat VALUES
              (1,X'FF00',NULL,'B','-'),(2,NULL,'abc',NULL,'--'),
              (3,'ABCD','Z',NULL,'-'),(4,'ABCDE',NULL,NULL,NULL),
              (5,NULL,NULL,NULL,'unused'),(6,'X','Y','Z','')",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT CONCAT(a,b,c),CONCAT_WS(sep,a,b,c)
                FROM packet_concat ORDER BY id LIMIT 6";
@@ -4085,7 +3620,7 @@ fn shared_concat_keeps_prefix_size_and_null_rules() {
 
 #[test]
 fn shared_base64_keeps_wrapping_padding_and_packet_policy() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    use tidb_executor::{run_create_table_on, run_insert_on, Catalog};
 
     let mut catalog = Catalog::default();
     let setup = StmtContext::for_query();
@@ -4162,28 +3697,19 @@ fn shared_base64_keeps_wrapping_padding_and_packet_policy() {
 
 #[test]
 fn shared_binary_padding_keeps_empty_and_packet_cases() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let context = || StmtContext::for_query().with_max_allowed_packet(4);
     let native = context();
     let shared = context().with_shared_projection();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE packet_pad (
             id BIGINT PRIMARY KEY, s VARBINARY(20), n BIGINT, p VARBINARY(20)
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO packet_pad VALUES
             (1,X'FF00',4,X'1A27'),(2,X'FF0041',2,X''),(3,X'FF00',2,X''),
             (4,X'FF00',3,X''),(5,X'FF00',-1,X'AA'),(6,NULL,2,NULL),
             (7,NULL,2,X'AA'),(8,'A',5,'x'),(9,'A',NULL,'x')",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT LPAD(s,n,p),RPAD(s,n,p) FROM packet_pad ORDER BY id LIMIT 9";
     let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
@@ -4229,29 +3755,20 @@ fn shared_binary_padding_keeps_empty_and_packet_cases() {
 
 #[test]
 fn shared_binary_insert_preserves_original_bytes_and_packet_size() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let context = || StmtContext::for_query().with_max_allowed_packet(4);
     let native = context();
     let shared = context().with_shared_projection();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE packet_insert (
             id BIGINT PRIMARY KEY, s VARBINARY(20), p BIGINT, n BIGINT, r VARBINARY(20)
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO packet_insert VALUES
             (1,X'FF0041',2,1,X'80'),(2,'abcd',2,-1,'_'),(3,'abcde',0,1,'X'),
             (4,'abc',4,1,'XXXXX'),(5,'abc',2,0,'XY'),(6,NULL,1,1,'X'),
             (7,'abc',-1,NULL,'X'),(8,'abcde',1,9223372036854775807,'Z'),
             (9,'abc',2,0,'X')",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
 
     let sql = "SELECT INSERT(s,p,n,r) FROM packet_insert ORDER BY id LIMIT 9";
     let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
@@ -4296,25 +3813,16 @@ fn shared_binary_insert_preserves_original_bytes_and_packet_size() {
 
 #[test]
 fn shared_elt_and_make_set_keep_binary_selection_and_utf8_errors() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let native = StmtContext::for_query();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE string_choices (
             id BIGINT PRIMARY KEY, n BIGINT, a VARBINARY(20), b VARBINARY(20)
         )",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO string_choices VALUES
             (1,1,'one',X'FF'),(2,2,'one',X'FF'),(3,3,'one',NULL),
             (4,0,'A','B'),(5,NULL,'A','B'),(6,-1,'A','B')",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
 
     let read = |value: &Datum| match value {
         Datum::Bytes(value) => Some(value.clone()),
@@ -4366,22 +3874,13 @@ fn shared_elt_and_make_set_keep_binary_selection_and_utf8_errors() {
 
 #[test]
 fn shared_double_math_keeps_domains_and_nulls() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE double_math (id BIGINT PRIMARY KEY, x DOUBLE)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO double_math VALUES (1,-4e0),(2,-0.5e0),(3,0e0),(4,1e0),(5,4e0),(6,NULL)",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
     let sql = "SELECT ASIN(x),ACOS(x),SQRT(x),SIGN(x) FROM double_math ORDER BY id LIMIT 6";
     let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
     assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
@@ -4417,24 +3916,15 @@ fn shared_double_math_keeps_domains_and_nulls() {
 
 #[test]
 fn shared_double_log_preserves_domain_warnings_and_nulls() {
-    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
-
-    let mut catalog = Catalog::default();
     let native = StmtContext::for_query();
     let shared = StmtContext::for_query().with_shared_projection();
-    run_create_table_on(
+    let catalog = catalog_with_rows(
         "CREATE TABLE double_logs (id BIGINT PRIMARY KEY, b DOUBLE, x DOUBLE)",
-        &mut catalog,
-    )
-    .unwrap();
-    run_insert_on(
         "INSERT INTO double_logs VALUES
          (1,2e0,8e0),(2,1e0,1e0),(3,-2e0,4e0),(4,2e0,0e0),
          (5,NULL,-1e0),(6,-2e0,NULL),(7,0.5e0,4e0)",
-        &mut catalog,
         &native,
-    )
-    .unwrap();
+    );
     let sql = "SELECT LN(x),LOG(x),LOG(b,x),LOG2(x) FROM double_logs ORDER BY id LIMIT 7";
     let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
     assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
