@@ -63,3 +63,4 @@
 - [二进制字符串比较和查找](binary-string-search.zh.md)
 - [二进制 REPLACE 和 SUBSTRING](binary-replace-substring.zh.md)
 - [二进制 SUBSTRING_INDEX](binary-substring-index.zh.md)
+- [类型化 JSON_VALID](json-valid.zh.md)
