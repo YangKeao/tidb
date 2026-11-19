@@ -1911,6 +1911,28 @@ impl SharedExpression {
                     work.push(Visit::PacketString(op));
                     work.extend(f.args.iter().rev().map(Visit::ByteOperand));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "to_base64" | "from_base64") =>
+                {
+                    use tidb_query_expr::impl_string::PacketString;
+
+                    let [input] = f.args.as_slice() else {
+                        return Err("base64 requires one byte operand".into());
+                    };
+                    if !is_raw_string_operand(input)
+                        || !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                    {
+                        return Err("base64 requires typed strings".into());
+                    }
+                    let op = if f.func_name.lowercase() == "to_base64" {
+                        PacketString::ToBase64
+                    } else {
+                        PacketString::FromBase64
+                    };
+                    work.push(Visit::PacketString(op));
+                    work.push(Visit::ByteOperand(input));
+                }
                 Visit::PacketString(op) => {
                     nodes.push(RpnExpressionNode::NativePacketString {
                         op,
@@ -2142,6 +2164,9 @@ impl SharedExpression {
                 }
                 Expression::ScalarFunction(f) if f.func_name.lowercase() == "any_value" => {
                     NativeStringResult::Text(f.args[0].static_type().unwrap().collation())
+                }
+                Expression::ScalarFunction(f) if f.func_name.lowercase() == "from_base64" => {
+                    NativeStringResult::Bytes
                 }
                 Expression::ScalarFunction(f) => NativeStringResult::Text(
                     string_conditional_collation(f).unwrap_or(tidb_datatype::Collation::DEFAULT),
@@ -3739,6 +3764,31 @@ mod tests {
             })
             .collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn from_base64_owned_output_keeps_binary_datum() {
+        let ty = native_type().with_collation(tidb_datatype::Collation::Binary);
+        let mut column = Column::new(1, ty.clone());
+        column.index = 0;
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("from_base64"),
+            ty.clone(),
+            vec![Expression::Column(column)],
+        ));
+        let mut input = Chunk::new_with_capacity(&[ty], 1);
+        input.append_bytes(0, b"/wA=");
+        let actual = SharedExpression::compile(&expression)
+            .unwrap()
+            .evaluate(&input, &[0], &mut EvalContext::default())
+            .unwrap();
+        assert_eq!(actual, vec![Datum::new_bytes(vec![0xff, 0])]);
+        assert_eq!(
+            actual,
+            vec![expression
+                .eval(&crate::NoColumns, input.get_row(0))
+                .unwrap()]
+        );
     }
 
     fn md5(arg: Expression) -> Expression {

@@ -4082,3 +4082,80 @@ fn shared_concat_keeps_prefix_size_and_null_rules() {
         expected
     );
 }
+
+#[test]
+fn shared_base64_keeps_wrapping_padding_and_packet_policy() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let setup = StmtContext::for_query();
+    run_create_table_on(
+        "CREATE TABLE packet_base64 (id BIGINT PRIMARY KEY, b VARBINARY(100), s VARBINARY(100))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        &format!(
+            "INSERT INTO packet_base64 VALUES (1,X'FF00',X'202F77413D200A'),
+             (2,'{}','Zh=='),(3,X'',X'5A670B3D3D'),(4,NULL,'Zg='),
+             (5,'foo','AAAA'),(6,X'',X''),(7,NULL,NULL)",
+            "a".repeat(58)
+        ),
+        &mut catalog,
+        &setup,
+    )
+    .unwrap();
+
+    let sql = "SELECT TO_BASE64(b),FROM_BASE64(s) FROM packet_base64 ORDER BY id LIMIT 7";
+    let wrapped = "YWFh".repeat(19) + "\nYQ==";
+    for max_packet in [4, 1024] {
+        let context = || StmtContext::for_query().with_max_allowed_packet(max_packet);
+        let native = context();
+        let shared = context().with_shared_projection();
+        let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+        assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+        let narrow = max_packet == 4;
+        let expected: [[Option<&[u8]>; 2]; 7] = [
+            [Some(b"/wA="), (!narrow).then_some(&[0xff, 0][..])],
+            [(!narrow).then_some(wrapped.as_bytes()), None],
+            [Some(b""), None],
+            [None, None],
+            [Some(b"Zm9v"), Some(&[0, 0, 0])],
+            [Some(b""), Some(b"")],
+            [None, None],
+        ];
+        assert_eq!(actual.1.len(), expected.len());
+        for (row, expected) in actual.1.iter().zip(expected) {
+            for (actual, expected) in row.iter().zip(expected) {
+                match actual {
+                    Datum::String(value) => assert_eq!(Some(value.bytes()), expected),
+                    Datum::Bytes(value) => assert_eq!(Some(value.as_slice()), expected),
+                    Datum::Null => assert_eq!(expected, None),
+                    _ => panic!("expected base64 string or NULL"),
+                }
+            }
+        }
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+        let warnings = shared.take_warnings();
+        assert_eq!(warnings, native.take_warnings());
+        let warnings: Vec<_> = warnings
+            .into_iter()
+            .map(|(_, code, message)| (code, message))
+            .collect();
+        if narrow {
+            assert_eq!(
+                warnings,
+                ["to_base64", "from_base64"].map(|name| {
+                    (
+                        1301,
+                        format!(
+                            "Result of {name}() was larger than max_allowed_packet (4) - truncated"
+                        ),
+                    )
+                })
+            );
+        } else {
+            assert!(warnings.is_empty());
+        }
+    }
+}
