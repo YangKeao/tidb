@@ -1,6 +1,6 @@
 # BIGINT CEIL、CEILING 和 FLOOR
 
-TiDB 源码和测试固定在 ，SDK 继续使用 。
+TiDB 源码和测试固定在 912b5df3b4ad90ab61e990b45a9de5ecd180b654，SDK 继续使用 6be56aea737939da0025129160ec799bfb03a82b。
 
 已定型的有符号和无符号 BIGINT 使用 SDK 的整数签名。实际串行 SQL 校验了最小有符号数、最大无符号数、NULL 和输出字段。DECIMAL 查询保持原有路径。首次测试的 SQL 未选用串行共享投影，补上 LIMIT 后确认共享投影实际执行。
 
