@@ -54,3 +54,4 @@
 - [向量解析和计算的组合](native-vector-compose.zh.md)
 - [类型化向量比较](native-vector-compare.zh.md)
 - [类型化字符串 CAST AS VECTOR](native-vector-cast.zh.md)
+- [类型化向量的按需分支](native-vector-conditional.zh.md)
