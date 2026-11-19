@@ -2791,3 +2791,56 @@ fn shared_sql_vector_arithmetic_preserves_output_and_error_order() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_sql_byte_checksum_and_zlib_length_keep_payload_and_warnings() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE byte_payloads (id BIGINT PRIMARY KEY, s VARBINARY(20))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO byte_payloads VALUES
+            (1,NULL),(2,''),(3,X'FF'),(4,X'05000000'),(5,X'05000000FF'),(6,X'FFFFFFFF00')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT CRC32(s), UNCOMPRESSED_LENGTH(s) FROM byte_payloads ORDER BY id LIMIT 6";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0], vec![Datum::Null; 2]);
+    assert_eq!(actual.1[2][1], Datum::Int(0));
+    assert_eq!(actual.1[3][1], Datum::Int(0));
+    assert_eq!(actual.1[4][1], Datum::Int(5));
+    assert_eq!(actual.1[5][1], Datum::Int(i64::from(u32::MAX)));
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(warnings.len(), 2);
+    assert!(warnings
+        .iter()
+        .all(|(_, code, message)| *code == 1259 && message == "ZLIB: Input data corrupted"));
+
+    let sql = "SELECT IF(id=3,UNCOMPRESSED_LENGTH(s),MOD(id,0))
+        FROM byte_payloads WHERE id BETWEEN 3 AND 4 ORDER BY id LIMIT 2";
+    let shared = StmtContext::for_query().with_shared_projection();
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &shared).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap()
+    );
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(
+        warnings
+            .iter()
+            .map(|(_, code, _)| *code)
+            .collect::<Vec<_>>(),
+        [1259, 1365]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}

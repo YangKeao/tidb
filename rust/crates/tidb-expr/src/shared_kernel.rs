@@ -18,8 +18,8 @@ use tidb_query_datatype::{
 };
 use tidb_query_expr::{
     ExpressionScalar, ExpressionVector, InputColumns, InputResult, InvocationMode,
-    NativeArithmetic, NativeDiagnosticPart, OutputOrder, OwnedRpnExecution, RpnExecutionRef,
-    RpnExpression, RpnExpressionNode, RpnStackNode, RpnStackNodeVectorValue,
+    NativeArithmetic, NativeDiagnosticPart, NativeKernelWarnings, OutputOrder, OwnedRpnExecution,
+    RpnExecutionRef, RpnExpression, RpnExpressionNode, RpnStackNode, RpnStackNodeVectorValue,
 };
 
 use crate::expression::Expression;
@@ -124,6 +124,7 @@ impl SharedExpression {
                 Vec<usize>,
             ),
             IntCall(tidb_query_expr::RpnFnMeta, usize, bool),
+            WarnIntCall(tidb_query_expr::RpnFnMeta),
             SignedAbs(String),
             IntegerArithmetic(NativeArithmetic, bool),
             Compare(&'a str, ComparisonOperands, Option<usize>),
@@ -150,16 +151,16 @@ impl SharedExpression {
             };
         while let Some(visit) = work.pop() {
             let mut truth_test = None;
-            let mut byte_count = None;
+            let mut bytes_to_int = None;
             let mut bit_operation = None;
             if let Visit::Enter(Expression::ScalarFunction(f)) = &visit {
                 truth_test = native_int_truth_test(f);
-                byte_count = native_byte_count(f);
+                bytes_to_int = native_bytes_to_int(f);
                 bit_operation = native_bit_operation(f);
                 // Direct typed leaves never introduce per-row effects.
                 let pure_call = (is_native_comparison(f)
                     || truth_test.is_some()
-                    || byte_count.is_some()
+                    || bytes_to_int.is_some()
                     || bit_operation.is_some())
                     && f.args
                         .iter()
@@ -821,18 +822,33 @@ impl SharedExpression {
                         *target = end;
                     }
                 }
-                Visit::Enter(Expression::ScalarFunction(f)) if byte_count.is_some() => {
+                Visit::Enter(Expression::ScalarFunction(f)) if bytes_to_int.is_some() => {
                     let [operand] = f.args.as_slice() else {
-                        return Err("byte counts require one operand".into());
+                        return Err("byte function requires one operand".into());
                     };
+                    let name = f.func_name.lowercase();
+                    let result = f
+                        .ret_type
+                        .as_ref()
+                        .filter(|ty| {
+                            ty.code() == tidb_datatype::FieldTypeCode::LongLong
+                                && !ty.is_array()
+                                && (!ty.is_unsigned() || name == "crc32")
+                        })
+                        .ok_or("byte function requires a BIGINT result")?;
                     if !is_raw_string_operand(operand)
-                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                        || (matches!(name, "crc32" | "uncompressed_length")
+                            && !is_binary_string_leaf(operand))
                     {
-                        return Err(
-                            "byte counts require a string leaf and signed BIGINT result".into()
-                        );
+                        return Err("byte function requires an admitted string leaf".into());
                     }
-                    work.push(Visit::IntCall(byte_count.unwrap(), 1, false));
+                    let meta = bytes_to_int.unwrap();
+                    if name == "uncompressed_length" {
+                        row_fallback = true;
+                        work.push(Visit::WarnIntCall(meta));
+                    } else {
+                        work.push(Visit::IntCall(meta, 1, result.is_unsigned()));
+                    }
                     work.push(Visit::ByteOperand(operand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f)) if truth_test.is_some() => {
@@ -1122,6 +1138,12 @@ impl SharedExpression {
                     args_len: 1,
                     field_type: bigint_type(false),
                     metadata: Box::new(message),
+                }),
+                Visit::WarnIntCall(func_meta) => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta,
+                    args_len: 1,
+                    field_type: bigint_type(false),
+                    metadata: Box::new(NativeKernelWarnings),
                 }),
                 Visit::IntCall(func_meta, args_len, unsigned) => {
                     nodes.push(RpnExpressionNode::FnCall {
@@ -2390,6 +2412,18 @@ impl InputColumns for NativeInput<'_> {
     fn conversion_location(&self) -> tidb_datatype::ConversionLocation {
         tidb_datatype::ConversionLocation::from_time_zone(&self.effects.time_zone())
     }
+    fn append_kernel_warning(&self, warning: &tipb::Error) {
+        if let Ok(code) = u16::try_from(warning.get_code()) {
+            let message = warning.get_msg();
+            self.effects.append_warning(
+                code,
+                message
+                    .strip_prefix("evaluation failed: ")
+                    .unwrap_or(message),
+            );
+        }
+    }
+
     fn conversion_warnings(&self) -> &dyn tidb_datatype::ConversionWarningAppender {
         self
     }
@@ -2658,9 +2692,11 @@ fn native_policy_error(error: crate::EvalError) -> tidb_query_expr::evaluation_e
     EvaluateError::Custom { code, msg }.into()
 }
 
-fn native_byte_count(
+fn native_bytes_to_int(
     function: &crate::scalar_function::ScalarFunction,
 ) -> Option<tidb_query_expr::RpnFnMeta> {
+    use tidb_query_expr::impl_encryption::uncompressed_length_fn_meta;
+    use tidb_query_expr::impl_math::crc32_fn_meta;
     use tidb_query_expr::impl_string::{
         ascii_fn_meta, bit_length_fn_meta, char_length_fn_meta, length_fn_meta,
     };
@@ -2672,6 +2708,8 @@ fn native_byte_count(
         "length" | "octet_length" => length_fn_meta(),
         "ascii" => ascii_fn_meta(),
         "bit_length" => bit_length_fn_meta(),
+        "crc32" => crc32_fn_meta(),
+        "uncompressed_length" => uncompressed_length_fn_meta(),
         "char_length" | "character_length"
             if function
                 .args
