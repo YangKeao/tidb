@@ -77,3 +77,4 @@
 - [类型化日期分量](calendar-parts.zh.md)
 - [类型化 ORD 与 QUOTE](typed-ord-quote.zh.md)
 - [SPACE 和 REPEAT 的包大小限制](packet-space-repeat.zh.md)
+- [CONCAT 和 CONCAT_WS 的包大小与 NULL](packet-concat.zh.md)
