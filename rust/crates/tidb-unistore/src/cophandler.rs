@@ -5810,6 +5810,150 @@ mod tests {
     }
 
     #[test]
+    fn storage_integer_comparisons_preserve_all_signedness_pairs() {
+        use tidb_codec::table_key::{encode_row_key_with_handle, RecordHandle};
+        use tidb_datatype::{Datum, FieldTypeFlags};
+        use tidb_proto::{KvrpcMutation, KvrpcOp};
+
+        let mut store = MvccStore::new();
+        for (handle, signed, unsigned) in [
+            (1, Datum::Int(-1), Datum::UInt(u64::MAX)),
+            (2, Datum::Int(7), Datum::UInt(7)),
+            (3, Datum::Int(9), Datum::UInt(2)),
+            (4, Datum::Null, Datum::Null),
+        ] {
+            let key = encode_row_key_with_handle(11, &RecordHandle::Int(handle));
+            let value = tidb_codec::encode_value(&[Datum::Int(2), signed, Datum::Int(3), unsigned])
+                .unwrap();
+            store
+                .prewrite(&crate::mvcc_store::PrewriteReq {
+                    mutations: vec![KvrpcMutation {
+                        op: KvrpcOp::Put as i32,
+                        key: key.clone(),
+                        value,
+                        ..KvrpcMutation::default()
+                    }],
+                    primary_lock: key.clone(),
+                    start_version: 10,
+                    ..crate::mvcc_store::PrewriteReq::default()
+                })
+                .unwrap();
+            store.commit(&[key], 10, 11).unwrap();
+        }
+        let column = |index| {
+            let mut value = Vec::new();
+            tidb_codec::encode_int(&mut value, index);
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ColumnRef as i32),
+                val: Some(value),
+                ..Default::default()
+            }
+        };
+        let field = |unsigned: bool| tipb::FieldType {
+            tp: Some(8),
+            flag: unsigned.then_some(FieldTypeFlags::UNSIGNED),
+            ..Default::default()
+        };
+        let literal = |unsigned: bool| {
+            let mut value = Vec::new();
+            let tp = if unsigned {
+                tidb_codec::encode_uint(&mut value, 7);
+                tipb::ExprType::Uint64
+            } else {
+                tidb_codec::encode_int(&mut value, -1);
+                tipb::ExprType::Int64
+            };
+            tipb::Expr {
+                tp: Some(tp as i32),
+                val: Some(value),
+                field_type: Some(field(unsigned)),
+                ..Default::default()
+            }
+        };
+        let scan = tipb::Executor {
+            tp: Some(tipb::ExecType::TypeTableScan as i32),
+            tbl_scan: Some(tipb::TableScan {
+                table_id: Some(11),
+                columns: (1..=3)
+                    .map(|id| tipb::ColumnInfo {
+                        column_id: Some(id),
+                        tp: Some(8),
+                        pk_handle: Some(id == 1),
+                        flag: (id == 3).then_some(FieldTypeFlags::UNSIGNED as i32),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for (lhs, rhs, equality, greater) in [
+            (column(1), literal(false), &[1][..], &[2, 3][..]),
+            (column(1), column(2), &[2][..], &[3][..]),
+            (column(2), column(1), &[2][..], &[1][..]),
+            (column(2), literal(true), &[2][..], &[1][..]),
+        ] {
+            for (sig, handles) in [
+                (tipb::ScalarFuncSig::EqInt, equality),
+                (tipb::ScalarFuncSig::GtInt, greater),
+            ] {
+                let condition = tipb::Expr {
+                    tp: Some(tipb::ExprType::ScalarFunc as i32),
+                    sig: Some(sig as i32),
+                    field_type: Some(field(false)),
+                    children: vec![lhs.clone(), rhs.clone()],
+                    ..Default::default()
+                };
+                let data = tipb::DagRequest {
+                    executors: vec![
+                        scan.clone(),
+                        tipb::Executor {
+                            tp: Some(tipb::ExecType::TypeSelection as i32),
+                            selection: Some(tipb::Selection {
+                                conditions: vec![condition],
+                            }),
+                            ..Default::default()
+                        },
+                    ],
+                    output_offsets: vec![0],
+                    ..Default::default()
+                }
+                .encode_to_vec();
+                let (start, end) = tidb_codec::table_key::get_table_handle_key_range(11);
+                #[cfg(feature = "shared-kernel")]
+                INTEGER_COMPARISON_EVALS.with(|count| count.set(0));
+                let response = handle_cop_request(
+                    &mut store,
+                    &coprocessor::Request {
+                        tp: REQ_TYPE_DAG,
+                        data,
+                        ranges: vec![coprocessor::KeyRange { start, end }],
+                        start_ts: 20,
+                        ..Default::default()
+                    },
+                );
+                assert!(response.other_error.is_empty(), "{}", response.other_error);
+                let select = tipb::SelectResponse::decode(response.data.as_ref()).unwrap();
+                assert!(select.error.is_none());
+                assert!(select.warnings.is_empty());
+                assert_eq!(select.warning_count.unwrap_or(0), 0);
+                let actual = tidb_codec::decode(
+                    select.chunks[0].rows_data.as_deref().unwrap(),
+                    handles.len(),
+                )
+                .unwrap();
+                assert_eq!(
+                    actual,
+                    handles.iter().copied().map(Datum::Int).collect::<Vec<_>>(),
+                    "{sig:?}"
+                );
+                #[cfg(feature = "shared-kernel")]
+                assert_eq!(INTEGER_COMPARISON_EVALS.with(|count| count.get()), 4);
+            }
+        }
+    }
+
+    #[test]
     fn three_valued_logic_matches_mysql() {
         use tidb_datatype::Datum;
         let and = |l, r| SimpleExpr::Func(SimpleSig::LogicalAnd, vec![l, r]);

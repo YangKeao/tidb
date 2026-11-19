@@ -127,7 +127,7 @@ impl SharedExpression {
             SignedAbs(String),
             IntegerArithmetic(NativeArithmetic, bool),
             Compare(&'a str, ComparisonOperands, Option<usize>),
-            WireComparisonRight(&'static str, &'a Expression),
+            WireComparisonRight(&'static str, &'a Expression, ComparisonOperands),
             LogicalNext(&'a Expression, usize),
             LogicalEnd(usize),
             Conditional(&'a [Expression], tipb::FieldType),
@@ -959,7 +959,7 @@ impl SharedExpression {
                         );
                     };
                     if !f.ret_type.as_ref().is_some_and(is_signed_bigint)
-                        || ((logical || wire.is_some()) && (lhs_unsigned || rhs_unsigned))
+                        || (logical && (lhs_unsigned || rhs_unsigned))
                     {
                         return Err(
                             "unsupported BIGINT declaration for logical operator or comparison"
@@ -967,7 +967,16 @@ impl SharedExpression {
                         );
                     }
                     if let Some(name) = wire {
-                        work.push(Visit::WireComparisonRight(name, right));
+                        work.push(Visit::WireComparisonRight(
+                            name,
+                            right,
+                            ComparisonOperands::BigInt {
+                                lhs_unsigned,
+                                rhs_unsigned,
+                            },
+                        ));
+                        work.push(Visit::BigIntOperand(left));
+                        continue;
                     } else if logical {
                         let start = nodes.len();
                         nodes.push(RpnExpressionNode::LogicalStart {
@@ -991,21 +1000,14 @@ impl SharedExpression {
                     }
                     work.push(Visit::Enter(left));
                 }
-                Visit::WireComparisonRight(name, right) => {
+                Visit::WireComparisonRight(name, right, operands) => {
                     let guard = nodes.len();
                     nodes.push(RpnExpressionNode::NullGuard {
                         target: 0,
                         field_type: FieldTypeTp::LongLong.into(),
                     });
-                    work.push(Visit::Compare(
-                        name,
-                        ComparisonOperands::BigInt {
-                            lhs_unsigned: false,
-                            rhs_unsigned: false,
-                        },
-                        Some(guard),
-                    ));
-                    work.push(Visit::Enter(right));
+                    work.push(Visit::Compare(name, operands, Some(guard)));
+                    work.push(Visit::BigIntOperand(right));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
@@ -1823,7 +1825,7 @@ impl SharedExpression {
     }
 }
 
-/// A frozen coprocessor comparison over two signed BIGINT leaf operands.
+/// A frozen coprocessor comparison over two typed BIGINT leaf operands.
 #[derive(Debug)]
 pub struct SharedIntegerComparison(SharedExpression);
 
@@ -1873,9 +1875,10 @@ impl SharedIntegerComparison {
             }
         }
         let mut values = [ScalarValue::Int(None), ScalarValue::Int(None)];
-        for (value, (index, _)) in values.iter_mut().zip(&self.0.columns) {
+        for (value, (index, field)) in values.iter_mut().zip(&self.0.columns) {
             *value = match row.get(*index)? {
                 Datum::Int(value) => ScalarValue::Int(Some(*value)),
+                Datum::UInt(value) if field.is_unsigned() => ScalarValue::Int(Some(*value as i64)),
                 Datum::Null => ScalarValue::Int(None),
                 _ => return None,
             };
