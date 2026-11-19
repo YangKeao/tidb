@@ -152,15 +152,18 @@ impl SharedExpression {
         while let Some(visit) = work.pop() {
             let mut truth_test = None;
             let mut bytes_to_int = None;
+            let mut binary_search = None;
             let mut bit_operation = None;
             if let Visit::Enter(Expression::ScalarFunction(f)) = &visit {
                 truth_test = native_int_truth_test(f);
                 bytes_to_int = native_bytes_to_int(f);
+                binary_search = native_binary_string_search(f);
                 bit_operation = native_bit_operation(f);
                 // Direct typed leaves never introduce per-row effects.
                 let pure_call = (is_native_comparison(f)
                     || truth_test.is_some()
                     || bytes_to_int.is_some()
+                    || binary_search.is_some()
                     || bit_operation.is_some())
                     && f.args
                         .iter()
@@ -850,6 +853,10 @@ impl SharedExpression {
                         work.push(Visit::IntCall(meta, 1, result.is_unsigned()));
                     }
                     work.push(Visit::ByteOperand(operand));
+                }
+                Visit::Enter(Expression::ScalarFunction(f)) if binary_search.is_some() => {
+                    work.push(Visit::IntCall(binary_search.unwrap(), 2, false));
+                    work.extend(f.args.iter().rev().map(Visit::ByteOperand));
                 }
                 Visit::Enter(Expression::ScalarFunction(f)) if truth_test.is_some() => {
                     let (func_meta, invert) = truth_test.unwrap();
@@ -2721,6 +2728,31 @@ fn native_bytes_to_int(
         }
         _ => return None,
     })
+}
+
+fn native_binary_string_search(
+    function: &crate::scalar_function::ScalarFunction,
+) -> Option<tidb_query_expr::RpnFnMeta> {
+    use tidb_query_datatype::codec::collation::collator::CollatorBinary;
+    use tidb_query_expr::impl_string::{
+        find_in_set_fn_meta, instr_fn_meta, locate_2_args_fn_meta, strcmp_fn_meta,
+    };
+
+    let meta = match function.func_name.lowercase() {
+        "strcmp" => strcmp_fn_meta::<CollatorBinary>(),
+        "instr" => instr_fn_meta(),
+        "locate" => locate_2_args_fn_meta(),
+        "find_in_set" if matches!(function.args.get(1), Some(Expression::Column(_))) => {
+            find_in_set_fn_meta::<CollatorBinary>()
+        }
+        _ => return None,
+    };
+    (function.pb_signature().is_none()
+        && function.args.len() == 2
+        && function.ret_type.as_ref().is_some_and(is_signed_bigint)
+        && function.derived_collation() == tidb_datatype::Collation::Binary
+        && function.args.iter().all(is_binary_string_leaf))
+    .then_some(meta)
 }
 
 fn is_vector_type(ty: &tidb_datatype::FieldType) -> bool {

@@ -2844,3 +2844,43 @@ fn shared_sql_byte_checksum_and_zlib_length_keep_payload_and_warnings() {
     );
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_binary_string_search_keeps_byte_order_and_position() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE byte_search (
+            id BIGINT PRIMARY KEY, a VARBINARY(20), b VARBINARY(20), l VARBINARY(20)
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO byte_search VALUES
+            (1,X'FF4100','A',X'2C412CFF'),(2,'a ','a','a ,a'),(3,'','',','),
+            (4,NULL,'x',NULL),(5,'x','y',''),(6,'x',X'FF',X'612CFF')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let native = StmtContext::for_query();
+    let sql = "SELECT STRCMP(a,b), INSTR(a,b), LOCATE(b,a), FIND_IN_SET(b,l)
+        FROM byte_search ORDER BY id LIMIT 6";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let integer_row = |values: [i64; 4]| values.into_iter().map(Datum::Int).collect::<Vec<_>>();
+    assert_eq!(
+        actual.1,
+        vec![
+            integer_row([1, 2, 2, 2]),
+            integer_row([1, 1, 1, 2]),
+            integer_row([0, 1, 1, 1]),
+            vec![Datum::Null; 4],
+            integer_row([-1, 0, 0, 0]),
+            integer_row([-1, 0, 0, 2]),
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
