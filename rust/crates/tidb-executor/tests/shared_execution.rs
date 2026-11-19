@@ -3472,3 +3472,96 @@ fn shared_hash_join_v2_residual_preserves_inner_and_outer_rows() {
     assert_eq!(shared.take_warnings(), original.take_warnings());
     assert_eq!(shared.shared_selection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_materializes_window_partition_and_order_keys() {
+    use tidb_ast::Stmt;
+    use tidb_executor::{
+        plan_query_meta_stmt, run_create_table_on, run_insert_on, run_select_meta_on, Catalog,
+        DEFAULT_DATABASE,
+    };
+    use tidb_expr::expression::Expression;
+    use tidb_planner::find_best_task::coster::CostEnv;
+    use tidb_planner::physical::PhysicalPlan;
+
+    fn window_input_has_computed_keys(plan: &PhysicalPlan, shuffled: bool) -> bool {
+        fn key_projection(plan: &PhysicalPlan) -> bool {
+            match plan {
+                PhysicalPlan::Projection(projection) => {
+                    ["plus", "minus"].iter().all(|name| {
+                        projection.exprs.iter().any(|expr| {
+                            matches!(expr, Expression::ScalarFunction(f) if f.func_name.lowercase() == *name)
+                        })
+                    })
+                }
+                PhysicalPlan::Sort(_) => plan.children().iter().any(key_projection),
+                PhysicalPlan::ShuffleReceiver(receiver) => key_projection(&receiver.data_source),
+                _ => false,
+            }
+        }
+
+        if let PhysicalPlan::Shuffle(_) = plan {
+            return shuffled
+                && plan
+                    .children()
+                    .iter()
+                    .any(|child| window_input_has_computed_keys(child, false));
+        }
+        if !shuffled
+            && matches!(plan, PhysicalPlan::Window(_))
+            && plan.children().iter().any(key_projection)
+        {
+            return true;
+        }
+        plan.children()
+            .iter()
+            .any(|child| window_input_has_computed_keys(child, shuffled))
+    }
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE shared_window (id BIGINT PRIMARY KEY, g BIGINT, v BIGINT)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO shared_window VALUES (1,1,5),(2,NULL,2),(3,1,NULL),(4,1,5),(5,NULL,1)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id, RANK() OVER (PARTITION BY g+1 ORDER BY v-1) AS pos
+               FROM (SELECT id,g,v FROM shared_window ORDER BY id LIMIT 5) AS retained
+               ORDER BY id";
+    let Stmt::Query(query) = tidb_parser::parse(sql).unwrap() else {
+        unreachable!();
+    };
+    use Datum::Int;
+    for (shuffled, pipelined) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut env = CostEnv::default();
+        env.session.shuffle_options.window_concurrency = if shuffled { 2 } else { 1 };
+        let native = StmtContext::for_query()
+            .with_optimizer_cost_env(env)
+            .with_executor_chunk_sizes(1, 8)
+            .with_pipelined_window_exec(pipelined);
+        let shared = native.clone().with_shared_projection();
+        let plan = plan_query_meta_stmt(&query, &catalog, DEFAULT_DATABASE, &native).unwrap();
+        assert!(window_input_has_computed_keys(&plan, shuffled), "{plan:#?}");
+        let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+        assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+        assert_eq!(
+            actual.1,
+            vec![
+                vec![Int(1), Int(2)],
+                vec![Int(2), Int(2)],
+                vec![Int(3), Int(1)],
+                vec![Int(4), Int(2)],
+                vec![Int(5), Int(1)],
+            ]
+        );
+        assert_eq!(shared.take_warnings(), native.take_warnings());
+        let (programs, batches) = shared.shared_projection_counts().unwrap();
+        assert_eq!(programs, 1);
+        assert!(batches > 0);
+    }
+}
