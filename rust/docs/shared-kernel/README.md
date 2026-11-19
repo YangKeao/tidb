@@ -87,3 +87,5 @@
 - [DOUBLE 对数的定义域和告警](double-log.zh.md)
 
 - [DOUBLE 幂运算和角度转换](double-power-angle.zh.md)
+
+- [类型化日期的星期和年内日序](weekday-year-day.zh.md)
