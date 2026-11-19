@@ -96,6 +96,7 @@ impl SharedExpression {
             BigIntOperand(&'a Expression),
             ByteOperand(&'a Expression),
             VectorColumn(&'a crate::column::Column),
+            VectorNorm,
             JsonOperand(&'a Expression),
             JsonType,
             BytesCall(tidb_query_expr::RpnFnMeta, usize),
@@ -319,26 +320,43 @@ impl SharedExpression {
                 }
                 Visit::BigIntOperand(expression) => work.push(Visit::Enter(expression)),
                 Visit::Enter(Expression::ScalarFunction(f))
-                    if f.pb_signature().is_none() && f.func_name.lowercase() == "vec_dims" =>
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "vec_dims" | "vec_l2_norm") =>
                 {
                     let [Expression::Column(column)] = f.args.as_slice() else {
-                        return Err("VEC_DIMS requires a vector column".into());
+                        return Err("vector function requires a vector column".into());
                     };
+                    let dims = f.func_name.lowercase() == "vec_dims";
                     if !column.ret_type.as_ref().is_some_and(|ty| {
                         ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32 && !ty.is_array()
-                    }) || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
-                    {
-                        return Err(
-                            "VEC_DIMS requires a vector input and signed BIGINT result".into()
-                        );
+                    }) || !f.ret_type.as_ref().is_some_and(|ty| {
+                        if dims {
+                            is_signed_bigint(ty)
+                        } else {
+                            ty.code() == tidb_datatype::FieldTypeCode::Double
+                                && !ty.is_array()
+                                && !ty.is_unsigned()
+                        }
+                    }) {
+                        return Err("vector function input or result type mismatch".into());
                     }
-                    work.push(Visit::IntCall(
-                        tidb_query_expr::impl_vec::vec_dims_fn_meta(),
-                        1,
-                        false,
-                    ));
+                    if dims {
+                        work.push(Visit::IntCall(
+                            tidb_query_expr::impl_vec::vec_dims_fn_meta(),
+                            1,
+                            false,
+                        ));
+                    } else {
+                        work.push(Visit::VectorNorm);
+                    }
                     work.push(Visit::VectorColumn(column));
                 }
+                Visit::VectorNorm => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta: tidb_query_expr::impl_vec::vec_l2_norm_fn_meta(),
+                    args_len: 1,
+                    field_type: FieldTypeTp::Double.into(),
+                    metadata: Box::new(()),
+                }),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.func_name.lowercase() == "date" =>
                 {
@@ -2887,6 +2905,13 @@ fn native_output_with_collation(
             ..
         } => Ok(vec![integer(*v); rows]),
         RpnStackNode::Scalar {
+            value: ScalarValue::Real(v),
+            ..
+        } => Ok(vec![
+            v.map_or(Datum::Null, |v| Datum::Real(v.into_inner()));
+            rows
+        ]),
+        RpnStackNode::Scalar {
             value: ScalarValue::Bytes(v),
             ..
         } => Ok((0..rows).map(|_| convert(v.as_deref())).collect()),
@@ -2895,6 +2920,15 @@ fn native_output_with_collation(
             if let VectorValue::Int(values) = values {
                 return Ok((0..rows)
                     .map(|r| integer(values.get_option_ref(value.logical_rows()[r]).copied()))
+                    .collect());
+            }
+            if let VectorValue::Real(values) = values {
+                return Ok((0..rows)
+                    .map(|r| {
+                        values
+                            .get_option_ref(value.logical_rows()[r])
+                            .map_or(Datum::Null, |v| Datum::Real(v.into_inner()))
+                    })
                     .collect());
             }
             let VectorValue::Bytes(values) = values else {

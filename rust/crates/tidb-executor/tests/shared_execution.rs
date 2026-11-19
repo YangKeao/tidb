@@ -2235,3 +2235,35 @@ fn shared_sql_vector_dims_reads_native_vector_columns() {
     );
     assert_eq!(passthrough.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_vector_norm_preserves_double_range() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_norm (id BIGINT PRIMARY KEY, v VECTOR)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_norm VALUES (1,'[3,4]'),(2,'[]'),(3,NULL),(4,'[3e38,-3e38]')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,VEC_L2_NORM(v),VEC_DIMS(v),VEC_L2_NORM(v)+1e0 FROM vector_norm ORDER BY id LIMIT 4";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0][3], Datum::Real(6.0));
+    assert_eq!(actual.1[1][3], Datum::Real(1.0));
+    assert_eq!(actual.1[2][3], Datum::Null);
+    assert_eq!(actual.1[0][1], Datum::Real(5.0));
+    assert_eq!(actual.1[1][1], Datum::Real(0.0));
+    assert_eq!(actual.1[2][1], Datum::Null);
+    assert!(
+        matches!(actual.1[3][1], Datum::Real(value) if value.is_finite() && value > f32::MAX as f64)
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
