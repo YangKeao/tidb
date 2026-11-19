@@ -4363,3 +4363,54 @@ fn shared_elt_and_make_set_keep_binary_selection_and_utf8_errors() {
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     assert_eq!(shared.take_warnings(), native.take_warnings());
 }
+
+#[test]
+fn shared_double_math_keeps_domains_and_nulls() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    run_create_table_on(
+        "CREATE TABLE double_math (id BIGINT PRIMARY KEY, x DOUBLE)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO double_math VALUES (1,-4e0),(2,-0.5e0),(3,0e0),(4,1e0),(5,4e0),(6,NULL)",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+    let sql = "SELECT ASIN(x),ACOS(x),SQRT(x),SIGN(x) FROM double_math ORDER BY id LIMIT 6";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let expected: Vec<_> = [-4.0_f64, -0.5, 0.0, 1.0, 4.0]
+        .into_iter()
+        .map(|value| {
+            let within = (-1.0..=1.0).contains(&value);
+            vec![
+                if within {
+                    Datum::Real(value.asin())
+                } else {
+                    Datum::Null
+                },
+                if within {
+                    Datum::Real(value.acos())
+                } else {
+                    Datum::Null
+                },
+                if value >= 0.0 {
+                    Datum::Real(value.sqrt())
+                } else {
+                    Datum::Null
+                },
+                Datum::Int(i64::from(value > 0.0) - i64::from(value < 0.0)),
+            ]
+        })
+        .chain([vec![Datum::Null; 4]])
+        .collect();
+    assert_eq!(actual.1, expected);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+}

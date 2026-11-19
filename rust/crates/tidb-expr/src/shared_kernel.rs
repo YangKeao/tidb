@@ -113,6 +113,7 @@ impl SharedExpression {
             PacketString(tidb_query_expr::impl_string::PacketString),
             Date,
             CalendarPart(tidb_query_expr::impl_time::CalendarPart),
+            DoubleMath(tidb_query_expr::impl_math::DoubleMath),
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
             Variable {
@@ -179,6 +180,10 @@ impl SharedExpression {
                         "any_value"
                             | "json_valid"
                             | "quote"
+                            | "asin"
+                            | "acos"
+                            | "sqrt"
+                            | "sign"
                             | "year"
                             | "month"
                             | "day"
@@ -1121,6 +1126,48 @@ impl SharedExpression {
                     });
                     work.push(Visit::Compare(name, operands, Some(guard)));
                     work.push(Visit::BigIntOperand(right));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "asin" | "acos" | "sqrt" | "sign") =>
+                {
+                    use tidb_datatype::FieldTypeCode::Double;
+                    use tidb_query_expr::impl_math::DoubleMath;
+
+                    let [operand] = f.args.as_slice() else {
+                        return Err("DOUBLE math requires one operand".into());
+                    };
+                    let op = match f.func_name.lowercase() {
+                        "asin" => DoubleMath::Asin,
+                        "acos" => DoubleMath::Acos,
+                        "sqrt" => DoubleMath::Sqrt,
+                        "sign" => DoubleMath::Sign,
+                        _ => unreachable!(),
+                    };
+                    if !matches_typed_operand(operand, Double)
+                        || !f.ret_type.as_ref().is_some_and(|ty| {
+                            if op == DoubleMath::Sign {
+                                is_signed_bigint(ty)
+                            } else {
+                                ty.code() == Double && !ty.is_array() && !ty.is_unsigned()
+                            }
+                        })
+                    {
+                        return Err("unsupported DOUBLE math operand or result declaration".into());
+                    }
+                    work.push(Visit::DoubleMath(op));
+                    work.push(Visit::Enter(operand));
+                }
+                Visit::DoubleMath(op) => {
+                    let field_type = if op == tidb_query_expr::impl_math::DoubleMath::Sign {
+                        FieldTypeTp::LongLong
+                    } else {
+                        FieldTypeTp::Double
+                    };
+                    nodes.push(RpnExpressionNode::NativeDoubleMath {
+                        op,
+                        field_type: field_type.into(),
+                    });
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
@@ -3893,6 +3940,76 @@ mod tests {
                 .eval(&crate::NoColumns, input.get_row(0))
                 .unwrap()]
         );
+    }
+
+    #[test]
+    fn double_math_preserves_native_float_bits() {
+        use tidb_datatype::FieldTypeCode::{Double, LongLong};
+
+        let double = FieldType::new(Double);
+        let mut column = Column::new(1, double.clone());
+        column.index = 0;
+        let values = [
+            Some(-0.0),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(f64::from_bits(0xfff8_0000_0000_0042)),
+            Some(f64::from_bits(0x7ff8_0000_0000_1234)),
+            None,
+        ];
+        let mut input = Chunk::new_with_capacity(&[double.clone()], values.len());
+        for value in values {
+            match value {
+                Some(value) => input.append_float64(0, value),
+                None => input.append_null(0),
+            }
+        }
+        let result_types = [
+            double.clone(),
+            double.clone(),
+            double,
+            FieldType::new(LongLong),
+        ];
+        let functions = ["asin", "acos", "sqrt", "sign"]
+            .into_iter()
+            .zip(result_types.iter())
+            .map(|(name, ty)| {
+                Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new(name),
+                    ty.clone(),
+                    vec![Expression::Column(column.clone())],
+                ))
+            })
+            .collect::<Vec<_>>();
+        let program = SharedProjection::compile(&functions).unwrap();
+        let rows = [4, 0, 5, 3, 1, 0, 2];
+        let mut execution = program.start_execution(&crate::NoColumns);
+        let actual = execution
+            .evaluate(&input, &rows, &mut EvalContext::default())
+            .unwrap();
+        let mut output = Chunk::new_with_capacity(&result_types, rows.len());
+        execution
+            .evaluate_into_chunk(&input, &rows, &mut EvalContext::default(), &mut output)
+            .unwrap();
+        assert_eq!(output.num_rows(), rows.len());
+        for (root, function) in functions.iter().enumerate() {
+            for (out, &row) in rows.iter().enumerate() {
+                let expected = function
+                    .eval(&crate::NoColumns, input.get_row(row))
+                    .unwrap();
+                for value in [
+                    actual[root][out].clone(),
+                    output.get_row(out).get_datum(root, &result_types[root]),
+                ] {
+                    match (value, &expected) {
+                        (Datum::Real(actual), Datum::Real(expected)) => {
+                            assert_eq!(actual.to_bits(), expected.to_bits())
+                        }
+                        (actual, expected) => assert_eq!(&actual, expected),
+                    }
+                }
+            }
+        }
     }
 
     fn md5(arg: Expression) -> Expression {
