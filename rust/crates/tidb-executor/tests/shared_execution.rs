@@ -270,7 +270,7 @@ fn shared_sql_projection_preserves_failure_and_declines_whole_groups() {
     }
 
     for (sql, route) in [
-        ("SELECT RAND(7), ABS(n) FROM limits_case LIMIT 1", (0, 0)),
+        ("SELECT RAND(7), SQRT(n) FROM limits_case LIMIT 1", (0, 0)),
         ("SELECT RAND(7), n FROM limits_case LIMIT 1", (1, 1)),
     ] {
         let shared = StmtContext::for_query().with_shared_projection();
