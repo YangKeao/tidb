@@ -116,6 +116,7 @@ impl SharedExpression {
             Date,
             CalendarPart(tidb_query_expr::impl_time::CalendarPart),
             CalendarName(tidb_query_expr::impl_time::CalendarName),
+            CalendarWeek(tidb_query_expr::impl_time::CalendarWeek, bool),
             DoubleMath(tidb_query_expr::impl_math::DoubleMath, Option<String>),
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
@@ -199,6 +200,9 @@ impl SharedExpression {
                             | "to_seconds"
                             | "dayname"
                             | "monthname"
+                            | "week"
+                            | "weekofyear"
+                            | "yearweek"
                             | "hour"
                             | "minute"
                             | "second"
@@ -301,9 +305,10 @@ impl SharedExpression {
                     }
                     let value = match datum {
                         Datum::Null
-                            if c.ret_type
-                                .as_ref()
-                                .is_some_and(|t| t.eval_type() == tidb_datatype::EvalType::Int) =>
+                            if matches!(visit, Visit::BigIntOperand(_))
+                                || c.ret_type.as_ref().is_some_and(|t| {
+                                    t.eval_type() == tidb_datatype::EvalType::Int
+                                }) =>
                         {
                             ScalarValue::Int(None)
                         }
@@ -634,6 +639,56 @@ impl SharedExpression {
                 }
                 Visit::CalendarName(name) => {
                     nodes.push(tidb_query_expr::native_calendar_name_node(name));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "week" | "weekofyear" | "yearweek"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_time::CalendarWeek;
+                    let (time, mode) = match (f.func_name.lowercase(), f.args.as_slice()) {
+                        (_, [time]) => (time, None),
+                        ("week" | "yearweek", [time, mode])
+                            if matches!(mode, Expression::Constant(c)
+                                if matches!(c.literal_value(), Some(Datum::Null)))
+                                || (matches!(
+                                    mode,
+                                    Expression::Column(_) | Expression::Constant(_)
+                                ) && bigint_operand_signedness(mode).is_some()) =>
+                        {
+                            (time, Some(mode))
+                        }
+                        _ => {
+                            return Err("calendar week needs a date and optional BIGINT mode".into())
+                        }
+                    };
+                    if !time
+                        .static_type()
+                        .is_some_and(|ty| is_time_type(ty) && !ty.is_array())
+                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err("calendar week needs typed Time and a BIGINT result".into());
+                    }
+                    let op = match f.func_name.lowercase() {
+                        "week" => CalendarWeek::Week,
+                        "weekofyear" => CalendarWeek::WeekOfYear,
+                        "yearweek" => CalendarWeek::YearWeek,
+                        _ => unreachable!(),
+                    };
+                    work.push(Visit::CalendarWeek(op, mode.is_some()));
+                    if let Some(mode) = mode {
+                        work.push(Visit::BigIntOperand(mode));
+                    }
+                    work.push(Visit::Enter(time));
+                }
+                Visit::CalendarWeek(op, explicit_mode) => {
+                    nodes.push(RpnExpressionNode::NativeCalendarWeek {
+                        op,
+                        explicit_mode,
+                        field_type: bigint_type(false),
+                    });
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
@@ -3102,6 +3157,9 @@ impl InputColumns for NativeInput<'_> {
     }
     fn div_precision_increment(&self) -> u32 {
         self.effects.div_precision_increment()
+    }
+    fn default_week_format(&self) -> i64 {
+        self.effects.default_week_format()
     }
     fn date_modes(&self) -> tidb_datatype::DateModes {
         self.effects.date_modes()

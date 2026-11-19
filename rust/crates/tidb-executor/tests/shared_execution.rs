@@ -4173,3 +4173,48 @@ fn shared_duration_parts_preserve_magnitude_precision_and_null() {
     assert!(shared.take_warnings().is_empty());
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_calendar_week_keeps_context_and_explicit_modes() {
+    use tidb_datatype::DateModes;
+
+    let catalog = catalog_with_rows(
+        "CREATE TABLE week_inputs (id BIGINT PRIMARY KEY, d DATE, t DATETIME(6), m BIGINT)",
+        "INSERT INTO week_inputs VALUES
+         (1,'2021-01-01','2021-01-01 23:59:59.999999',3),
+         (2,'2021-01-01','2021-01-01 12:00:00',NULL),
+         (3,'2020-12-31','2021-01-04 03:00:00',-1),
+         (4,'2024-00-01','0000-00-00 01:00:00',3),
+         (5,NULL,NULL,3)",
+        &StmtContext::for_query().with_date_modes(DateModes::default()),
+    );
+    let sql = "SELECT WEEK(d),WEEK(d,m),WEEKOFYEAR(t),YEARWEEK(d),YEARWEEK(t,m)
+               FROM week_inputs ORDER BY id LIMIT 5";
+    for mode in [0, 3, 11] {
+        let context = || StmtContext::for_query().with_week_and_division_scale(mode, 4);
+        let native = context();
+        let shared = context().with_shared_projection();
+        let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+        assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+        let week = if mode == 0 { 0 } else { 53 };
+        assert_eq!(actual.1[0], [week, 53, 53, 202052, 202053].map(Datum::Int));
+        assert_eq!(actual.1[1], [week, 0, 53, 202052, 202052].map(Datum::Int));
+        for row in &actual.1[3..] {
+            assert_eq!(row, &vec![Datum::Null; 5]);
+        }
+        assert!(native.take_warnings().is_empty());
+        assert!(shared.take_warnings().is_empty());
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+        let explicit_null =
+            "SELECT WEEK(d,NULL),YEARWEEK(t,NULL) FROM week_inputs WHERE id=1 LIMIT 1";
+        let shared = context().with_shared_projection();
+        let actual = run_select_meta_on(explicit_null, &catalog, &shared).unwrap();
+        assert_eq!(
+            actual,
+            run_select_meta_on(explicit_null, &catalog, &native).unwrap()
+        );
+        assert_eq!(actual.1[0], [0, 202052].map(Datum::Int));
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}
