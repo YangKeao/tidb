@@ -1888,6 +1888,29 @@ impl SharedExpression {
                     work.push(Visit::BigIntOperand(count));
                     work.extend(bytes.map(Visit::ByteOperand));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "concat" | "concat_ws") =>
+                {
+                    use tidb_query_expr::impl_string::PacketString;
+
+                    let args_len = f.args.len();
+                    let op = match f.func_name.lowercase() {
+                        "concat" if args_len >= 1 => PacketString::Concat(args_len),
+                        "concat_ws" if args_len >= 2 => PacketString::ConcatWs(args_len),
+                        _ => return Err("CONCAT/CONCAT_WS require string operands".into()),
+                    };
+                    if !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                        || !f.args.iter().all(|arg| {
+                            matches!(arg, Expression::Column(_) | Expression::Constant(_))
+                                && is_raw_string_operand(arg)
+                        })
+                    {
+                        return Err("CONCAT/CONCAT_WS require typed string leaves".into());
+                    }
+                    work.push(Visit::PacketString(op));
+                    work.extend(f.args.iter().rev().map(Visit::ByteOperand));
+                }
                 Visit::PacketString(op) => {
                     nodes.push(RpnExpressionNode::NativePacketString {
                         op,

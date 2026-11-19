@@ -4013,3 +4013,72 @@ fn shared_space_and_repeat_keep_packet_diagnostics() {
     );
     assert!(wide_packet.take_warnings().is_empty());
 }
+
+#[test]
+fn shared_concat_keeps_prefix_size_and_null_rules() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let context = || StmtContext::for_query().with_max_allowed_packet(4);
+    let native = context();
+    let shared = context().with_shared_projection();
+    run_create_table_on(
+        "CREATE TABLE packet_concat (
+            id BIGINT PRIMARY KEY, a VARBINARY(20), b VARBINARY(20),
+            c VARBINARY(20), sep VARBINARY(20)
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO packet_concat VALUES
+             (1,X'FF00',NULL,'B','-'),(2,NULL,'abc',NULL,'--'),
+             (3,'ABCD','Z',NULL,'-'),(4,'ABCDE',NULL,NULL,NULL),
+             (5,NULL,NULL,NULL,'unused'),(6,'X','Y','Z','')",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+
+    let sql = "SELECT CONCAT(a,b,c),CONCAT_WS(sep,a,b,c)
+               FROM packet_concat ORDER BY id LIMIT 6";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let value = |s: &[u8]| Datum::new_string(s.to_vec());
+    use Datum::Null;
+    let expected = [
+        [Null, value(&[0xff, 0, b'-', b'B'])],
+        [Null, Null],
+        [Null, Null],
+        [Null, Null],
+        [Null, value(b"")],
+        [value(b"XYZ"), value(b"XYZ")],
+    ];
+    assert_eq!(actual.1.len(), expected.len());
+    for (row, expected) in actual.1.iter().zip(expected) {
+        for (actual, expected) in row.iter().zip(expected) {
+            match (actual, &expected) {
+                (Datum::String(actual), Datum::String(expected)) => {
+                    assert_eq!(actual.bytes(), expected.bytes());
+                }
+                _ => assert_eq!(actual, &expected),
+            }
+        }
+    }
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    let expected = ["concat", "concat", "concat_ws", "concat_ws"].map(|name| {
+        (
+            1301,
+            format!("Result of {name}() was larger than max_allowed_packet (4) - truncated"),
+        )
+    });
+    assert_eq!(
+        warnings
+            .into_iter()
+            .map(|(_, code, message)| (code, message))
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
