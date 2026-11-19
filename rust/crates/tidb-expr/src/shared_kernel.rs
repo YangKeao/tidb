@@ -113,7 +113,7 @@ impl SharedExpression {
             PacketString(tidb_query_expr::impl_string::PacketString),
             Date,
             CalendarPart(tidb_query_expr::impl_time::CalendarPart),
-            DoubleMath(tidb_query_expr::impl_math::DoubleMath),
+            DoubleMath(tidb_query_expr::impl_math::DoubleMath, Option<String>),
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
             Variable {
@@ -1131,7 +1131,17 @@ impl SharedExpression {
                     if f.pb_signature().is_none()
                         && matches!(
                             f.func_name.lowercase(),
-                            "asin" | "acos" | "sqrt" | "sign" | "ln" | "log" | "log2"
+                            "asin"
+                                | "acos"
+                                | "sqrt"
+                                | "sign"
+                                | "ln"
+                                | "log"
+                                | "log2"
+                                | "pow"
+                                | "power"
+                                | "radians"
+                                | "degrees"
                         ) =>
                 {
                     use tidb_datatype::FieldTypeCode::Double;
@@ -1145,14 +1155,20 @@ impl SharedExpression {
                         "log" if f.args.len() == 2 => DoubleMath::LogBase,
                         "ln" | "log" => DoubleMath::Ln,
                         "log2" => DoubleMath::Log2,
+                        "pow" | "power" => DoubleMath::Pow,
+                        "radians" => DoubleMath::Radians,
+                        "degrees" => DoubleMath::Degrees,
                         _ => unreachable!(),
                     };
                     if f.args.len() != op.args_len()
                         || !f.args.iter().all(|operand| {
                             matches_typed_operand(operand, Double)
-                                && (!matches!(
+                                && (matches!(
                                     op,
-                                    DoubleMath::Ln | DoubleMath::Log2 | DoubleMath::LogBase
+                                    DoubleMath::Asin
+                                        | DoubleMath::Acos
+                                        | DoubleMath::Sqrt
+                                        | DoubleMath::Sign
                                 ) || matches!(
                                     operand,
                                     Expression::Column(_) | Expression::Constant(_)
@@ -1168,12 +1184,22 @@ impl SharedExpression {
                     {
                         return Err("unsupported DOUBLE math operand or result declaration".into());
                     }
-                    work.push(Visit::DoubleMath(op));
+                    let generic_overflow = "DOUBLE value is out of range";
+                    let overflow = match op {
+                        DoubleMath::Radians | DoubleMath::Degrees => Some(generic_overflow.into()),
+                        DoubleMath::Pow => Some(
+                            crate::scalar_function::math_overflow_expression(f, &crate::NoColumns)
+                                .map(|expr| format!("{generic_overflow} in '{expr}'"))
+                                .unwrap_or_else(|| generic_overflow.into()),
+                        ),
+                        _ => None,
+                    };
+                    work.push(Visit::DoubleMath(op, overflow));
                     for operand in f.args.iter().rev() {
                         work.push(Visit::Enter(operand));
                     }
                 }
-                Visit::DoubleMath(op) => {
+                Visit::DoubleMath(op, overflow) => {
                     let field_type = if op == tidb_query_expr::impl_math::DoubleMath::Sign {
                         FieldTypeTp::LongLong
                     } else {
@@ -1181,6 +1207,7 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::NativeDoubleMath {
                         op,
+                        overflow,
                         field_type: field_type.into(),
                     });
                 }

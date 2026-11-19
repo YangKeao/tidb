@@ -3945,3 +3945,48 @@ fn shared_double_log_preserves_domain_warnings_and_nulls() {
         vec![(3020, "Invalid argument for logarithm".to_owned()); 9],
     );
 }
+
+#[test]
+fn shared_double_power_and_angle_match_original_diagnostics() {
+    let native = StmtContext::for_query();
+    let catalog = catalog_with_rows(
+        "CREATE TABLE double_power_angle (id BIGINT PRIMARY KEY, x DOUBLE, y DOUBLE)",
+        "INSERT INTO double_power_angle VALUES
+         (1,4e0,0.5e0),(2,0e0,3e0),(3,NULL,2e0),(4,2e0,NULL),
+         (5,-4e0,0.5e0),(6,1e308,2e0)",
+        &native,
+    );
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT POW(x,y), POWER(x,y), RADIANS(x), DEGREES(x) FROM
+               double_power_angle WHERE id<5 ORDER BY id LIMIT 4";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(
+        actual.1[0],
+        vec![
+            Datum::Real(2.0),
+            Datum::Real(2.0),
+            Datum::Real(4.0_f64.to_radians()),
+            Datum::Real(4.0_f64.to_degrees()),
+        ],
+    );
+    assert_eq!(actual.1[2], vec![Datum::Null; 4]);
+    assert_eq!(actual.1[3][..2], [Datum::Null, Datum::Null]);
+    assert!(native.take_warnings().is_empty());
+    assert!(shared.take_warnings().is_empty());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    for (call, id) in [("POW(x,y)", 5), ("POWER(x,y)", 6), ("DEGREES(x)", 6)] {
+        let sql = format!("SELECT {call} FROM double_power_angle WHERE id={id} LIMIT 1");
+        let shared = StmtContext::for_query().with_shared_projection();
+        let expected = run_select_meta_on(&sql, &catalog, &native)
+            .unwrap_err()
+            .to_mysql_error();
+        let actual = run_select_meta_on(&sql, &catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(actual.code, 1690);
+        assert_eq!(actual, expected);
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}
