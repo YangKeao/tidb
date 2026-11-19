@@ -46,3 +46,4 @@
 - [BIGINT MOD](bigint-mod.zh.md)
 - [BIGINT MOD 动态除数](bigint-mod-dynamic.zh.md)
 - [BIGINT DIV](bigint-div.zh.md)
+- [原生向量列 VEC_DIMS](native-vector-dims.zh.md)
