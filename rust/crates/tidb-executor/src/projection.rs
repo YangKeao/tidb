@@ -207,6 +207,19 @@ impl<C: Columns> ProjectionExec<C> {
     }
 }
 
+#[cfg(feature = "shared-kernel")]
+fn is_signed_bigint(expression: &Expression) -> bool {
+    expression.static_type().is_some_and(|ty| {
+        ty.code() == tidb_datatype::FieldTypeCode::LongLong && !ty.is_unsigned() && !ty.is_array()
+    })
+}
+
+#[cfg(feature = "shared-kernel")]
+pub(crate) fn is_direct_signed_bigint_leaf(expression: &Expression) -> bool {
+    is_signed_bigint(expression)
+        && matches!(expression, Expression::Column(_) | Expression::Constant(_))
+}
+
 /// Integer leaves have no host effects or scalar/vector demand differences
 /// at a write boundary. Both write entrypoints use the same admission rule.
 #[cfg(feature = "shared-kernel")]
@@ -214,20 +227,11 @@ pub(crate) fn is_shared_write_arithmetic(expression: &Expression) -> bool {
     let Expression::ScalarFunction(function) = expression else {
         return false;
     };
-    let signed_bigint = |expression: &Expression| {
-        expression.static_type().is_some_and(|ty| {
-            ty.code() == tidb_datatype::FieldTypeCode::LongLong
-                && !ty.is_unsigned()
-                && !ty.is_array()
-        })
-    };
     function.pb_signature().is_none()
         && matches!(function.func_name.lowercase(), "plus" | "minus" | "mul")
         && function.args.len() == 2
-        && signed_bigint(expression)
-        && function.args.iter().all(|arg| {
-            signed_bigint(arg) && matches!(arg, Expression::Column(_) | Expression::Constant(_))
-        })
+        && is_signed_bigint(expression)
+        && function.args.iter().all(is_direct_signed_bigint_leaf)
 }
 
 #[cfg(feature = "shared-kernel")]

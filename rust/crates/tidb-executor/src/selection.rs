@@ -178,7 +178,16 @@ impl SelectionExec<crate::StmtContext> {
         let Some(counts) = &self.ctx.shared_selection else {
             return self;
         };
-        if self.ctx.statement_class() != crate::stmt_context::StatementClass::Select
+        use crate::stmt_context::StatementClass;
+
+        let admitted = match self.ctx.statement_class() {
+            StatementClass::Select => true,
+            StatementClass::Update | StatementClass::Delete => {
+                self.filters.iter().all(is_shared_write_comparison)
+            }
+            _ => false,
+        };
+        if !admitted
             || !self.ctx.enable_vectorized_expression()
             || !(1..=SharedProjection::MAX_BATCH_SIZE).contains(&self.child.max_chunk_size())
         {
@@ -197,6 +206,23 @@ impl SelectionExec<crate::StmtContext> {
         }
         self
     }
+}
+
+#[cfg(feature = "shared-kernel")]
+fn is_shared_write_comparison(expression: &Expression) -> bool {
+    let Expression::ScalarFunction(function) = expression else {
+        return false;
+    };
+    function.pb_signature().is_none()
+        && matches!(
+            function.func_name.lowercase(),
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "nulleq"
+        )
+        && function.args.len() == 2
+        && function
+            .args
+            .iter()
+            .all(crate::projection::is_direct_signed_bigint_leaf)
 }
 
 impl FastSelectionFilter {

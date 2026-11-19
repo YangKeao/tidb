@@ -4932,8 +4932,11 @@ fn build_with_state(
                 filters.clone(),
                 ctx,
             );
-            if tidb_planner::pushdown::can_exprs_push_down_tikv(&filters)
-                && child
+            if tidb_planner::pushdown::can_exprs_push_down(
+                &filters,
+                tidb_expr::infer_pushdown::PushDownStore::TiKv,
+                ctx.expr_pushdown_blacklist(),
+            ) && child
                     .table_access()
                     .is_some_and(|access| access.accept_scan_filter(&pushed, ctx))
             {

@@ -3298,3 +3298,77 @@ fn shared_insert_select_arithmetic_preserves_source_order_and_atomicity() {
     assert_eq!(run_insert_on(sql, &mut catalog, &shared).unwrap(), 2);
     assert_eq!(shared.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_write_selection_preserves_nulls_order_and_changed_rows() {
+    use tidb_executor::{
+        run_create_table_on, run_delete_on, run_insert_on, run_select_meta_on, run_update_on,
+        Catalog, StatementClass,
+    };
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE write_filter (
+            id BIGINT PRIMARY KEY, a BIGINT, b BIGINT, tag BIGINT NOT NULL
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO write_filter VALUES (1,1,2,0),(2,2,2,0),(3,NULL,4,0),(4,5,1,0),(5,NULL,NULL,0)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let mut native_catalog = catalog.clone();
+    let inspect = "SELECT id,tag FROM write_filter ORDER BY id";
+    let query = StmtContext::for_query();
+    let tikv_only = tidb_expr::infer_pushdown::blacklist_store_mask("tikv");
+    let blacklist = Arc::new(HashMap::from([
+        ("nulleq".to_owned(), tikv_only),
+        ("ne".to_owned(), tikv_only),
+    ]));
+    let context = |class| {
+        StmtContext::for_query()
+            .with_statement_class(class)
+            .with_executor_chunk_sizes(1, 1)
+            .with_pushdown_blacklists((Arc::clone(&blacklist), Arc::default()))
+    };
+    let shared = context(StatementClass::Update).with_shared_selection();
+    let native = context(StatementClass::Update);
+    let sql = "UPDATE write_filter SET tag=9 WHERE a<=>b";
+    assert_eq!(run_update_on(sql, &mut catalog, &shared).unwrap(), 2);
+    assert_eq!(run_update_on(sql, &mut native_catalog, &native).unwrap(), 2);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    let (programs, batches) = shared.shared_selection_counts().unwrap();
+    assert_eq!(programs, 1);
+    assert!(batches > 1);
+    assert_eq!(
+        run_select_meta_on(inspect, &catalog, &query).unwrap(),
+        run_select_meta_on(inspect, &native_catalog, &query).unwrap()
+    );
+
+    let shared = context(StatementClass::Delete).with_shared_selection();
+    let native = context(StatementClass::Delete);
+    let sql = "DELETE FROM write_filter WHERE a<>b ORDER BY id DESC LIMIT 1";
+    assert_eq!(run_delete_on(sql, &mut catalog, &shared).unwrap(), 1);
+    assert_eq!(run_delete_on(sql, &mut native_catalog, &native).unwrap(), 1);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    let (programs, batches) = shared.shared_selection_counts().unwrap();
+    assert_eq!(programs, 1);
+    assert!(batches > 0);
+    let actual = run_select_meta_on(inspect, &catalog, &query).unwrap();
+    assert_eq!(
+        actual,
+        run_select_meta_on(inspect, &native_catalog, &query).unwrap()
+    );
+    use Datum::Int;
+    assert_eq!(
+        actual.1,
+        vec![
+            vec![Int(1), Int(0)],
+            vec![Int(2), Int(9)],
+            vec![Int(3), Int(0)],
+            vec![Int(5), Int(9)],
+        ]
+    );
+}
