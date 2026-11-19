@@ -4031,3 +4031,37 @@ fn shared_weekday_and_year_day_keep_native_invalid_date_policy() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_typed_day_numbers_preserve_zero_date_and_whole_seconds() {
+    use tidb_datatype::DateModes;
+
+    let catalog = catalog_with_rows(
+        "CREATE TABLE day_numbers (id BIGINT PRIMARY KEY, d DATE, t DATETIME(6))",
+        "INSERT INTO day_numbers VALUES
+         (1,'0000-01-01','0000-01-01 00:00:59.999999'),
+         (2,'2007-10-07','2007-10-07 23:59:59.999999'),
+         (3,'2024-00-03','2024-02-00 01:00:00'),
+         (4,'0000-00-00','0000-00-00 00:00:00'),
+         (5,NULL,NULL)",
+        &StmtContext::for_query().with_date_modes(DateModes::default()),
+    );
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT TO_DAYS(d),TO_SECONDS(d),TO_DAYS(t),TO_SECONDS(t)
+               FROM day_numbers ORDER BY id LIMIT 5";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0], [1, 86_400, 1, 86_459].map(Datum::Int));
+    let days = 733_321;
+    assert_eq!(
+        actual.1[1],
+        [days, days * 86_400, days, days * 86_400 + 86_399].map(Datum::Int),
+    );
+    for row in &actual.1[2..] {
+        assert_eq!(row, &vec![Datum::Null; 4]);
+    }
+    assert!(native.take_warnings().is_empty());
+    assert!(shared.take_warnings().is_empty());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}

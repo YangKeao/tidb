@@ -192,6 +192,8 @@ impl SharedExpression {
                             | "dayofweek"
                             | "weekday"
                             | "dayofyear"
+                            | "to_days"
+                            | "to_seconds"
                             | "upper"
                             | "ucase"
                             | "lower"
@@ -572,6 +574,8 @@ impl SharedExpression {
                                 | "dayofweek"
                                 | "weekday"
                                 | "dayofyear"
+                                | "to_days"
+                                | "to_seconds"
                         ) =>
                 {
                     use tidb_query_expr::impl_time::CalendarPart;
@@ -596,6 +600,8 @@ impl SharedExpression {
                         "dayofweek" => CalendarPart::DayOfWeek,
                         "weekday" => CalendarPart::Weekday,
                         "dayofyear" => CalendarPart::DayOfYear,
+                        "to_days" => CalendarPart::ToDays,
+                        "to_seconds" => CalendarPart::ToSeconds,
                         _ => unreachable!(),
                     };
                     work.push(Visit::CalendarPart(part));
@@ -4425,6 +4431,43 @@ mod tests {
                 }
             }
             assert!(effects.warnings.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn typed_day_numbers_preserve_hidden_date_clock_and_invalid_datetime_clock() {
+        use tidb_datatype::{CoreTime, FieldTypeCode, Time, TimeType};
+
+        let types = [
+            FieldType::new(FieldTypeCode::Date),
+            FieldType::new(FieldTypeCode::Datetime),
+        ];
+        let mut input = Chunk::new_with_capacity(&types, 1);
+        let invalid_clock = CoreTime::from_date(2024, 2, 29, 25, 0, 0, 1);
+        input.append_time(0, Time::new(invalid_clock, TimeType::Date, 0).unwrap());
+        input.append_time(1, Time::new(invalid_clock, TimeType::DateTime, 6).unwrap());
+        let result_type = FieldType::new(FieldTypeCode::LongLong);
+        for fn_name in ["to_days", "to_seconds"] {
+            for (index, ty) in types.iter().enumerate() {
+                let expr = Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new(fn_name),
+                    result_type.clone(),
+                    vec![time_column(index as i32, ty)],
+                ));
+                let expected = expr.eval(&crate::NoColumns, input.get_row(0)).unwrap();
+                assert_eq!(matches!(expected, Datum::Null), index == 1);
+                let projection = SharedProjection::compile(&[expr]).unwrap();
+                let mut execution = projection.start_execution(&crate::NoColumns);
+                let actual = execution
+                    .evaluate(&input, &[0], &mut EvalContext::default())
+                    .unwrap();
+                assert_eq!(actual, vec![vec![expected.clone()]]);
+                let mut output = Chunk::new_with_capacity(std::slice::from_ref(&result_type), 1);
+                execution
+                    .evaluate_into_chunk(&input, &[0], &mut EvalContext::default(), &mut output)
+                    .unwrap();
+                assert_eq!(output.get_row(0).get_datum(0, &result_type), expected);
+            }
         }
     }
 
