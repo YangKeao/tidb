@@ -2604,3 +2604,90 @@ fn shared_sql_vector_conditionals_evaluate_only_demanded_branches() {
         );
     }
 }
+
+#[test]
+fn shared_prepared_select_rebinds_decimal_projection_on_cache_hit() {
+    use tidb_ast::Stmt;
+    use tidb_datatype::Decimal;
+    use tidb_executor::{
+        build_prepared_select_plan, run_create_table_on, run_insert_on,
+        run_query_meta_stmt_with_physical, run_select_meta_on, Catalog,
+        PreparedPlanCacheEnvironment, DEFAULT_DATABASE,
+    };
+
+    let mut catalog = Catalog::default();
+    let native = StmtContext::for_query();
+    run_create_table_on(
+        "CREATE TABLE prepared_decimal_projection (id BIGINT PRIMARY KEY, d DECIMAL(12,2))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO prepared_decimal_projection VALUES (1,12.25),(2,NULL),(3,-4.50)",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+    let statement = tidb_parser::parse(
+        "SELECT id, d * ? AS amount FROM prepared_decimal_projection ORDER BY id LIMIT 3",
+    )
+    .unwrap();
+    let plan = Arc::new(
+        build_prepared_select_plan(&statement, 1, &catalog, DEFAULT_DATABASE, &native).unwrap(),
+    );
+    let environment = PreparedPlanCacheEnvironment::default();
+    for (index, (parameter, literal)) in [(150, "1.50"), (-200, "-2.00")].into_iter().enumerate() {
+        let parameter = Datum::Decimal(Decimal::from_scaled_i128(parameter, 2));
+        let shared = StmtContext::for_query().with_shared_projection();
+        let execution = if index == 0 {
+            plan.bind(
+                &[parameter],
+                &catalog,
+                DEFAULT_DATABASE,
+                &shared,
+                &environment,
+            )
+        } else {
+            plan.bind_cached(&[parameter], &catalog, DEFAULT_DATABASE, &environment)
+        }
+        .expect("prepared DECIMAL binds");
+        assert_eq!(execution.cache_hit(), index != 0);
+        let shared = shared.with_prepared_params(execution.parameters());
+        let native_execution =
+            StmtContext::for_query().with_prepared_params(execution.parameters());
+        let (actual, native_result) = execution
+            .with_plan(|statement, physical| {
+                let Stmt::Query(query) = statement else {
+                    panic!("expected prepared SELECT");
+                };
+                let run = |physical: &mut _, context: &StmtContext| {
+                    run_query_meta_stmt_with_physical(
+                        query,
+                        Some(physical),
+                        &catalog,
+                        DEFAULT_DATABASE,
+                        context,
+                    )
+                    .unwrap()
+                };
+                (
+                    run(&mut *physical, &shared),
+                    run(physical, &native_execution),
+                )
+            })
+            .unwrap();
+        assert_eq!(actual, native_result);
+        assert_eq!(shared.take_warnings(), native_execution.take_warnings());
+        let expected = run_select_meta_on(
+            &format!(
+                "SELECT id, d * {literal} AS amount
+                    FROM prepared_decimal_projection ORDER BY id LIMIT 3"
+            ),
+            &catalog,
+            &native,
+        )
+        .unwrap();
+        assert_eq!(actual.1, expected.1);
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}
