@@ -3807,3 +3807,57 @@ fn shared_any_value_preserves_typed_column_identity() {
         ]
     );
 }
+
+#[test]
+fn shared_calendar_parts_keep_typed_zero_and_null_values() {
+    use tidb_datatype::DateModes;
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE date_parts (id BIGINT PRIMARY KEY, d DATE, t DATETIME(6))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO date_parts VALUES
+             (1,'2024-02-29','2025-11-17 11:02:03.456789'),
+             (2,'2024-00-03','2023-02-00 01:00:00'),
+             (3,'0000-00-00','0000-00-00 00:00:00'),
+             (4,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query().with_date_modes(DateModes::default()),
+    )
+    .unwrap();
+
+    let sql = "SELECT YEAR(d),MONTH(d),DAY(d),QUARTER(d),
+                      YEAR(t),MONTH(t),DAYOFMONTH(t),QUARTER(t)
+               FROM date_parts ORDER BY id LIMIT 4";
+    for modes in [DateModes::default(), DateModes::TIDB_DEFAULT_SQL_MODE] {
+        let native = StmtContext::for_query().with_date_modes(modes);
+        let shared = native.clone().with_shared_projection();
+        let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+        assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+        let row = |values: [i64; 8]| values.map(Datum::Int).to_vec();
+        assert_eq!(
+            actual.1,
+            vec![
+                row([2024, 2, 29, 1, 2025, 11, 17, 4]),
+                row([2024, 0, 3, 0, 2023, 2, 0, 1]),
+                row([0; 8]),
+                vec![Datum::Null; 8],
+            ]
+        );
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+        assert_eq!(shared.take_warnings(), native.take_warnings());
+    }
+
+    let native = StmtContext::for_query();
+    let shared = native.clone().with_shared_projection();
+    let sql = "SELECT YEAR(CAST(t AS CHAR)) FROM date_parts WHERE id=1 LIMIT 1";
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &shared).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap()
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((0, 0)));
+}

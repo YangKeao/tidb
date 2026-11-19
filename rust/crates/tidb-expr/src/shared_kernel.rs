@@ -110,6 +110,7 @@ impl SharedExpression {
             JsonType,
             BytesCall(tidb_query_expr::RpnFnMeta, usize),
             Date,
+            CalendarPart(tidb_query_expr::impl_time::CalendarPart),
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
             Variable {
@@ -175,6 +176,11 @@ impl SharedExpression {
                         f.func_name.lowercase(),
                         "any_value"
                             | "json_valid"
+                            | "year"
+                            | "month"
+                            | "day"
+                            | "dayofmonth"
+                            | "quarter"
                             | "upper"
                             | "ucase"
                             | "lower"
@@ -543,6 +549,40 @@ impl SharedExpression {
                 Visit::Date => nodes.push(RpnExpressionNode::NativeDate {
                     field_type: FieldTypeTp::Date.into(),
                 }),
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "year" | "month" | "day" | "dayofmonth" | "quarter"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_time::CalendarPart;
+
+                    let [operand] = f.args.as_slice() else {
+                        return Err("calendar part requires one operand".into());
+                    };
+                    if !operand
+                        .static_type()
+                        .is_some_and(|ty| is_time_type(ty) && !ty.is_array())
+                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err(
+                            "calendar part requires typed Time and a signed BIGINT result".into(),
+                        );
+                    }
+                    let part = match f.func_name.lowercase() {
+                        "year" => CalendarPart::Year,
+                        "month" => CalendarPart::Month,
+                        "day" | "dayofmonth" => CalendarPart::Day,
+                        "quarter" => CalendarPart::Quarter,
+                        _ => unreachable!(),
+                    };
+                    work.push(Visit::CalendarPart(part));
+                    work.push(Visit::Enter(operand));
+                }
+                Visit::CalendarPart(part) => {
+                    nodes.push(tidb_query_expr::native_calendar_part_node(part));
+                }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.func_name.lowercase() == "benchmark" =>
                 {
