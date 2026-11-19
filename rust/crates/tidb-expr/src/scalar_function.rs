@@ -556,7 +556,7 @@ fn decimal_arithmetic_overflow_error(
 /// These signatures report their function name and source-shaped arguments,
 /// rather than the datum-only `FloatOverflow` carrier returned by the shared
 /// math implementation.
-fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Option<String> {
+pub(crate) fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Option<String> {
     fn render(expression: &Expression, ctx: &dyn Columns) -> Option<String> {
         match expression {
             Expression::Constant(constant) => match constant.eval_in(ctx).ok()? {

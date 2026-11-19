@@ -1962,3 +1962,45 @@ fn shared_sql_bin_and_oct_keep_integer_bits_and_string_conversion() {
     assert_eq!(warnings.len(), 1);
     assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_abs_preserves_bigint_sign_and_overflow_diagnostic() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE abs_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO abs_values VALUES (1,-7,18446744073709551615),(2,NULL,NULL),(3,-9223372036854775808,0)",
+        &mut catalog, &StmtContext::for_query(),
+    ).unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT id,ABS(n),ABS(u) FROM abs_values WHERE id<3 ORDER BY id";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(
+        actual.1,
+        [
+            vec![Datum::Int(1), Datum::Int(7), Datum::UInt(u64::MAX)],
+            vec![Datum::Int(2), Datum::Null, Datum::Null],
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT ABS(n) FROM abs_values WHERE id=3";
+    let actual = run_select_meta_on(sql, &catalog, &shared)
+        .unwrap_err()
+        .to_mysql_error();
+    let expected = run_select_meta_on(sql, &catalog, &native)
+        .unwrap_err()
+        .to_mysql_error();
+    assert_eq!(actual.code, 1690);
+    assert_eq!(
+        (actual.code, actual.state, actual.message),
+        (expected.code, expected.state, expected.message)
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}

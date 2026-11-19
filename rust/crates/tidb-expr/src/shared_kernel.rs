@@ -119,6 +119,7 @@ impl SharedExpression {
                 Vec<usize>,
             ),
             IntCall(tidb_query_expr::RpnFnMeta, usize, bool),
+            SignedAbs(String),
             Compare(&'a str, ComparisonOperands, Option<usize>),
             WireComparisonRight(&'static str, &'a Expression),
             LogicalNext(&'a Expression, usize),
@@ -802,6 +803,44 @@ impl SharedExpression {
                     ));
                     work.push(Visit::Enter(right));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "abs" =>
+                {
+                    let [arg @ (Expression::Column(_) | Expression::Constant(_))] =
+                        f.args.as_slice()
+                    else {
+                        return Err("ABS requires a typed BIGINT leaf".into());
+                    };
+                    let unsigned = bigint_operand_signedness(arg).ok_or("ABS requires BIGINT")?;
+                    if !f.ret_type.as_ref().is_some_and(|ty| {
+                        ty.code() == tidb_datatype::FieldTypeCode::LongLong
+                            && !ty.is_array()
+                            && ty.is_unsigned() == unsigned
+                    }) {
+                        return Err("ABS result must match its BIGINT argument".into());
+                    }
+                    if unsigned {
+                        use tidb_query_expr::impl_math::abs_uint_fn_meta;
+                        work.push(Visit::IntCall(abs_uint_fn_meta(), 1, true));
+                    } else {
+                        let source = crate::scalar_function::math_overflow_expression(
+                            f,
+                            &crate::context::NoColumns,
+                        );
+                        let message = source.map_or_else(
+                            || "BIGINT value is out of range".into(),
+                            |source| format!("BIGINT value is out of range in '{source}'"),
+                        );
+                        work.push(Visit::SignedAbs(message));
+                    }
+                    work.push(Visit::BigIntOperand(arg));
+                }
+                Visit::SignedAbs(message) => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta: tidb_query_expr::impl_math::native_abs_int_fn_meta(),
+                    args_len: 1,
+                    field_type: bigint_type(false),
+                    metadata: Box::new(message),
+                }),
                 Visit::IntCall(func_meta, args_len, unsigned) => {
                     nodes.push(RpnExpressionNode::FnCall {
                         func_meta,
