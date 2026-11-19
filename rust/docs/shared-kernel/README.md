@@ -43,3 +43,4 @@
 - [BIGINT ABS](bigint-abs.zh.md)
 - [BIGINT CEIL、CEILING 和 FLOOR](bigint-integral-rounding.zh.md)
 - [BIGINT ROUND 和 TRUNCATE](bigint-round-truncate.zh.md)
+- [BIGINT MOD](bigint-mod.zh.md)
