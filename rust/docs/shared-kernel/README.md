@@ -45,3 +45,4 @@
 - [BIGINT ROUND 和 TRUNCATE](bigint-round-truncate.zh.md)
 - [BIGINT MOD](bigint-mod.zh.md)
 - [BIGINT MOD 动态除数](bigint-mod-dynamic.zh.md)
+- [BIGINT DIV](bigint-div.zh.md)
