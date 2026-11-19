@@ -4260,3 +4260,48 @@ fn shared_date_difference_preserves_calendar_days_and_invalid_dates() {
     assert_eq!(actual.1[0], [Datum::Int(1)]);
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn same_typed_date_predicate_compiles_in_projection_and_selection() {
+    let native = StmtContext::for_query();
+    let catalog = catalog_with_rows(
+        "CREATE TABLE date_predicates (id BIGINT PRIMARY KEY, d DATE, t DATETIME(6))",
+        "INSERT INTO date_predicates VALUES
+         (1,'2024-02-29','2024-03-01 04:05:06.765432'),
+         (2,'2024-03-01','2024-02-29 23:59:59'),
+         (3,'2024-02-29','2024-02-29 04:05:06'),(4,NULL,'2024-03-01')",
+        &native,
+    );
+    let predicate = "DATEDIFF(DATE(t),d)>0";
+    let input = "(SELECT id,d,t FROM date_predicates ORDER BY id LIMIT 4) AS input";
+    let query = format!("SELECT id,{predicate} FROM {input} ORDER BY id LIMIT 4");
+    let projection = StmtContext::for_query().with_shared_projection();
+    let actual = run_select_meta_on(&query, &catalog, &projection).unwrap();
+    assert_eq!(
+        actual,
+        run_select_meta_on(&query, &catalog, &native).unwrap()
+    );
+    assert_eq!(
+        actual.1,
+        [
+            vec![Datum::Int(1), Datum::Int(1)],
+            vec![Datum::Int(2), Datum::Int(0)],
+            vec![Datum::Int(3), Datum::Int(0)],
+            vec![Datum::Int(4), Datum::Null],
+        ]
+    );
+    assert_eq!(projection.shared_projection_counts(), Some((1, 1)));
+
+    let query = format!("SELECT id FROM {input} WHERE {predicate} ORDER BY id");
+    let selection = StmtContext::for_query().with_shared_selection();
+    let actual = run_select_meta_on(&query, &catalog, &selection).unwrap();
+    assert_eq!(
+        actual,
+        run_select_meta_on(&query, &catalog, &native).unwrap()
+    );
+    assert_eq!(actual.1, [vec![Datum::Int(1)]]);
+    assert_eq!(selection.shared_selection_counts(), Some((1, 1)));
+    assert!(native.take_warnings().is_empty());
+    assert!(projection.take_warnings().is_empty());
+    assert!(selection.take_warnings().is_empty());
+}
