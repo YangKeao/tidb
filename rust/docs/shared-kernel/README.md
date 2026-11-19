@@ -95,3 +95,5 @@
 - [类型化 DAYNAME 和 MONTHNAME](calendar-names.zh.md)
 
 - [BIGINT 的 PERIOD_ADD 和 PERIOD_DIFF](integer-period.zh.md)
+
+- [类型化 TIME 列的分量和整秒](duration-parts.zh.md)
