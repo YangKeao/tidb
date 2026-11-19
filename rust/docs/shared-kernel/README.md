@@ -64,3 +64,4 @@
 - [二进制 REPLACE 和 SUBSTRING](binary-replace-substring.zh.md)
 - [二进制 SUBSTRING_INDEX](binary-substring-index.zh.md)
 - [类型化 JSON_VALID](json-valid.zh.md)
+- [二进制与 UTF-8 的 UPPER 和 LOWER](native-case-conversion.zh.md)
