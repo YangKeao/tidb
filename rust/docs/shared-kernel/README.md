@@ -41,3 +41,4 @@
 - [文本 IP 函数的共享求值](ip-text.zh.md)
 - [BIN 和 OCT 的 BIGINT 格式化](integer-radix.zh.md)
 - [BIGINT ABS](bigint-abs.zh.md)
+- [BIGINT CEIL、CEILING 和 FLOOR](bigint-integral-rounding.zh.md)
