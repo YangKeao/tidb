@@ -73,3 +73,4 @@
 - [窗口查询的共享计算键](window-input-projection.zh.md)
 - [并行投影的共享 BIGINT 计算](parallel-bigint-projection.zh.md)
 - [BIGINT XOR 与一元负号](integer-xor-negation.zh.md)
+- [类型化 ANY_VALUE](typed-any-value.zh.md)
