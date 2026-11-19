@@ -2096,3 +2096,40 @@ fn shared_sql_integral_round_and_truncate_preserve_precision_and_scale_sign() {
     assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
     assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_bigint_mod_preserves_signs_and_zero_divisor_fallback() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE mod_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, d BIGINT)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO mod_values VALUES (1,-9223372036854775808,18446744073709551615,0),(2,NULL,NULL,0)",
+        &mut catalog, &StmtContext::for_query(),
+    ).unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql =
+        "SELECT MOD(n,-1), MOD(n,CAST(10 AS UNSIGNED)), MOD(u,-10), MOD(u,CAST(10 AS UNSIGNED))
+        FROM mod_values ORDER BY id LIMIT 2";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    use Datum::{Int, Null, UInt};
+    assert_eq!(
+        actual.1,
+        [vec![Int(0), Int(-8), UInt(5), UInt(5)], vec![Null; 4]]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let fallback = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT MOD(n,d), MOD(n,0) FROM mod_values ORDER BY id LIMIT 2";
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &fallback).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap()
+    );
+    assert_eq!(fallback.take_warnings(), native.take_warnings());
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}

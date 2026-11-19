@@ -871,6 +871,43 @@ impl SharedExpression {
                     }
                     work.push(Visit::BigIntOperand(arg));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "mod" =>
+                {
+                    use tidb_query_expr::impl_arithmetic::{
+                        arithmetic_fn_meta, IntIntMod, IntUintMod, UintIntMod, UintUintMod,
+                    };
+                    let [lhs @ (Expression::Column(_) | Expression::Constant(_)), rhs @ Expression::Constant(divisor)] =
+                        f.args.as_slice()
+                    else {
+                        return Err("MOD requires a BIGINT leaf and a literal divisor".into());
+                    };
+                    let unsigned =
+                        bigint_operand_signedness(lhs).ok_or("MOD dividend must be BIGINT")?;
+                    let divisor_unsigned =
+                        bigint_operand_signedness(rhs).ok_or("MOD divisor must be BIGINT")?;
+                    if !matches!(divisor.literal_value(), Some(Datum::Int(n)) if *n != 0)
+                        && !matches!(divisor.literal_value(), Some(Datum::UInt(n)) if *n != 0)
+                    {
+                        return Err("MOD divisor must be nonzero".into());
+                    }
+                    if !f.ret_type.as_ref().is_some_and(|ty| {
+                        ty.code() == tidb_datatype::FieldTypeCode::LongLong
+                            && !ty.is_array()
+                            && ty.is_unsigned() == unsigned
+                    }) {
+                        return Err("MOD needs a matching BIGINT result".into());
+                    }
+                    let meta = match (unsigned, divisor_unsigned) {
+                        (false, false) => arithmetic_fn_meta::<IntIntMod>(),
+                        (false, true) => arithmetic_fn_meta::<IntUintMod>(),
+                        (true, false) => arithmetic_fn_meta::<UintIntMod>(),
+                        (true, true) => arithmetic_fn_meta::<UintUintMod>(),
+                    };
+                    work.push(Visit::IntCall(meta, 2, unsigned));
+                    work.push(Visit::BigIntOperand(rhs));
+                    work.push(Visit::BigIntOperand(lhs));
+                }
                 Visit::SignedAbs(message) => nodes.push(RpnExpressionNode::FnCall {
                     func_meta: tidb_query_expr::impl_math::native_abs_int_fn_meta(),
                     args_len: 1,
