@@ -4414,3 +4414,44 @@ fn shared_double_math_keeps_domains_and_nulls() {
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     assert_eq!(shared.take_warnings(), native.take_warnings());
 }
+
+#[test]
+fn shared_double_log_preserves_domain_warnings_and_nulls() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    run_create_table_on(
+        "CREATE TABLE double_logs (id BIGINT PRIMARY KEY, b DOUBLE, x DOUBLE)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO double_logs VALUES
+         (1,2e0,8e0),(2,1e0,1e0),(3,-2e0,4e0),(4,2e0,0e0),
+         (5,NULL,-1e0),(6,-2e0,NULL),(7,0.5e0,4e0)",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+    let sql = "SELECT LN(x),LOG(x),LOG(b,x),LOG2(x) FROM double_logs ORDER BY id LIMIT 7";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0][2..], [Datum::Real(3.0), Datum::Real(3.0)]);
+    assert_eq!(actual.1[3], vec![Datum::Null; 4]);
+    assert_eq!(actual.1[4], vec![Datum::Null; 4]);
+    assert_eq!(actual.1[5], vec![Datum::Null; 4]);
+    assert_eq!(actual.1[6][2], Datum::Real(-2.0));
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(
+        warnings
+            .into_iter()
+            .map(|(_, code, message)| (code, message))
+            .collect::<Vec<_>>(),
+        vec![(3020, "Invalid argument for logarithm".to_owned()); 9],
+    );
+}

@@ -1129,22 +1129,35 @@ impl SharedExpression {
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
-                        && matches!(f.func_name.lowercase(), "asin" | "acos" | "sqrt" | "sign") =>
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "asin" | "acos" | "sqrt" | "sign" | "ln" | "log" | "log2"
+                        ) =>
                 {
                     use tidb_datatype::FieldTypeCode::Double;
                     use tidb_query_expr::impl_math::DoubleMath;
 
-                    let [operand] = f.args.as_slice() else {
-                        return Err("DOUBLE math requires one operand".into());
-                    };
                     let op = match f.func_name.lowercase() {
                         "asin" => DoubleMath::Asin,
                         "acos" => DoubleMath::Acos,
                         "sqrt" => DoubleMath::Sqrt,
                         "sign" => DoubleMath::Sign,
+                        "log" if f.args.len() == 2 => DoubleMath::LogBase,
+                        "ln" | "log" => DoubleMath::Ln,
+                        "log2" => DoubleMath::Log2,
                         _ => unreachable!(),
                     };
-                    if !matches_typed_operand(operand, Double)
+                    if f.args.len() != op.args_len()
+                        || !f.args.iter().all(|operand| {
+                            matches_typed_operand(operand, Double)
+                                && (!matches!(
+                                    op,
+                                    DoubleMath::Ln | DoubleMath::Log2 | DoubleMath::LogBase
+                                ) || matches!(
+                                    operand,
+                                    Expression::Column(_) | Expression::Constant(_)
+                                ))
+                        })
                         || !f.ret_type.as_ref().is_some_and(|ty| {
                             if op == DoubleMath::Sign {
                                 is_signed_bigint(ty)
@@ -1156,7 +1169,9 @@ impl SharedExpression {
                         return Err("unsupported DOUBLE math operand or result declaration".into());
                     }
                     work.push(Visit::DoubleMath(op));
-                    work.push(Visit::Enter(operand));
+                    for operand in f.args.iter().rev() {
+                        work.push(Visit::Enter(operand));
+                    }
                 }
                 Visit::DoubleMath(op) => {
                     let field_type = if op == tidb_query_expr::impl_math::DoubleMath::Sign {
@@ -3964,23 +3979,31 @@ mod tests {
                 None => input.append_null(0),
             }
         }
-        let result_types = [
-            double.clone(),
-            double.clone(),
-            double,
-            FieldType::new(LongLong),
-        ];
-        let functions = ["asin", "acos", "sqrt", "sign"]
-            .into_iter()
-            .zip(result_types.iter())
-            .map(|(name, ty)| {
-                Expression::ScalarFunction(ScalarFunction::new(
-                    CiString::new(name),
-                    ty.clone(),
-                    vec![Expression::Column(column.clone())],
-                ))
-            })
-            .collect::<Vec<_>>();
+        let mut result_types = vec![double.clone(); 8];
+        result_types[3] = FieldType::new(LongLong);
+        let functions = [
+            ("asin", None),
+            ("acos", None),
+            ("sqrt", None),
+            ("sign", None),
+            ("ln", None),
+            ("log", None),
+            ("log2", None),
+            ("log", Some(8.0)),
+        ]
+        .into_iter()
+        .zip(&result_types)
+        .map(|((name, value), ty)| {
+            let mut args = vec![Expression::Column(column.clone())];
+            if let Some(value) = value {
+                args.push(Expression::Constant(Constant::new(
+                    Datum::Real(value),
+                    double.clone(),
+                )));
+            }
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), ty.clone(), args))
+        })
+        .collect::<Vec<_>>();
         let program = SharedProjection::compile(&functions).unwrap();
         let rows = [4, 0, 5, 3, 1, 0, 2];
         let mut execution = program.start_execution(&crate::NoColumns);
