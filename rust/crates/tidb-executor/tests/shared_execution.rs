@@ -2194,3 +2194,44 @@ fn shared_sql_integer_division_keeps_runtime_diagnostics() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_sql_vector_dims_reads_native_vector_columns() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_dims (id BIGINT PRIMARY KEY, v VECTOR)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_dims VALUES (1,'[1,2,3]'),(2,'[]'),(3,NULL),(4,'[-0.5]')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let sql = "SELECT id,VEC_DIMS(v) FROM vector_dims ORDER BY id LIMIT 4";
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Int(1), Int(3)],
+            vec![Int(2), Int(0)],
+            vec![Int(3), Null],
+            vec![Int(4), Int(1)]
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let passthrough = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT v FROM vector_dims ORDER BY id LIMIT 4";
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &passthrough).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap()
+    );
+    assert_eq!(passthrough.shared_projection_counts(), Some((0, 0)));
+}

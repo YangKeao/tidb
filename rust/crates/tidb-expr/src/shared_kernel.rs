@@ -95,6 +95,7 @@ impl SharedExpression {
             DecimalOperand(&'a Expression),
             BigIntOperand(&'a Expression),
             ByteOperand(&'a Expression),
+            VectorColumn(&'a crate::column::Column),
             JsonOperand(&'a Expression),
             JsonType,
             BytesCall(tidb_query_expr::RpnFnMeta, usize),
@@ -273,7 +274,8 @@ impl SharedExpression {
                     };
                     nodes.push(RpnExpressionNode::Constant { value, field_type });
                 }
-                Visit::JsonOperand(Expression::Column(c))
+                Visit::VectorColumn(c)
+                | Visit::JsonOperand(Expression::Column(c))
                 | Visit::ByteOperand(Expression::Column(c))
                 | Visit::BigIntOperand(Expression::Column(c))
                 | Visit::Enter(Expression::Column(c)) => {
@@ -283,7 +285,10 @@ impl SharedExpression {
                     let admitted =
                         tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
                     match tp.code() {
-                        _ if matches!(visit, Visit::ByteOperand(_) | Visit::JsonOperand(_)) => {}
+                        _ if matches!(
+                            visit,
+                            Visit::ByteOperand(_) | Visit::JsonOperand(_) | Visit::VectorColumn(_)
+                        ) => {}
                         tidb_datatype::FieldTypeCode::VarString
                             if tp.collation_name() == admitted.collation_name() => {}
                         tidb_datatype::FieldTypeCode::Double if !tp.is_unsigned() => {}
@@ -313,6 +318,27 @@ impl SharedExpression {
                     nodes.push(RpnExpressionNode::ColumnRef { offset });
                 }
                 Visit::BigIntOperand(expression) => work.push(Visit::Enter(expression)),
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "vec_dims" =>
+                {
+                    let [Expression::Column(column)] = f.args.as_slice() else {
+                        return Err("VEC_DIMS requires a vector column".into());
+                    };
+                    if !column.ret_type.as_ref().is_some_and(|ty| {
+                        ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32 && !ty.is_array()
+                    }) || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err(
+                            "VEC_DIMS requires a vector input and signed BIGINT result".into()
+                        );
+                    }
+                    work.push(Visit::IntCall(
+                        tidb_query_expr::impl_vec::vec_dims_fn_meta(),
+                        1,
+                        false,
+                    ));
+                    work.push(Visit::VectorColumn(column));
+                }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.func_name.lowercase() == "date" =>
                 {
@@ -1512,6 +1538,9 @@ impl SharedExpression {
                 tidb_datatype::FieldTypeCode::Double => FieldTypeTp::Double.into(),
                 tidb_datatype::FieldTypeCode::NewDecimal => FieldTypeTp::NewDecimal.into(),
                 tidb_datatype::FieldTypeCode::Json => FieldTypeTp::Json.into(),
+                tidb_datatype::FieldTypeCode::VectorFloat32 => {
+                    FieldTypeTp::TiDbVectorFloat32.into()
+                }
                 _ if is_time_type(tp) => time_type(tp),
                 _ => bytes_type(),
             })
@@ -2297,6 +2326,26 @@ impl InputColumns for NativeInput<'_> {
                         Some(native_binary_json(tag, payload)?)
                     };
                     values.push_json(value);
+                }
+                EvalType::VectorFloat32 => {
+                    use tidb_query_datatype::codec::{
+                        data_type::ChunkedVec, mysql::VectorFloat32Decoder,
+                    };
+                    let VectorValue::VectorFloat32(values) = &mut values else {
+                        unreachable!("vector input storage");
+                    };
+                    let value = if column.is_null(*row) {
+                        None
+                    } else {
+                        let bytes = column.get_bytes(*row);
+                        if bytes.len() < size_of::<u32>() {
+                            return Err(
+                                Error::InvalidDataType("missing vector dimension".into()).into()
+                            );
+                        }
+                        Some(bytes.as_ref().read_vector_float32()?)
+                    };
+                    values.push(value);
                 }
                 _ => unreachable!("compiler checks input types"),
             }
