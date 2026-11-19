@@ -48,3 +48,4 @@
 - [BIGINT DIV](bigint-div.zh.md)
 - [原生向量列 VEC_DIMS](native-vector-dims.zh.md)
 - [原生向量列 VEC_L2_NORM](native-vector-norm.zh.md)
+- [原生向量距离](native-vector-distances.zh.md)
