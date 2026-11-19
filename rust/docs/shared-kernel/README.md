@@ -42,3 +42,4 @@
 - [BIN 和 OCT 的 BIGINT 格式化](integer-radix.zh.md)
 - [BIGINT ABS](bigint-abs.zh.md)
 - [BIGINT CEIL、CEILING 和 FLOOR](bigint-integral-rounding.zh.md)
+- [BIGINT ROUND 和 TRUNCATE](bigint-round-truncate.zh.md)
