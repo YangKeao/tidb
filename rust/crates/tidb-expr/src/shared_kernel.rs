@@ -189,6 +189,9 @@ impl SharedExpression {
                             | "day"
                             | "dayofmonth"
                             | "quarter"
+                            | "dayofweek"
+                            | "weekday"
+                            | "dayofyear"
                             | "upper"
                             | "ucase"
                             | "lower"
@@ -561,7 +564,14 @@ impl SharedExpression {
                     if f.pb_signature().is_none()
                         && matches!(
                             f.func_name.lowercase(),
-                            "year" | "month" | "day" | "dayofmonth" | "quarter"
+                            "year"
+                                | "month"
+                                | "day"
+                                | "dayofmonth"
+                                | "quarter"
+                                | "dayofweek"
+                                | "weekday"
+                                | "dayofyear"
                         ) =>
                 {
                     use tidb_query_expr::impl_time::CalendarPart;
@@ -583,6 +593,9 @@ impl SharedExpression {
                         "month" => CalendarPart::Month,
                         "day" | "dayofmonth" => CalendarPart::Day,
                         "quarter" => CalendarPart::Quarter,
+                        "dayofweek" => CalendarPart::DayOfWeek,
+                        "weekday" => CalendarPart::Weekday,
+                        "dayofyear" => CalendarPart::DayOfYear,
                         _ => unreachable!(),
                     };
                     work.push(Visit::CalendarPart(part));

@@ -3990,3 +3990,44 @@ fn shared_double_power_and_angle_match_original_diagnostics() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_weekday_and_year_day_keep_native_invalid_date_policy() {
+    use tidb_datatype::DateModes;
+
+    let permissive = DateModes {
+        allow_invalid_dates: true,
+        ..DateModes::default()
+    };
+    let catalog = catalog_with_rows(
+        "CREATE TABLE calendar_days (id BIGINT PRIMARY KEY, d DATE, t DATETIME(6))",
+        "INSERT INTO calendar_days VALUES
+         (1,'2024-02-29','2024-03-01 12:34:56.123456'),
+         (2,'2024-00-03','2024-02-00 01:00:00'),
+         (3,'0000-00-00','0000-00-00 00:00:00'),
+         (4,NULL,NULL),
+         (5,'2023-02-29','2024-04-31 17:00:00'),
+         (6,'0000-03-01','0000-03-01 09:00:00')",
+        &StmtContext::for_query().with_date_modes(permissive),
+    );
+    let sql = "SELECT DAYOFWEEK(d),WEEKDAY(d),DAYOFYEAR(d),
+                      DAYOFWEEK(t),WEEKDAY(t),DAYOFYEAR(t)
+               FROM calendar_days ORDER BY id LIMIT 6";
+    for mode in [permissive, DateModes::TIDB_DEFAULT_SQL_MODE] {
+        let native = StmtContext::for_query().with_date_modes(mode);
+        let shared = StmtContext::for_query()
+            .with_date_modes(mode)
+            .with_shared_projection();
+        let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+        assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+        assert_eq!(actual.1[0], [5, 3, 60, 6, 4, 61].map(Datum::Int));
+        for row in &actual.1[1..5] {
+            assert_eq!(row, &vec![Datum::Null; 6]);
+        }
+        assert_eq!(actual.1[5][2], Datum::Int(61));
+        assert_eq!(actual.1[5][5], Datum::Int(61));
+        assert!(shared.take_warnings().is_empty());
+        assert!(native.take_warnings().is_empty());
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}
