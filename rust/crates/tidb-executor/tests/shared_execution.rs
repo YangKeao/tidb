@@ -2137,3 +2137,60 @@ fn shared_sql_bigint_mod_preserves_signs_and_zero_divisor_warnings() {
     assert!(warnings.iter().all(|(_, code, _)| *code == 1365));
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_integer_division_keeps_runtime_diagnostics() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE div_values (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, d BIGINT, ud BIGINT UNSIGNED)",
+        &mut catalog,
+    ).unwrap();
+    run_insert_on(
+        "INSERT INTO div_values VALUES (1,17,18446744073709551615,10,10),(2,NULL,NULL,0,0),
+         (3,1,1,0,0),(4,-9223372036854775808,99,-1,1)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql =
+        "SELECT n DIV d,n DIV ud,u DIV d,u DIV ud FROM div_values WHERE id<4 ORDER BY id LIMIT 3";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    use Datum::{Int, Null, UInt};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Int(1), UInt(1), UInt(u64::MAX / 10), UInt(u64::MAX / 10)],
+            vec![Null; 4],
+            vec![Null; 4],
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    let warnings = shared.take_warnings();
+    assert_eq!(warnings, native.take_warnings());
+    assert_eq!(warnings.len(), 4);
+    assert!(warnings.iter().all(|(_, code, _)| *code == 1365));
+
+    for sql in [
+        "SELECT n DIV d FROM div_values WHERE id=4",
+        "SELECT n DIV ud FROM div_values WHERE id=4",
+        "SELECT u DIV d FROM div_values WHERE id=4",
+    ] {
+        let native = StmtContext::for_query();
+        let shared = StmtContext::for_query().with_shared_projection();
+        let error = run_select_meta_on(sql, &catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(
+            error,
+            run_select_meta_on(sql, &catalog, &native)
+                .unwrap_err()
+                .to_mysql_error()
+        );
+        assert_eq!(error.code, 1690);
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}

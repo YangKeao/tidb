@@ -120,7 +120,7 @@ impl SharedExpression {
             ),
             IntCall(tidb_query_expr::RpnFnMeta, usize, bool),
             SignedAbs(String),
-            IntegerModulo(bool),
+            IntegerArithmetic(NativeArithmetic, bool),
             Compare(&'a str, ComparisonOperands, Option<usize>),
             WireComparisonRight(&'static str, &'a Expression),
             LogicalNext(&'a Expression, usize),
@@ -873,33 +873,45 @@ impl SharedExpression {
                     work.push(Visit::BigIntOperand(arg));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
-                    if f.pb_signature().is_none() && f.func_name.lowercase() == "mod" =>
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "mod" | "intdiv") =>
                 {
                     let [lhs @ (Expression::Column(_) | Expression::Constant(_)), rhs @ (Expression::Column(_) | Expression::Constant(_))] =
                         f.args.as_slice()
                     else {
-                        return Err("MOD requires two BIGINT leaves".into());
+                        return Err("DIV and MOD require two BIGINT leaves".into());
                     };
-                    let unsigned =
-                        bigint_operand_signedness(lhs).ok_or("MOD dividend must be BIGINT")?;
-                    bigint_operand_signedness(rhs).ok_or("MOD divisor must be BIGINT")?;
+                    let lhs_unsigned =
+                        bigint_operand_signedness(lhs).ok_or("dividend must be BIGINT")?;
+                    let rhs_unsigned =
+                        bigint_operand_signedness(rhs).ok_or("divisor must be BIGINT")?;
+                    let (op, unsigned) = if f.func_name.lowercase() == "mod" {
+                        (NativeArithmetic::IntegerModulo, lhs_unsigned)
+                    } else {
+                        (
+                            NativeArithmetic::IntegerDivide,
+                            lhs_unsigned || rhs_unsigned,
+                        )
+                    };
                     if !f.ret_type.as_ref().is_some_and(|ty| {
                         ty.code() == tidb_datatype::FieldTypeCode::LongLong
                             && !ty.is_array()
                             && ty.is_unsigned() == unsigned
                     }) {
-                        return Err("MOD needs a matching BIGINT result".into());
+                        return Err("DIV and MOD need a matching BIGINT result".into());
                     }
-                    work.push(Visit::IntegerModulo(unsigned));
+                    work.push(Visit::IntegerArithmetic(op, unsigned));
                     work.push(Visit::BigIntOperand(rhs));
                     work.push(Visit::BigIntOperand(lhs));
                 }
-                Visit::IntegerModulo(unsigned) => nodes.push(RpnExpressionNode::NativeArithmetic {
-                    op: NativeArithmetic::IntegerModulo,
-                    field_type: bigint_type(unsigned),
-                    overflow: String::new(),
-                    diagnostic: Vec::new(),
-                }),
+                Visit::IntegerArithmetic(op, unsigned) => {
+                    nodes.push(RpnExpressionNode::NativeArithmetic {
+                        op,
+                        field_type: bigint_type(unsigned),
+                        overflow: String::new(),
+                        diagnostic: Vec::new(),
+                    })
+                }
                 Visit::SignedAbs(message) => nodes.push(RpnExpressionNode::FnCall {
                     func_meta: tidb_query_expr::impl_math::native_abs_int_fn_meta(),
                     args_len: 1,
