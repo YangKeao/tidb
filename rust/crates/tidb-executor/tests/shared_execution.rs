@@ -2004,3 +2004,48 @@ fn shared_sql_abs_preserves_bigint_sign_and_overflow_diagnostic() {
     );
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_integral_ceil_and_floor_preserve_bigint_bits() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE integral_rounding (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO integral_rounding VALUES (1,-9223372036854775808,18446744073709551615),(2,NULL,NULL)",
+        &mut catalog, &StmtContext::for_query(),
+    ).unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql =
+        "SELECT id,CEIL(n),CEILING(n),FLOOR(n),CEIL(u),FLOOR(u) FROM integral_rounding ORDER BY id LIMIT 2";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    use Datum::{Int, Null, UInt};
+    assert_eq!(
+        actual.1,
+        [
+            vec![
+                Int(1),
+                Int(i64::MIN),
+                Int(i64::MIN),
+                Int(i64::MIN),
+                UInt(u64::MAX),
+                UInt(u64::MAX)
+            ],
+            vec![Int(2), Null, Null, Null, Null, Null],
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let fallback = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT CEIL(CAST(n AS DECIMAL(30,2))) FROM integral_rounding ORDER BY id LIMIT 2";
+    assert_eq!(
+        run_select_meta_on(sql, &catalog, &fallback).unwrap(),
+        run_select_meta_on(sql, &catalog, &native).unwrap()
+    );
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}

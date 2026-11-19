@@ -804,25 +804,31 @@ impl SharedExpression {
                     work.push(Visit::Enter(right));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
-                    if f.pb_signature().is_none() && f.func_name.lowercase() == "abs" =>
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "abs" | "ceil" | "ceiling" | "floor"
+                        ) =>
                 {
                     let [arg @ (Expression::Column(_) | Expression::Constant(_))] =
                         f.args.as_slice()
                     else {
-                        return Err("ABS requires a typed BIGINT leaf".into());
+                        return Err("integer math requires a typed BIGINT leaf".into());
                     };
-                    let unsigned = bigint_operand_signedness(arg).ok_or("ABS requires BIGINT")?;
+                    let unsigned =
+                        bigint_operand_signedness(arg).ok_or("integer math requires BIGINT")?;
                     if !f.ret_type.as_ref().is_some_and(|ty| {
                         ty.code() == tidb_datatype::FieldTypeCode::LongLong
                             && !ty.is_array()
                             && ty.is_unsigned() == unsigned
                     }) {
-                        return Err("ABS result must match its BIGINT argument".into());
+                        return Err("integer math result must match its BIGINT argument".into());
                     }
-                    if unsigned {
-                        use tidb_query_expr::impl_math::abs_uint_fn_meta;
-                        work.push(Visit::IntCall(abs_uint_fn_meta(), 1, true));
-                    } else {
+                    use tidb_query_expr::impl_math::{
+                        abs_uint_fn_meta, ceil_fn_meta, floor_fn_meta, CeilIntToInt, FloorIntToInt,
+                    };
+                    let name = f.func_name.lowercase();
+                    if name == "abs" && !unsigned {
                         let source = crate::scalar_function::math_overflow_expression(
                             f,
                             &crate::context::NoColumns,
@@ -832,6 +838,13 @@ impl SharedExpression {
                             |source| format!("BIGINT value is out of range in '{source}'"),
                         );
                         work.push(Visit::SignedAbs(message));
+                    } else {
+                        let meta = match name {
+                            "ceil" | "ceiling" => ceil_fn_meta::<CeilIntToInt>(),
+                            "floor" => floor_fn_meta::<FloorIntToInt>(),
+                            _ => abs_uint_fn_meta(),
+                        };
+                        work.push(Visit::IntCall(meta, 1, unsigned));
                     }
                     work.push(Visit::BigIntOperand(arg));
                 }
