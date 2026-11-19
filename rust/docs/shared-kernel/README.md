@@ -99,3 +99,5 @@
 - [类型化 TIME 列的分量和整秒](duration-parts.zh.md)
 
 - [类型化日期的周号与模式](calendar-week.zh.md)
+
+- [类型化 DATEDIFF](date-difference.zh.md)
