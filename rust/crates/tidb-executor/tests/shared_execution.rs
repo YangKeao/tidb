@@ -3105,3 +3105,43 @@ fn shared_owned_case_conversion_keeps_byte_datums_and_go_decode() {
     assert_eq!(actual[0], vec![Datum::new_bytes(b"a\xff")]);
     assert_eq!(actual[1], vec![Datum::new_string("��X")]);
 }
+
+#[test]
+fn shared_sql_trim_preserves_direction_overlap_raw_bytes_and_null() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE trim_values (id BIGINT PRIMARY KEY, s VARBINARY(30), p VARBINARY(10))",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO trim_values VALUES
+            (1,'aaaaa','aaa'),(2,X'8020FF2080',X'80'),(3,X'200920',''),
+            (4,'  x  ',NULL),(5,NULL,'x')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let native = StmtContext::for_query();
+    let sql = "SELECT TRIM(s), TRIM(p FROM s), TRIM(BOTH p FROM s),
+        TRIM(LEADING p FROM s), TRIM(TRAILING p FROM s)
+        FROM trim_values ORDER BY id LIMIT 5";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let bytes = |row: usize, column: usize| actual.1[row][column].as_raw_bytes();
+    assert_eq!(bytes(0, 0), Some(&b"aaaaa"[..]));
+    for column in 1..5 {
+        assert_eq!(bytes(0, column), Some(&b"aa"[..]));
+    }
+    assert_eq!(bytes(1, 1), Some(&b" \xff "[..]));
+    assert_eq!(bytes(1, 3), Some(&b" \xff \x80"[..]));
+    assert_eq!(bytes(1, 4), Some(&b"\x80 \xff "[..]));
+    assert_eq!(bytes(2, 0), Some(&b"\t"[..]));
+    assert_eq!(bytes(2, 1), Some(&b" \t "[..]));
+    assert_eq!(bytes(3, 0), Some(&b"x"[..]));
+    assert_eq!(actual.1[3][1..], vec![Datum::Null; 4]);
+    assert_eq!(actual.1[4], vec![Datum::Null; 5]);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}

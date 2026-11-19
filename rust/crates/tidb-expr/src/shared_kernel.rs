@@ -173,7 +173,14 @@ impl SharedExpression {
                     || bit_operation.is_some()
                     || matches!(
                         f.func_name.lowercase(),
-                        "json_valid" | "upper" | "ucase" | "lower" | "lcase"
+                        "json_valid"
+                            | "upper"
+                            | "ucase"
+                            | "lower"
+                            | "lcase"
+                            | "trim"
+                            | "ltrim_with"
+                            | "rtrim_with"
                     ))
                     && f.args
                         .iter()
@@ -1511,6 +1518,36 @@ impl SharedExpression {
                     if f.pb_signature().is_none()
                         && matches!(
                             f.func_name.lowercase(),
+                            "trim" | "ltrim_with" | "rtrim_with"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_string::{
+                        native_trim_both_fn_meta, native_trim_leading_fn_meta,
+                        native_trim_trailing_fn_meta,
+                    };
+
+                    let [input, pattern] = f.args.as_slice() else {
+                        return Err("TRIM requires a resolved pattern".into());
+                    };
+                    if !is_raw_string_operand(input)
+                        || !is_raw_string_operand(pattern)
+                        || !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                    {
+                        return Err("TRIM requires typed strings".into());
+                    }
+                    let meta = match f.func_name.lowercase() {
+                        "trim" => native_trim_both_fn_meta(),
+                        "ltrim_with" => native_trim_leading_fn_meta(),
+                        _ => native_trim_trailing_fn_meta(),
+                    };
+                    work.push(Visit::BytesCall(meta, 2));
+                    work.push(Visit::ByteOperand(pattern));
+                    work.push(Visit::ByteOperand(input));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
                             "upper" | "ucase" | "lower" | "lcase"
                         ) =>
                 {
@@ -1938,6 +1975,15 @@ impl SharedExpression {
                         .ret_type
                         .as_ref()
                         .is_some_and(tidb_datatype::FieldType::is_binary_string) =>
+                {
+                    NativeStringResult::Bytes
+                }
+                Expression::ScalarFunction(f)
+                    if matches!(
+                        f.func_name.lowercase(),
+                        "trim" | "ltrim_with" | "rtrim_with"
+                    ) && matches!(f.args.first(), Some(Expression::Constant(c))
+                            if matches!(c.literal_value(), Some(Datum::Bytes(_)))) =>
                 {
                     NativeStringResult::Bytes
                 }
