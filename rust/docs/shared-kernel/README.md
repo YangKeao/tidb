@@ -56,3 +56,4 @@
 - [类型化字符串 CAST AS VECTOR](native-vector-cast.zh.md)
 - [类型化向量的按需分支](native-vector-conditional.zh.md)
 - [预处理 SELECT 的共享投影](prepared-decimal-projection.zh.md)
+- [类型化向量、JSON 和字符串的空值判断](typed-null-tests.zh.md)
