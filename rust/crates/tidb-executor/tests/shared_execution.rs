@@ -4218,3 +4218,45 @@ fn shared_calendar_week_keeps_context_and_explicit_modes() {
         assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
     }
 }
+
+#[test]
+fn shared_date_difference_preserves_calendar_days_and_invalid_dates() {
+    use tidb_datatype::DateModes;
+
+    let catalog = catalog_with_rows(
+        "CREATE TABLE date_pairs (id BIGINT PRIMARY KEY, d DATE, t DATETIME(6))",
+        "INSERT INTO date_pairs VALUES
+         (1,'0000-03-01','0000-02-29 23:59:59.999999'),
+         (2,'2023-02-29','2023-03-01 01:00:00'),
+         (3,'2024-02-29','0000-00-00 01:00:00'),
+         (4,NULL,'2024-03-01 14:00:00'),
+         (5,'2023-12-31','2024-01-01 03:00:00')",
+        &StmtContext::for_query().with_date_modes(DateModes {
+            allow_invalid_dates: true,
+            ..DateModes::default()
+        }),
+    );
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT DATEDIFF(d,t),DATEDIFF(t,d) FROM date_pairs ORDER BY id LIMIT 5";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1[0], [1, -1].map(Datum::Int));
+    for row in &actual.1[1..4] {
+        assert_eq!(row, &vec![Datum::Null; 2]);
+    }
+    assert_eq!(actual.1[4], [-1, 1].map(Datum::Int));
+    assert!(native.take_warnings().is_empty());
+    assert!(shared.take_warnings().is_empty());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let shared = StmtContext::for_query().with_shared_projection();
+    let composed = "SELECT DATEDIFF(DATE(t),d) FROM date_pairs WHERE id=5 LIMIT 1";
+    let actual = run_select_meta_on(composed, &catalog, &shared).unwrap();
+    assert_eq!(
+        actual,
+        run_select_meta_on(composed, &catalog, &native).unwrap()
+    );
+    assert_eq!(actual.1[0], [Datum::Int(1)]);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}

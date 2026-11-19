@@ -114,6 +114,7 @@ impl SharedExpression {
             BytesCall(tidb_query_expr::RpnFnMeta, usize),
             PacketString(tidb_query_expr::impl_string::PacketString),
             Date,
+            DateDifference,
             CalendarPart(tidb_query_expr::impl_time::CalendarPart),
             CalendarName(tidb_query_expr::impl_time::CalendarName),
             CalendarWeek(tidb_query_expr::impl_time::CalendarWeek, bool),
@@ -203,6 +204,7 @@ impl SharedExpression {
                             | "week"
                             | "weekofyear"
                             | "yearweek"
+                            | "datediff"
                             | "hour"
                             | "minute"
                             | "second"
@@ -640,6 +642,24 @@ impl SharedExpression {
                 Visit::CalendarName(name) => {
                     nodes.push(tidb_query_expr::native_calendar_name_node(name));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "datediff" =>
+                {
+                    let [left, right] = f.args.as_slice() else {
+                        return Err("DATEDIFF requires two time operands".into());
+                    };
+                    if ![left, right].into_iter().all(|arg| {
+                        arg.static_type()
+                            .is_some_and(|ty| is_time_type(ty) && !ty.is_array())
+                    }) || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                    {
+                        return Err("DATEDIFF requires typed Time and a BIGINT result".into());
+                    }
+                    work.push(Visit::DateDifference);
+                    work.push(Visit::Enter(right));
+                    work.push(Visit::Enter(left));
+                }
+                Visit::DateDifference => nodes.push(tidb_query_expr::native_date_difference_node()),
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none()
                         && matches!(
@@ -4598,6 +4618,54 @@ mod tests {
             }
             assert!(effects.warnings.borrow().is_empty());
         }
+    }
+
+    #[test]
+    fn date_difference_ignores_hidden_native_date_clocks() {
+        use tidb_datatype::{CoreTime, FieldTypeCode, Time, TimeType};
+        use tidb_query_datatype::codec::mysql::Time as WireTime;
+
+        let date = FieldType::new(FieldTypeCode::Date);
+        let mut input = Chunk::new_with_capacity(&[date.clone(), date.clone()], 2);
+        let first = CoreTime::from_date(2024, 3, 1, 0, 0, 0, 0);
+        let second = CoreTime::from_date(2024, 2, 29, 23, 59, 59, 0);
+        let as_date = |core| Time::new(core, TimeType::Date, 0).unwrap();
+        input.append_time(0, as_date(first));
+        input.append_time(1, as_date(second));
+        input.append_time(0, as_date(CoreTime::from_date(2024, 3, 1, 25, 0, 0, 0)));
+        input.append_time(1, as_date(second));
+        let as_wire_date =
+            |core: CoreTime| WireTime::from_expression_memory_bits(core.raw() | 0b1110);
+        assert_eq!(as_wire_date(first).date_diff(as_wire_date(second)), Some(0));
+
+        let result_type = FieldType::new(FieldTypeCode::LongLong);
+        let expr = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("datediff"),
+            result_type.clone(),
+            vec![time_column(0, &date), time_column(1, &date)],
+        ));
+        let rows = [1, 0, 1];
+        let expected: Vec<_> = rows
+            .iter()
+            .map(|&row| expr.eval(&crate::NoColumns, input.get_row(row)).unwrap())
+            .collect();
+        assert_eq!(expected, vec![Datum::Int(1); rows.len()]);
+        let projection = SharedProjection::compile(&[expr]).unwrap();
+        let mut execution = projection.start_execution(&crate::NoColumns);
+        assert_eq!(
+            execution
+                .evaluate(&input, &rows, &mut EvalContext::default())
+                .unwrap()[0],
+            expected,
+        );
+        let mut output = Chunk::new_with_capacity(std::slice::from_ref(&result_type), rows.len());
+        execution
+            .evaluate_into_chunk(&input, &rows, &mut EvalContext::default(), &mut output)
+            .unwrap();
+        let direct: Vec<_> = (0..rows.len())
+            .map(|row| output.get_row(row).get_datum(0, &result_type))
+            .collect();
+        assert_eq!(direct, expected);
     }
 
     #[test]
