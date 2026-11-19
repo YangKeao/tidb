@@ -164,7 +164,8 @@ impl SharedExpression {
                     || truth_test.is_some()
                     || bytes_to_int.is_some()
                     || binary_search.is_some()
-                    || bit_operation.is_some())
+                    || bit_operation.is_some()
+                    || f.func_name.lowercase() == "json_valid")
                     && f.args
                         .iter()
                         .all(|arg| matches!(arg, Expression::Constant(_) | Expression::Column(_)));
@@ -883,11 +884,7 @@ impl SharedExpression {
                             )
                         } else if is_raw_string_operand(operand) {
                             (is_null_bytes_fn_meta(), Visit::ByteOperand(operand))
-                        } else if matches!(operand, Expression::Column(_) | Expression::Constant(_))
-                            && operand.static_type().is_some_and(|ty| {
-                                ty.code() == tidb_datatype::FieldTypeCode::Json && !ty.is_array()
-                            })
-                        {
+                        } else if is_typed_json_leaf(operand) {
                             (is_null_json_fn_meta(), Visit::JsonOperand(operand))
                         } else {
                             return Err("NULL test operand is outside shared admission".into());
@@ -1453,6 +1450,47 @@ impl SharedExpression {
                     }
                     work.push(Visit::JsonType);
                     work.push(Visit::JsonOperand(operand));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none() && f.func_name.lowercase() == "json_valid" =>
+                {
+                    use tidb_query_expr::impl_json::{
+                        json_valid_fn_meta, native_json_valid_string_fn_meta,
+                    };
+
+                    let [operand] = f.args.as_slice() else {
+                        return Err("JSON_VALID requires one operand".into());
+                    };
+                    if !f.ret_type.as_ref().is_some_and(is_signed_bigint) {
+                        return Err("JSON_VALID requires a signed BIGINT result".into());
+                    }
+                    let (meta, input) = if is_typed_json_leaf(operand) {
+                        (json_valid_fn_meta(), Visit::JsonOperand(operand))
+                    } else if bigint_operand_signedness(operand).is_some()
+                        && matches!(operand, Expression::Constant(_) | Expression::Column(_))
+                    {
+                        (json_valid_fn_meta(), Visit::BigIntOperand(operand))
+                    } else if operand.static_type().is_some_and(is_raw_string_type)
+                        && match operand {
+                            Expression::Column(_) => true,
+                            Expression::Constant(c) => matches!(
+                                c.literal_value(),
+                                Some(Datum::String(_) | Datum::Bytes(_) | Datum::Null)
+                            ),
+                            _ => false,
+                        }
+                    {
+                        (
+                            native_json_valid_string_fn_meta(),
+                            Visit::ByteOperand(operand),
+                        )
+                    } else {
+                        return Err(
+                            "JSON_VALID requires a typed JSON, BIGINT or string leaf".into()
+                        );
+                    };
+                    work.push(Visit::IntCall(meta, 1, false));
+                    work.push(input);
                 }
                 Visit::JsonType => nodes.push(RpnExpressionNode::FnCall {
                     func_meta: tidb_query_expr::impl_json::native_json_type_fn_meta(),
@@ -2792,6 +2830,13 @@ fn native_binary_string_search(
         && function.derived_collation() == tidb_datatype::Collation::Binary
         && function.args.iter().all(is_binary_string_leaf))
     .then_some(meta)
+}
+
+fn is_typed_json_leaf(expression: &Expression) -> bool {
+    expression
+        .static_type()
+        .is_some_and(|ty| ty.code() == tidb_datatype::FieldTypeCode::Json && !ty.is_array())
+        && matches!(expression, Expression::Column(_) | Expression::Constant(_))
 }
 
 fn is_vector_type(ty: &tidb_datatype::FieldType) -> bool {

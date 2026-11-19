@@ -2972,3 +2972,57 @@ fn shared_sql_binary_substring_index_keeps_forward_matches_and_count_domain() {
     }
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_json_valid_preserves_typed_and_invalid_byte_inputs() {
+    use tidb_datatype::FieldTypeFlags;
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE json_valid_inputs (
+            id BIGINT PRIMARY KEY, j JSON, s VARBINARY(80), i BIGINT, u BIGINT UNSIGNED
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO json_valid_inputs VALUES
+            (1,'null','[1]',-9223372036854775808,18446744073709551615),
+            (2,'{}',X'FF',0,0),(3,NULL,'{} trailing',NULL,NULL),
+            (4,'[null]',X'225C754438303022',2,2),(5,NULL,NULL,NULL,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let native = StmtContext::for_query();
+    let sql = "SELECT JSON_VALID(j), JSON_VALID(s), JSON_VALID(i), JSON_VALID(u)
+        FROM json_valid_inputs ORDER BY id LIMIT 5";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert!(actual
+        .0
+        .iter()
+        .all(|(_, field)| field.has_flag(FieldTypeFlags::IS_BOOLEAN)));
+    use Datum::{Int, Null};
+    assert_eq!(
+        actual.1,
+        vec![
+            vec![Int(1), Int(1), Int(0), Int(0)],
+            vec![Int(1), Int(0), Int(0), Int(0)],
+            vec![Null, Int(0), Null, Null],
+            vec![Int(1), Int(0), Int(0), Int(0)],
+            vec![Null; 4],
+        ]
+    );
+    assert!(shared.take_warnings().is_empty());
+    assert!(native.take_warnings().is_empty());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let shared = StmtContext::for_query().with_shared_selection();
+    let sql = "SELECT id FROM (SELECT id,s FROM json_valid_inputs LIMIT 5) a WHERE JSON_VALID(s)";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(actual.1, vec![vec![Int(1)]]);
+    assert_eq!(shared.shared_selection_counts(), Some((1, 1)));
+}
