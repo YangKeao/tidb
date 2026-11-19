@@ -70,3 +70,4 @@
 - [INSERT SELECT 的共享算术源投影](insert-select-arithmetic.zh.md)
 - [UPDATE 和 DELETE 的本地 BIGINT 筛选](write-selection.zh.md)
 - [Hash Join V2 的本地 BIGINT 剩余条件](hash-join-residual.zh.md)
+- [窗口查询的共享计算键](window-input-projection.zh.md)
