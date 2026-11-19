@@ -85,3 +85,5 @@
 - [DOUBLE 的 ASIN、ACOS、SQRT 和 SIGN](double-domain-math.zh.md)
 
 - [DOUBLE 对数的定义域和告警](double-log.zh.md)
+
+- [DOUBLE 幂运算和角度转换](double-power-angle.zh.md)
