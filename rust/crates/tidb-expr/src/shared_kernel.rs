@@ -1995,6 +1995,50 @@ impl SharedExpression {
                     });
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(f.func_name.lowercase(), "elt" | "make_set") =>
+                {
+                    use tidb_query_expr::impl_string::{elt_fn_meta, native_make_set_fn_meta};
+
+                    let [selector, strings @ ..] = f.args.as_slice() else {
+                        return Err("ELT/MAKE_SET require a selector and strings".into());
+                    };
+                    if strings.is_empty()
+                        || bigint_operand_signedness(selector).is_none()
+                        || !matches!(selector, Expression::Column(_) | Expression::Constant(_))
+                        || !f.ret_type.as_ref().is_some_and(is_raw_string_type)
+                    {
+                        return Err("ELT/MAKE_SET require typed BIGINT and string arguments".into());
+                    }
+                    let meta = match f.func_name.lowercase() {
+                        "elt" if strings.iter().all(is_binary_string_leaf) => elt_fn_meta(),
+                        "make_set"
+                            if strings.len() <= 64
+                                && strings.iter().all(|value| {
+                                    is_raw_string_operand(value)
+                                        && match value {
+                                            Expression::Column(_) => true,
+                                            Expression::Constant(c) => matches!(
+                                                c.literal_value(),
+                                                Some(Datum::String(_) | Datum::Null)
+                                            ),
+                                            _ => false,
+                                        }
+                                }) =>
+                        {
+                            native_make_set_fn_meta()
+                        }
+                        _ => {
+                            return Err(
+                                "ELT/MAKE_SET arguments are outside shared string admission".into(),
+                            )
+                        }
+                    };
+                    work.push(Visit::BytesCall(meta, f.args.len()));
+                    work.extend(strings.iter().rev().map(Visit::ByteOperand));
+                    work.push(Visit::BigIntOperand(selector));
+                }
+                Visit::Enter(Expression::ScalarFunction(f))
                     if f.pb_signature().is_none() && f.func_name.lowercase() == "quote" =>
                 {
                     let [arg] = f.args.as_slice() else {
@@ -2223,7 +2267,7 @@ impl SharedExpression {
                 Expression::ScalarFunction(f)
                     if matches!(
                         f.func_name.lowercase(),
-                        "from_base64" | "lpad" | "rpad" | "insert_func"
+                        "from_base64" | "lpad" | "rpad" | "insert_func" | "elt"
                     ) =>
                 {
                     NativeStringResult::Bytes

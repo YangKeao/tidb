@@ -4293,3 +4293,73 @@ fn shared_binary_insert_preserves_original_bytes_and_packet_size() {
         ],
     );
 }
+
+#[test]
+fn shared_elt_and_make_set_keep_binary_selection_and_utf8_errors() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+
+    let mut catalog = Catalog::default();
+    let native = StmtContext::for_query();
+    run_create_table_on(
+        "CREATE TABLE string_choices (
+            id BIGINT PRIMARY KEY, n BIGINT, a VARBINARY(20), b VARBINARY(20)
+        )",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO string_choices VALUES
+            (1,1,'one',X'FF'),(2,2,'one',X'FF'),(3,3,'one',NULL),
+            (4,0,'A','B'),(5,NULL,'A','B'),(6,-1,'A','B')",
+        &mut catalog,
+        &native,
+    )
+    .unwrap();
+
+    let read = |value: &Datum| match value {
+        Datum::Bytes(value) => Some(value.clone()),
+        Datum::String(value) => Some(value.bytes().to_vec()),
+        Datum::Null => None,
+        _ => panic!("expected bytes or NULL"),
+    };
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT ELT(n,a,b),MAKE_SET(n,a,b) FROM string_choices
+               WHERE id<>2 ORDER BY id LIMIT 5";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    let expected: [[Option<&[u8]>; 2]; 5] = [
+        [Some(b"one"), Some(b"one")],
+        [None, Some(b"one")],
+        [None, Some(b"")],
+        [None, None],
+        [None, Some(b"A,B")],
+    ];
+    assert_eq!(actual.1.len(), expected.len());
+    for (row, expected) in actual.1.iter().zip(expected) {
+        for (value, expected) in row.iter().zip(expected) {
+            assert_eq!(read(value).as_deref(), expected);
+        }
+    }
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT ELT(n,a,b) FROM string_choices WHERE id=2 LIMIT 1";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(read(&actual.1[0][0]), Some(vec![0xff]));
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT MAKE_SET(n,a,b) FROM string_choices WHERE id=2 LIMIT 1";
+    let actual = run_select_meta_on(sql, &catalog, &shared)
+        .unwrap_err()
+        .to_mysql_error();
+    let expected = run_select_meta_on(sql, &catalog, &native)
+        .unwrap_err()
+        .to_mysql_error();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.code, 1105);
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+}
