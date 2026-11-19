@@ -2267,3 +2267,59 @@ fn shared_sql_vector_norm_preserves_double_range() {
     );
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_sql_vector_distances_preserve_null_and_dimension_errors() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE vector_distances (id BIGINT PRIMARY KEY, a VECTOR, b VECTOR)",
+        &mut catalog,
+    )
+    .unwrap();
+    run_insert_on(
+        "INSERT INTO vector_distances VALUES
+            (1,'[3,0]','[0,4]'),(2,'[0,0]','[0,0]'),(3,NULL,'[1,2]'),(4,'[1]','[2,3]')",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT VEC_L1_DISTANCE(a,b),VEC_L2_DISTANCE(a,b),
+        VEC_NEGATIVE_INNER_PRODUCT(a,b),VEC_COSINE_DISTANCE(a,b)
+        FROM vector_distances WHERE id<4 ORDER BY id LIMIT 3";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    use Datum::{Null, Real};
+    assert_eq!(
+        actual.1,
+        [
+            vec![Real(7.0), Real(5.0), Real(-0.0), Real(1.0)],
+            vec![Real(0.0), Real(0.0), Real(-0.0), Null],
+            vec![Null; 4],
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    for function in [
+        "VEC_L1_DISTANCE",
+        "VEC_L2_DISTANCE",
+        "VEC_NEGATIVE_INNER_PRODUCT",
+        "VEC_COSINE_DISTANCE",
+    ] {
+        let sql = format!("SELECT {function}(a,b) FROM vector_distances WHERE id=4");
+        let shared = StmtContext::for_query().with_shared_projection();
+        let error = run_select_meta_on(&sql, &catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(
+            error,
+            run_select_meta_on(&sql, &catalog, &native)
+                .unwrap_err()
+                .to_mysql_error()
+        );
+        assert_eq!(error.code, 1105);
+        assert_eq!(error.message, "vectors have different dimensions: 1 and 2");
+        assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+    }
+}

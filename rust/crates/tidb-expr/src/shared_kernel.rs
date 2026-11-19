@@ -97,6 +97,7 @@ impl SharedExpression {
             ByteOperand(&'a Expression),
             VectorColumn(&'a crate::column::Column),
             VectorNorm,
+            VectorDistance(tidb_query_expr::impl_vec::NativeVectorDistance),
             JsonOperand(&'a Expression),
             JsonType,
             BytesCall(tidb_query_expr::RpnFnMeta, usize),
@@ -351,6 +352,49 @@ impl SharedExpression {
                     }
                     work.push(Visit::VectorColumn(column));
                 }
+                Visit::Enter(Expression::ScalarFunction(f))
+                    if f.pb_signature().is_none()
+                        && matches!(
+                            f.func_name.lowercase(),
+                            "vec_l1_distance"
+                                | "vec_l2_distance"
+                                | "vec_negative_inner_product"
+                                | "vec_cosine_distance"
+                        ) =>
+                {
+                    use tidb_query_expr::impl_vec::NativeVectorDistance;
+                    let [Expression::Column(left), Expression::Column(right)] = f.args.as_slice()
+                    else {
+                        return Err("vector distance requires two vector columns".into());
+                    };
+                    if ![left, right].iter().all(|column| {
+                        column.ret_type.as_ref().is_some_and(|ty| {
+                            ty.code() == tidb_datatype::FieldTypeCode::VectorFloat32
+                                && !ty.is_array()
+                        })
+                    }) || !f.ret_type.as_ref().is_some_and(|ty| {
+                        ty.code() == tidb_datatype::FieldTypeCode::Double
+                            && !ty.is_array()
+                            && !ty.is_unsigned()
+                    }) {
+                        return Err("vector distance input or result type mismatch".into());
+                    }
+                    let distance = match f.func_name.lowercase() {
+                        "vec_l1_distance" => NativeVectorDistance::L1,
+                        "vec_l2_distance" => NativeVectorDistance::L2,
+                        "vec_negative_inner_product" => NativeVectorDistance::NegativeInnerProduct,
+                        _ => NativeVectorDistance::Cosine,
+                    };
+                    work.push(Visit::VectorDistance(distance));
+                    work.push(Visit::VectorColumn(right));
+                    work.push(Visit::VectorColumn(left));
+                }
+                Visit::VectorDistance(distance) => nodes.push(RpnExpressionNode::FnCall {
+                    func_meta: tidb_query_expr::impl_vec::native_vector_distance_fn_meta(),
+                    args_len: 2,
+                    field_type: FieldTypeTp::Double.into(),
+                    metadata: Box::new(distance),
+                }),
                 Visit::VectorNorm => nodes.push(RpnExpressionNode::FnCall {
                     func_meta: tidb_query_expr::impl_vec::vec_l2_norm_fn_meta(),
                     args_len: 1,
