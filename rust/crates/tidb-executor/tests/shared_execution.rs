@@ -3218,3 +3218,83 @@ fn shared_update_arithmetic_preserves_preimages_casts_and_atomicity() {
         );
     }
 }
+
+#[test]
+fn shared_insert_select_arithmetic_preserves_source_order_and_atomicity() {
+    use tidb_executor::{
+        run_create_table_on, run_insert_on, run_select_meta_on, Catalog, StatementClass,
+    };
+    let mut catalog = Catalog::default();
+    for sql in [
+        "CREATE TABLE insert_source (id BIGINT PRIMARY KEY, a BIGINT, b BIGINT)",
+        "CREATE TABLE insert_destination (id BIGINT PRIMARY KEY, value TINYINT)",
+    ] {
+        run_create_table_on(sql, &mut catalog).unwrap();
+    }
+    run_insert_on(
+        "INSERT INTO insert_source VALUES (1,2,10),(2,3,20)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let mut native_catalog = catalog.clone();
+    let base = || {
+        StmtContext::for_query()
+            .with_statement_class(StatementClass::Insert)
+            .with_executor_chunk_sizes(1, 1)
+    };
+    let shared = base().with_shared_projection();
+    let native = base();
+    let sql = "INSERT INTO insert_destination SELECT id,a+b FROM insert_source ORDER BY id LIMIT 2";
+    assert_eq!(run_insert_on(sql, &mut catalog, &shared).unwrap(), 2);
+    assert_eq!(run_insert_on(sql, &mut native_catalog, &native).unwrap(), 2);
+    assert_eq!(shared.take_warnings(), native.take_warnings());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 2)));
+    let inspect = "SELECT id,value FROM insert_destination ORDER BY id";
+    let query = StmtContext::for_query();
+    let original = run_select_meta_on(inspect, &catalog, &query).unwrap();
+    assert_eq!(
+        original,
+        run_select_meta_on(inspect, &native_catalog, &query).unwrap()
+    );
+    use Datum::Int;
+    assert_eq!(
+        original.1,
+        vec![vec![Int(1), Int(12)], vec![Int(2), Int(23)]]
+    );
+
+    for (expression, code) in [("a+9223372036854775805", 1690), ("a+125", 1264)] {
+        let sql = format!(
+            "INSERT INTO insert_destination SELECT id+20,{expression}
+                FROM insert_source ORDER BY id LIMIT 2"
+        );
+        let shared = base().with_shared_projection();
+        let native = base();
+        let error = run_insert_on(&sql, &mut catalog, &shared)
+            .unwrap_err()
+            .to_mysql_error();
+        assert_eq!(
+            error,
+            run_insert_on(&sql, &mut native_catalog, &native)
+                .unwrap_err()
+                .to_mysql_error()
+        );
+        assert_eq!(error.code, code);
+        assert_eq!(shared.take_warnings(), native.take_warnings());
+        assert_eq!(shared.shared_projection_counts(), Some((1, 2)));
+        assert_eq!(
+            run_select_meta_on(inspect, &catalog, &query).unwrap(),
+            original
+        );
+        assert_eq!(
+            run_select_meta_on(inspect, &native_catalog, &query).unwrap(),
+            original
+        );
+    }
+
+    let shared = base().with_shared_projection();
+    let sql = "INSERT INTO insert_destination SELECT id+40,ABS(a)
+        FROM insert_source ORDER BY id LIMIT 2";
+    assert_eq!(run_insert_on(sql, &mut catalog, &shared).unwrap(), 2);
+    assert_eq!(shared.shared_projection_counts(), Some((0, 0)));
+}

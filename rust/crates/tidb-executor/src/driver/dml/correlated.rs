@@ -138,27 +138,7 @@ impl UpdateExpression {
             Self::Physical(expression) => (expression, true),
             _ => return self,
         };
-        let Expression::ScalarFunction(function) = expression else {
-            return self;
-        };
-        let signed_bigint = |expression: &Expression| {
-            expression.static_type().is_some_and(|ty| {
-                ty.code() == tidb_datatype::FieldTypeCode::LongLong
-                    && !ty.is_unsigned()
-                    && !ty.is_array()
-            })
-        };
-        // This entry evaluates one write-row value at a time. Direct typed
-        // integer operands have no session effects and no scalar/vector
-        // demand differences observable at the assignment boundary.
-        if function.pb_signature().is_some()
-            || !matches!(function.func_name.lowercase(), "plus" | "minus" | "mul")
-            || function.args.len() != 2
-            || !signed_bigint(expression)
-            || !function.args.iter().all(|arg| {
-                signed_bigint(arg) && matches!(arg, Expression::Column(_) | Expression::Constant(_))
-            })
-        {
+        if !crate::projection::is_shared_write_arithmetic(expression) {
             return self;
         }
         let Ok(program) = SharedExpression::compile(expression) else {

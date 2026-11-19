@@ -207,6 +207,29 @@ impl<C: Columns> ProjectionExec<C> {
     }
 }
 
+/// Integer leaves have no host effects or scalar/vector demand differences
+/// at a write boundary. Both write entrypoints use the same admission rule.
+#[cfg(feature = "shared-kernel")]
+pub(crate) fn is_shared_write_arithmetic(expression: &Expression) -> bool {
+    let Expression::ScalarFunction(function) = expression else {
+        return false;
+    };
+    let signed_bigint = |expression: &Expression| {
+        expression.static_type().is_some_and(|ty| {
+            ty.code() == tidb_datatype::FieldTypeCode::LongLong
+                && !ty.is_unsigned()
+                && !ty.is_array()
+        })
+    };
+    function.pb_signature().is_none()
+        && matches!(function.func_name.lowercase(), "plus" | "minus" | "mul")
+        && function.args.len() == 2
+        && signed_bigint(expression)
+        && function.args.iter().all(|arg| {
+            signed_bigint(arg) && matches!(arg, Expression::Column(_) | Expression::Constant(_))
+        })
+}
+
 #[cfg(feature = "shared-kernel")]
 impl ProjectionExec<crate::StmtContext> {
     pub(crate) fn compile_shared_projection(

@@ -4879,15 +4879,23 @@ fn build_with_state(
             };
             #[cfg(feature = "shared-kernel")]
             {
+                use crate::stmt_context::StatementClass;
                 use tidb_expr::shared_kernel::SharedProjection;
 
                 let batch_range = 1..=SharedProjection::MAX_BATCH_SIZE;
                 if !state.in_reader
                     && ctx.shared_projection.is_some()
-                    && ctx.statement_class() == crate::stmt_context::StatementClass::Select
                     && workers == 0
                     && batch_range.contains(&meta.max_chunk_size())
                     && batch_range.contains(&child.max_chunk_size())
+                    && match ctx.statement_class() {
+                        StatementClass::Select => true,
+                        StatementClass::Insert => expressions.iter().all(|expression| {
+                            matches!(expression, Expression::Column(_))
+                                || crate::projection::is_shared_write_arithmetic(expression)
+                        }),
+                        _ => false,
+                    }
                 {
                     if let Some((shared, mixed_columns)) = ProjectionExec::compile_shared_projection(
                         &expressions,
