@@ -807,13 +807,19 @@ impl SharedExpression {
                     if f.pb_signature().is_none()
                         && matches!(
                             f.func_name.lowercase(),
-                            "abs" | "ceil" | "ceiling" | "floor"
+                            "abs" | "ceil" | "ceiling" | "floor" | "round" | "truncate"
                         ) =>
                 {
-                    let [arg @ (Expression::Column(_) | Expression::Constant(_))] =
-                        f.args.as_slice()
-                    else {
-                        return Err("integer math requires a typed BIGINT leaf".into());
+                    let name = f.func_name.lowercase();
+                    let leaf = |arg: &Expression| {
+                        matches!(arg, Expression::Column(_) | Expression::Constant(_))
+                    };
+                    let (arg, scale) = match f.args.as_slice() {
+                        [arg] if name != "truncate" && leaf(arg) => (arg, None),
+                        [arg, scale] if name == "truncate" && leaf(arg) && leaf(scale) => {
+                            (arg, Some(scale))
+                        }
+                        _ => return Err("integer math requires typed BIGINT leaves".into()),
                     };
                     let unsigned =
                         bigint_operand_signedness(arg).ok_or("integer math requires BIGINT")?;
@@ -825,9 +831,11 @@ impl SharedExpression {
                         return Err("integer math result must match its BIGINT argument".into());
                     }
                     use tidb_query_expr::impl_math::{
-                        abs_uint_fn_meta, ceil_fn_meta, floor_fn_meta, CeilIntToInt, FloorIntToInt,
+                        abs_uint_fn_meta, ceil_fn_meta, floor_fn_meta, round_int_fn_meta,
+                        truncate_int_with_int_fn_meta, truncate_int_with_uint_fn_meta,
+                        truncate_uint_with_int_fn_meta, truncate_uint_with_uint_fn_meta,
+                        CeilIntToInt, FloorIntToInt,
                     };
-                    let name = f.func_name.lowercase();
                     if name == "abs" && !unsigned {
                         let source = crate::scalar_function::math_overflow_expression(
                             f,
@@ -842,9 +850,24 @@ impl SharedExpression {
                         let meta = match name {
                             "ceil" | "ceiling" => ceil_fn_meta::<CeilIntToInt>(),
                             "floor" => floor_fn_meta::<FloorIntToInt>(),
+                            "round" => round_int_fn_meta(),
+                            "truncate" => {
+                                let scale = scale.expect("TRUNCATE arity checked");
+                                let scale_unsigned = bigint_operand_signedness(scale)
+                                    .ok_or("TRUNCATE scale requires BIGINT")?;
+                                match (unsigned, scale_unsigned) {
+                                    (false, false) => truncate_int_with_int_fn_meta(),
+                                    (false, true) => truncate_int_with_uint_fn_meta(),
+                                    (true, false) => truncate_uint_with_int_fn_meta(),
+                                    (true, true) => truncate_uint_with_uint_fn_meta(),
+                                }
+                            }
                             _ => abs_uint_fn_meta(),
                         };
-                        work.push(Visit::IntCall(meta, 1, unsigned));
+                        work.push(Visit::IntCall(meta, f.args.len(), unsigned));
+                        if let Some(scale) = scale {
+                            work.push(Visit::BigIntOperand(scale));
+                        }
                     }
                     work.push(Visit::BigIntOperand(arg));
                 }

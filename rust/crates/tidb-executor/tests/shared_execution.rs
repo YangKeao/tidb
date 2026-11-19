@@ -2049,3 +2049,50 @@ fn shared_sql_integral_ceil_and_floor_preserve_bigint_bits() {
     );
     assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
 }
+
+#[test]
+fn shared_sql_integral_round_and_truncate_preserve_precision_and_scale_sign() {
+    use tidb_executor::{run_create_table_on, run_insert_on, run_select_meta_on, Catalog};
+    let mut catalog = Catalog::default();
+    run_create_table_on(
+        "CREATE TABLE rounding_precision (id BIGINT PRIMARY KEY, n BIGINT, u BIGINT UNSIGNED, d BIGINT, ud BIGINT UNSIGNED)",
+        &mut catalog,
+    ).unwrap();
+    run_insert_on(
+        "INSERT INTO rounding_precision VALUES
+            (1,9223372036854775806,18446744073709551615,-1,18446744073709551615),
+            (2,-9223372036854775808,1,-9223372036854775808,NULL)",
+        &mut catalog,
+        &StmtContext::for_query(),
+    )
+    .unwrap();
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT ROUND(n),ROUND(u),TRUNCATE(n,d),TRUNCATE(u,d),TRUNCATE(n,ud),TRUNCATE(u,ud)
+        FROM rounding_precision ORDER BY id LIMIT 2";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    use Datum::{Int, Null, UInt};
+    assert_eq!(
+        actual.1,
+        [
+            vec![
+                Int(i64::MAX - 1),
+                UInt(u64::MAX),
+                Int(9223372036854775800),
+                UInt(18446744073709551610),
+                Int(i64::MAX - 1),
+                UInt(u64::MAX)
+            ],
+            vec![Int(i64::MIN), UInt(1), Int(0), UInt(0), Null, Null],
+        ]
+    );
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+
+    let fallback = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT ROUND(n,0) FROM rounding_precision WHERE id=1";
+    let actual = run_select_meta_on(sql, &catalog, &fallback).unwrap();
+    assert_eq!(actual.1, [vec![Int(i64::MAX)]]);
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(fallback.shared_projection_counts(), Some((0, 0)));
+}
