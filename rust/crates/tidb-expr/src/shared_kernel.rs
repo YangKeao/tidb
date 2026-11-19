@@ -113,6 +113,7 @@ impl SharedExpression {
             PacketString(tidb_query_expr::impl_string::PacketString),
             Date,
             CalendarPart(tidb_query_expr::impl_time::CalendarPart),
+            CalendarName(tidb_query_expr::impl_time::CalendarName),
             DoubleMath(tidb_query_expr::impl_math::DoubleMath, Option<String>),
             RepeatCount(&'a crate::scalar_function::ScalarFunction),
             RepeatBody(usize),
@@ -194,6 +195,8 @@ impl SharedExpression {
                             | "dayofyear"
                             | "to_days"
                             | "to_seconds"
+                            | "dayname"
+                            | "monthname"
                             | "upper"
                             | "ucase"
                             | "lower"
@@ -576,39 +579,51 @@ impl SharedExpression {
                                 | "dayofyear"
                                 | "to_days"
                                 | "to_seconds"
+                                | "dayname"
+                                | "monthname"
                         ) =>
                 {
-                    use tidb_query_expr::impl_time::CalendarPart;
+                    use tidb_query_expr::impl_time::{CalendarName, CalendarPart};
 
                     let [operand] = f.args.as_slice() else {
-                        return Err("calendar part requires one operand".into());
+                        return Err("calendar function requires one operand".into());
+                    };
+                    let visit = match f.func_name.lowercase() {
+                        "year" => Visit::CalendarPart(CalendarPart::Year),
+                        "month" => Visit::CalendarPart(CalendarPart::Month),
+                        "day" | "dayofmonth" => Visit::CalendarPart(CalendarPart::Day),
+                        "quarter" => Visit::CalendarPart(CalendarPart::Quarter),
+                        "dayofweek" => Visit::CalendarPart(CalendarPart::DayOfWeek),
+                        "weekday" => Visit::CalendarPart(CalendarPart::Weekday),
+                        "dayofyear" => Visit::CalendarPart(CalendarPart::DayOfYear),
+                        "to_days" => Visit::CalendarPart(CalendarPart::ToDays),
+                        "to_seconds" => Visit::CalendarPart(CalendarPart::ToSeconds),
+                        "dayname" => Visit::CalendarName(CalendarName::Day),
+                        "monthname" => Visit::CalendarName(CalendarName::Month),
+                        _ => unreachable!(),
+                    };
+                    let result_matches = if matches!(visit, Visit::CalendarName(_)) {
+                        is_raw_string_type
+                    } else {
+                        is_signed_bigint
                     };
                     if !operand
                         .static_type()
                         .is_some_and(|ty| is_time_type(ty) && !ty.is_array())
-                        || !f.ret_type.as_ref().is_some_and(is_signed_bigint)
+                        || !f.ret_type.as_ref().is_some_and(result_matches)
                     {
                         return Err(
-                            "calendar part requires typed Time and a signed BIGINT result".into(),
+                            "calendar function needs typed Time and a matching result".into()
                         );
                     }
-                    let part = match f.func_name.lowercase() {
-                        "year" => CalendarPart::Year,
-                        "month" => CalendarPart::Month,
-                        "day" | "dayofmonth" => CalendarPart::Day,
-                        "quarter" => CalendarPart::Quarter,
-                        "dayofweek" => CalendarPart::DayOfWeek,
-                        "weekday" => CalendarPart::Weekday,
-                        "dayofyear" => CalendarPart::DayOfYear,
-                        "to_days" => CalendarPart::ToDays,
-                        "to_seconds" => CalendarPart::ToSeconds,
-                        _ => unreachable!(),
-                    };
-                    work.push(Visit::CalendarPart(part));
+                    work.push(visit);
                     work.push(Visit::Enter(operand));
                 }
                 Visit::CalendarPart(part) => {
                     nodes.push(tidb_query_expr::native_calendar_part_node(part));
+                }
+                Visit::CalendarName(name) => {
+                    nodes.push(tidb_query_expr::native_calendar_name_node(name));
                 }
                 Visit::Enter(Expression::ScalarFunction(f))
                     if f.func_name.lowercase() == "benchmark" =>

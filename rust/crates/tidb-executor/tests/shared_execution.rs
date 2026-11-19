@@ -4065,3 +4065,37 @@ fn shared_typed_day_numbers_preserve_zero_date_and_whole_seconds() {
     assert!(shared.take_warnings().is_empty());
     assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
 }
+
+#[test]
+fn shared_calendar_names_keep_native_strings_and_invalid_dates() {
+    use tidb_datatype::DateModes;
+
+    let catalog = catalog_with_rows(
+        "CREATE TABLE calendar_labels (id BIGINT PRIMARY KEY, d DATE, t DATETIME(6))",
+        "INSERT INTO calendar_labels VALUES
+         (1,'2024-02-29','2024-12-01 12:34:56.123456'),
+         (2,'2024-00-03','2024-02-00 01:00:00'),
+         (3,'2023-02-29','0000-00-00 00:00:00'),
+         (4,NULL,NULL)",
+        &StmtContext::for_query().with_date_modes(DateModes {
+            allow_invalid_dates: true,
+            ..DateModes::default()
+        }),
+    );
+    let native = StmtContext::for_query();
+    let shared = StmtContext::for_query().with_shared_projection();
+    let sql = "SELECT DAYNAME(d),MONTHNAME(d),DAYNAME(t),MONTHNAME(t)
+               FROM calendar_labels ORDER BY id LIMIT 4";
+    let actual = run_select_meta_on(sql, &catalog, &shared).unwrap();
+    assert_eq!(actual, run_select_meta_on(sql, &catalog, &native).unwrap());
+    assert_eq!(
+        actual.1[0],
+        ["Thursday", "February", "Sunday", "December"].map(Datum::new_string),
+    );
+    for row in &actual.1[1..] {
+        assert_eq!(row, &vec![Datum::Null; 4]);
+    }
+    assert!(native.take_warnings().is_empty());
+    assert!(shared.take_warnings().is_empty());
+    assert_eq!(shared.shared_projection_counts(), Some((1, 1)));
+}
