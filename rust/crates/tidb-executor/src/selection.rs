@@ -31,7 +31,7 @@ use std::sync::Arc;
 use crate::executor::{ExecError, Executor, ExecutorMeta};
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, FieldType};
-use tidb_expr::evaluator::{vectorizable, vectorized_filter_consider_null};
+use tidb_expr::evaluator::{vectorizable, FilterExecution};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
 use tidb_expr::{truthy_of, Columns};
@@ -42,7 +42,7 @@ use crate::StatementMemory;
 /// Go `SelectionExec`: filters its child's rows by a conjunction of predicates.
 pub struct SelectionExec<C: Columns> {
     meta: ExecutorMeta,
-    filters: Vec<Expression>,
+    filters: FilterExecution,
     fast_filters: Vec<Option<FastSelectionFilter>>,
     batched: bool,
     child: Box<dyn Executor>,
@@ -91,7 +91,7 @@ impl<C: Columns> SelectionExec<C> {
             .collect();
         SelectionExec {
             meta,
-            filters,
+            filters: FilterExecution::new(filters),
             fast_filters,
             batched,
             child,
@@ -108,14 +108,14 @@ impl<C: Columns> SelectionExec<C> {
     /// Whether a row satisfies every filter (all truthy). A false or NULL filter
     /// rejects the row.
     fn row_passes(&self, row: tidb_chunk::row::Row<'_>) -> Result<bool, ExecError> {
-        for (filter, fast_filter) in self.filters.iter().zip(&self.fast_filters) {
+        for (index, fast_filter) in self.fast_filters.iter().enumerate() {
             if let Some(fast_filter) = fast_filter {
                 if !fast_filter.matches(row) {
                     return Ok(false);
                 }
                 continue;
             }
-            let value = filter.eval(&self.ctx, row)?;
+            let value = self.filters.predicate_on_row(&self.ctx, index, row)?;
             if truthy_of(&value)? != Some(true) {
                 return Ok(false);
             }
@@ -126,19 +126,16 @@ impl<C: Columns> SelectionExec<C> {
     /// Evaluates all pure filters into the physical-row mask used by the
     /// batched path. This mirrors Go's `VectorizedFilter` contract: filters
     /// are applied filter-major, already rejected rows are skipped, and a
-    /// false or NULL result clears the row. The expression evaluator currently
-    /// has no typed `VecEval*` interface, so non-specialized expressions use
-    /// the same row evaluator while still avoiding interleaving evaluation
-    /// with output production.
+    /// false or NULL result clears the row. The expression execution lives
+    /// across successive child chunks.
     fn evaluate_selection_mask(&mut self) -> Result<(), ExecError> {
         let child_chunk = self
             .child_chunk
             .as_ref()
             .expect("selection child chunk exists while open");
-        let (selected, _) = vectorized_filter_consider_null(
+        let (selected, _) = self.filters.filter(
             &self.ctx,
-            true,
-            &self.filters,
+            self.ctx.enable_vectorized_expression(),
             child_chunk,
             Vec::new(),
             Vec::new(),
@@ -258,6 +255,7 @@ impl FastSelectionFilter {
 impl<C: Columns + Send> Executor for SelectionExec<C> {
     fn open(&mut self) -> Result<(), ExecError> {
         self.release_child_chunk();
+        self.filters.reset();
         self.child.open()?;
         let child_chunk = self.child.new_chunk();
         self.tracker.replace_bytes_used(child_chunk.memory_usage());

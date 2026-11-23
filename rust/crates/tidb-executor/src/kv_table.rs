@@ -2278,8 +2278,9 @@ impl KvTable {
             } else {
                 &constraint.expr
             };
-            let value = crate::generated_column::eval_over_dependencies(
+            let value = crate::generated_column::eval_over_dependencies_bound(
                 expression,
+                &constraint.expr,
                 &constraint.dependencies,
                 &*self.columns,
                 row,

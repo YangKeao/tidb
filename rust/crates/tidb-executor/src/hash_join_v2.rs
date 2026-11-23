@@ -1136,27 +1136,14 @@ impl<'a> JoinOtherCondition<'a> {
             max_chunk_size,
         );
         chunk.set_incomplete_chunk(true);
+        let filters = tidb_expr::evaluator::FilterExecution::new(predicates);
         Self {
             chunk,
             evaluate: Box::new(move |chunk, selected, nulls, consider_null| {
                 if consider_null {
-                    tidb_expr::evaluator::vec_eval_bool(
-                        &context,
-                        vectorized,
-                        &predicates,
-                        chunk,
-                        selected,
-                        nulls,
-                    )
+                    filters.vec_eval_bool(&context, vectorized, chunk, selected, nulls)
                 } else {
-                    tidb_expr::evaluator::vectorized_filter_consider_null(
-                        &context,
-                        vectorized,
-                        &predicates,
-                        chunk,
-                        selected,
-                        nulls,
-                    )
+                    filters.filter(&context, vectorized, chunk, selected, nulls)
                 }
                 .map_err(ProbeError::Expression)
             }),

@@ -159,9 +159,7 @@ impl GroupKeyBuffer {
                 // Go's scalar EvalExpr fallback still completes one column
                 // before encoding it or evaluating another expression.
                 self.values.clear();
-                for row in 0..rows {
-                    self.values.push(expr.eval(ctx, chunk.get_row(row))?);
-                }
+                expr.append_scalar_rows_reusing(ctx, chunk, &mut self.values)?;
                 for (value, key) in self.values.iter().zip(&mut self.encoded[..rows]) {
                     append_hash_agg_group_key_part(&timezone, expr, value, key)?;
                 }

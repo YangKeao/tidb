@@ -33,8 +33,8 @@
 mod analyze;
 mod eval_context;
 
-use eval_context::{RequestEvalContext, SharedExpression};
-use std::sync::Arc;
+use eval_context::{RequestEvalContext, SharedExpression, SharedProgram};
+use std::sync::{Arc, Mutex};
 
 use prost::Message;
 use tidb_proto::coprocessor;
@@ -423,15 +423,9 @@ fn exec_index_scan(
             if row.len() != idx_scan.columns.len() {
                 return other_error("decoded index entry does not match its executor schema");
             }
-            match conditions
-                .iter()
-                .map(|condition| {
-                    eval_expr(condition, &row, context.div_precision_increment, &timezone)
-                })
-                .collect::<Result<Vec<_>, String>>()
-            {
-                Ok(values) if values.iter().all(|v| v.is_some_and(|v| v != 0)) => {}
-                Ok(_) => continue,
+            match matches_conditions(conditions, &row, context) {
+                Ok(true) => {}
+                Ok(false) => continue,
                 Err(message) => {
                     if context.flags & 2 != 0 {
                         eval_warnings.push(tipb::Error {
@@ -736,20 +730,9 @@ fn exec_table_scan(
             }
             // Go `selectionProcessor`: a row survives only when EVERY
             // condition evaluates non-null and non-zero.
-            match conditions
-                .iter()
-                .map(|condition| {
-                    eval_expr(
-                        condition,
-                        &row_datums,
-                        context.div_precision_increment,
-                        &timezone,
-                    )
-                })
-                .collect::<Result<Vec<_>, String>>()
-            {
-                Ok(values) if values.iter().all(|v| v.is_some_and(|v| v != 0)) => {}
-                Ok(_) => continue,
+            match matches_conditions(conditions, &row_datums, context) {
+                Ok(true) => {}
+                Ok(false) => continue,
                 Err(message) => return other_error(&message),
             }
             // A partial aggregation consumes the surviving row instead of
@@ -1177,6 +1160,7 @@ impl RegionAggregator {
 
 /// Go's `%v` rendering of a float64: shortest round-trip decimal, switching
 /// to `e` notation outside Go's `%g` thresholds (exponent >= 21 or < -4).
+#[cfg(test)]
 fn go_float_display(value: f64) -> String {
     if value == 0.0 {
         return "0".to_owned();
@@ -1201,6 +1185,7 @@ fn go_float_display(value: f64) -> String {
 /// Go's `getValidFloatPrefix`: the longest leading prefix that scans as an
 /// optional-signed integer, decimal or exponent form. `None` when the
 /// prefix carries no digit at all (Go answers 0 with a truncation warning).
+#[cfg(test)]
 fn numeric_prefix(text: &str, allow_float: bool) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut end = 0;
@@ -1262,6 +1247,7 @@ fn eval_datum(
         SimpleExpr::Real(value) => Ok(Datum::Real(*value)),
         SimpleExpr::Time(value) => Ok(Datum::Time(*value)),
         SimpleExpr::Null => Ok(Datum::Null),
+        #[cfg(test)]
         SimpleExpr::Func(..) => Err("a computed aggregate argument is a later course".to_owned()),
         SimpleExpr::Shared(shared) => eval_shared(shared, row),
     }
@@ -1345,6 +1331,7 @@ impl TopNSpec {
             .iter()
             .map(|(expr, _, _)| {
                 let datum = match expr {
+                    #[cfg(test)]
                     SimpleExpr::Func(..) => {
                         return Err("a computed sort key is a later course".to_owned())
                     }
@@ -1551,6 +1538,7 @@ pub enum SimpleExpr {
     /// type, as they do there.
     Time(tidb_datatype::Time),
     /// `ExprType_ScalarFunc` over a supported signature.
+    #[cfg(test)]
     Func(SimpleSig, Vec<SimpleExpr>),
     /// A catalog-admitted scalar decoded into the shared builtin tree,
     /// retaining the request that owns its evaluation settings.
@@ -1562,6 +1550,7 @@ pub enum SimpleExpr {
 /// the `DatetimeAny` sig reads typed datetimes, and the `DurationAny`
 /// sig reads durations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub enum DateArithArg {
     /// The string source: Go `getDateFromString`.
     String,
@@ -1580,6 +1569,7 @@ pub enum DateArithArg {
 /// The interval-argument channel of one upstream `AddDate`/`SubDate`
 /// type pair; every channel reduces to interval text (Go `getInterval*`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub enum IntervalArg {
     /// Go `getIntervalFromString`.
     String,
@@ -1593,6 +1583,7 @@ pub enum IntervalArg {
 
 /// The supported `ScalarFuncSig` subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub enum SimpleSig {
     /// `PlusDecimal`/`MinusDecimal`/`MultiplyDecimal`/`ModDecimal`: exact
     /// decimal arithmetic (`pkg/expression`'s `EvalPlusDecimal` family),
@@ -2034,16 +2025,23 @@ pub enum SimpleSig {
 }
 
 /// Go `PBToExpr` for catalog-admitted signatures and their argument casts.
+#[cfg(test)]
 fn convert_shared(
     expr: &tipb::Expr,
     context: &Arc<RequestEvalContext>,
 ) -> Result<SimpleExpr, String> {
-    tidb_expr::distsql_builtin::pb_to_expr(expr, &context.column_types).map(|expression| {
-        SimpleExpr::Shared(Arc::new(SharedExpression {
-            expression,
-            context: Arc::clone(context),
-        }))
-    })
+    let expression = tidb_expr::distsql_builtin::pb_to_expr(expr, &context.column_types)?;
+    Ok(shared_expression(
+        SharedProgram::Legacy(expression),
+        context,
+    ))
+}
+
+fn shared_expression(expression: SharedProgram, context: &Arc<RequestEvalContext>) -> SimpleExpr {
+    SimpleExpr::Shared(Arc::new(SharedExpression {
+        expression,
+        context: Arc::clone(context),
+    }))
 }
 
 /// Evaluates a [`SimpleExpr::Shared`] node over one scanned row.
@@ -2052,22 +2050,30 @@ fn eval_shared(
     row: &[tidb_datatype::Datum],
 ) -> Result<tidb_datatype::Datum, String> {
     let row = tidb_chunk::mutrow::MutRow::from_datums(row);
-    expr.expression
-        .eval(expr.context.as_ref(), row.to_row())
-        .map_err(|err| format!("{err:?}"))
+    match &expr.expression {
+        SharedProgram::Rpn(execution) => execution
+            .lock()
+            .expect("coprocessor expression execution")
+            .evaluate_row(expr.context.as_ref(), row.to_row()),
+        #[cfg(test)]
+        SharedProgram::Legacy(expression) => expression.eval(expr.context.as_ref(), row.to_row()),
+    }
+    .map_err(|err| format!("{err:?}"))
 }
 
 /// Decode without a DAG for standalone callers. Request execution uses
 /// `convert_expr_with_context` to retain its own settings and scan types.
 pub fn convert_expr(expr: &tipb::Expr) -> Result<SimpleExpr, String> {
     use tidb_expr::Columns;
-    let context = Arc::new(RequestEvalContext::new(
+    let context = RequestEvalContext::new(
         tidb_expr::NoColumns.time_zone(),
         4,
         tidb_model::flags::FLAG_TRUNCATE_AS_WARNING
             | tidb_model::flags::FLAG_DIVIDED_BY_ZERO_AS_WARNING,
-    ));
-    convert_expr_with_context(expr, &context)
+    );
+    #[cfg(test)]
+    let context = context.as_legacy_fixture();
+    convert_expr_with_context(expr, &Arc::new(context))
 }
 
 fn convert_expr_with_context(
@@ -2075,10 +2081,34 @@ fn convert_expr_with_context(
     context: &Arc<RequestEvalContext>,
 ) -> Result<SimpleExpr, String> {
     let tp = expr.tp();
-    if tp == tipb::ExprType::ScalarFunc
-        && tidb_expr::distsql_builtin::supports_signature(expr.sig())
-    {
-        return convert_shared(expr, context);
+    if tp == tipb::ExprType::ScalarFunc {
+        let prepared = tidb_expr::distsql_builtin::WireExpressionExecution::new(
+            expr,
+            context.as_ref(),
+            &context.column_types,
+            context.flags,
+        )
+        .map_err(|err| format!("{err:?}"))?;
+        if let Some(prepared) = prepared {
+            return Ok(shared_expression(
+                SharedProgram::Rpn(Mutex::new(prepared)),
+                context,
+            ));
+        }
+        #[cfg(test)]
+        let legacy_fixture = context.legacy_fixture;
+        #[cfg(not(test))]
+        let legacy_fixture = false;
+        if !legacy_fixture {
+            return Err(format!(
+                "incomplete or unsupported scalar declaration {:?}",
+                expr.sig()
+            ));
+        }
+        #[cfg(test)]
+        if tidb_expr::distsql_builtin::supports_signature(expr.sig()) {
+            return convert_shared(expr, context);
+        }
     }
     if tp == tipb::ExprType::Null {
         return Ok(SimpleExpr::Null);
@@ -2142,6 +2172,7 @@ fn convert_expr_with_context(
             usize::try_from(offset).map_err(|_| "negative column offset".to_owned())?,
         ));
     }
+    #[cfg(test)]
     if tp == tipb::ExprType::ScalarFunc {
         // `expr.sig()` decodes the wire integer, an UNRECOGNIZED value
         // falling to `Unspecified` — which lands in the refusal arm, Go's
@@ -2692,6 +2723,7 @@ fn convert_expr_with_context(
 /// still reach here through `dc > i`, where Go wraps the int side in
 /// `CastIntAsDecimal`; the `AS DECIMAL` cast family composes below, so
 /// cast operands reach here alongside the exact ones.
+#[cfg(test)]
 fn eval_decimal(
     expr: Option<&SimpleExpr>,
     row: &[tidb_datatype::Datum],
@@ -2838,6 +2870,7 @@ fn eval_decimal(
 /// Go's `CreateBinaryJSON` over a scanned datum, for a MEMBER OF target:
 /// integers, reals, strings, bytes and JSON pass; other kinds wait on their
 /// cast courses.
+#[cfg(test)]
 fn datum_to_json_value(datum: &tidb_datatype::Datum) -> Option<tidb_datatype::BinaryJSONValue> {
     use tidb_datatype::{BinaryJSONValue, Datum};
     Some(match datum {
@@ -2856,6 +2889,7 @@ fn datum_to_json_value(datum: &tidb_datatype::Datum) -> Option<tidb_datatype::Bi
 
 /// The binary JSON of one operand of a JSON operation; see [`eval_decimal`]
 /// for why only exact operands reach here.
+#[cfg(test)]
 fn eval_json(
     expr: Option<&SimpleExpr>,
     row: &[tidb_datatype::Datum],
@@ -3043,6 +3077,7 @@ fn eval_json(
 
 /// The binary64 value of one operand of a real comparison or arithmetic;
 /// see [`eval_decimal`] for why only exact operands reach here.
+#[cfg(test)]
 fn eval_real(
     expr: Option<&SimpleExpr>,
     row: &[tidb_datatype::Datum],
@@ -3216,6 +3251,7 @@ fn eval_real(
 /// prefix (`^[+-]?[\d]+`, the truncation error folded), `SECOND`
 /// re-renders the text through a decimal, and compound units pass
 /// through for the composite parser.
+#[cfg(test)]
 fn interval_reformat_string(text: &str, unit: &str) -> String {
     match unit.to_ascii_uppercase().as_str() {
         "MICROSECOND" | "MINUTE" | "HOUR" | "DAY" | "WEEK" | "MONTH" | "QUARTER" | "YEAR" => {
@@ -3245,6 +3281,7 @@ fn interval_reformat_string(text: &str, unit: &str) -> String {
 /// Go `getIntervalFromDecimal`'s unit table: compound units reshape the
 /// decimal text into the composite literal, single units round half-up
 /// to a whole number (Go `intervalDecimalToString`).
+#[cfg(test)]
 fn interval_reformat_decimal_text(text: &str, unit: &str) -> String {
     match unit.to_ascii_uppercase().as_str() {
         "HOUR_MINUTE" | "MINUTE_SECOND" => text.replace('.', ":"),
@@ -3268,6 +3305,7 @@ fn interval_reformat_decimal_text(text: &str, unit: &str) -> String {
 
 /// Whether the upstream pair answers text: the non-temporal sources
 /// (Go `builtinAddSubDateAsStringSig`).
+#[cfg(test)]
 fn add_sub_answers_text(sig: &SimpleSig) -> bool {
     matches!(
         sig,
@@ -3283,6 +3321,7 @@ fn add_sub_answers_text(sig: &SimpleSig) -> bool {
 
 /// The interval text for one operand channel (Go `getInterval*`); the
 /// interval operand sits at index 1 of the `AddDate`/`SubDate` node.
+#[cfg(test)]
 fn interval_text(
     children: &[SimpleExpr],
     row: &[tidb_datatype::Datum],
@@ -3320,6 +3359,7 @@ fn interval_text(
 /// (Go `getDateFromString`/`getDateFromInt`/`getDateFromReal`/
 /// `getDateFromDecimal`): a pure-date string stays a date unless the
 /// unit carries a clock, and numeric sources widen the same way.
+#[cfg(test)]
 fn add_sub_date_operand(
     children: &[SimpleExpr],
     row: &[tidb_datatype::Datum],
@@ -3390,6 +3430,7 @@ fn add_sub_date_operand(
 /// with MySQL's month clamping (`types.AddDate`). `SubDate` negates all
 /// four parts. Overflow answers NULL here where Go raises the datetime
 /// function overflow error.
+#[cfg(test)]
 fn add_sub_time(
     mut date: tidb_datatype::Time,
     subtract: bool,
@@ -3411,6 +3452,7 @@ fn add_sub_time(
     Some(date)
 }
 
+#[cfg(test)]
 fn eval_duration(
     expr: Option<&SimpleExpr>,
     row: &[tidb_datatype::Datum],
@@ -3531,6 +3573,7 @@ fn eval_duration(
 
 /// The TIME value of one operand of a temporal comparison; see
 /// [`eval_decimal`] for why only exact operands reach here.
+#[cfg(test)]
 fn eval_time(
     expr: Option<&SimpleExpr>,
     row: &[tidb_datatype::Datum],
@@ -3685,6 +3728,7 @@ fn eval_time(
 /// signed; bases outside [2, 36] answer NULL. Parse overflow answers
 /// NULL here where Go raises the BIGINT UNSIGNED 1690 error -- the
 /// bytes channel carries no error (same folding as `IntDivideDecimal`).
+#[cfg(test)]
 fn conv_convert(text: &[u8], from_base: i64, to_base: i64) -> Option<Vec<u8>> {
     let mut from_base = from_base;
     let mut to_base = to_base;
@@ -3739,6 +3783,7 @@ fn conv_convert(text: &[u8], from_base: i64, to_base: i64) -> Option<Vec<u8>> {
 /// and never extends the prefix by itself; the first character beyond
 /// the base's digit range stops the scan. A leading '+' followed by at
 /// least one digit is stripped.
+#[cfg(test)]
 fn valid_prefix(s: &str, base: i64) -> String {
     let upper = if base <= 9 {
         b'0' + base as u8
@@ -3767,6 +3812,7 @@ fn valid_prefix(s: &str, base: i64) -> String {
 }
 
 /// Go `strconv.FormatUint` over bases 2..=36: lowercase digits, no sign.
+#[cfg(test)]
 fn format_u64_base(mut val: u64, base: u32) -> String {
     if val == 0 {
         return "0".to_string();
@@ -3781,6 +3827,7 @@ fn format_u64_base(mut val: u64, base: u32) -> String {
     String::from_utf8(out).expect("ascii digits")
 }
 
+#[cfg(test)]
 fn eval_bytes(
     expr: Option<&SimpleExpr>,
     row: &[tidb_datatype::Datum],
@@ -4101,6 +4148,20 @@ fn collation_of(expr: &tipb::Expr) -> i32 {
     tidb_datatype::restore_collation_id_if_needed(protocol)
 }
 
+fn matches_conditions(
+    conditions: &[SimpleExpr],
+    row: &[tidb_datatype::Datum],
+    context: &DagContext,
+) -> Result<bool, String> {
+    for condition in conditions {
+        let value = eval_datum(condition, row)?;
+        if value.is_null() || context.expression_context.condition_value(&value)? == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Evaluates one pushed-down expression against a scanned row: MySQL's
 /// three-valued int (`Some(0/1/n)`) or NULL, beside Go's expression-level
 /// error -- the 1690 overflow terror the request-level answer carries.
@@ -4112,6 +4173,7 @@ fn collation_of(expr: &tipb::Expr) -> i32 {
 /// -specific comparison signature per operand pair; one wider integer settles
 /// every pairing at once, which is what a filter that must never invent a row
 /// needs.
+#[cfg(test)]
 pub fn eval_expr(
     expr: &SimpleExpr,
     row: &[tidb_datatype::Datum],
@@ -5660,8 +5722,7 @@ mod tests {
 
     #[test]
     fn a_selection_filters_rows_with_mysql_three_valued_logic() {
-        // `SELECT id, b FROM t WHERE b = 88` over three rows — only the
-        // matching row survives; a condition over NULL drops the row.
+        // The selected row has three set bits. A condition over NULL drops the row.
         use tidb_codec::table_key::{encode_row_key_with_handle, RecordHandle};
         use tidb_datatype::Datum;
         use tidb_proto::{KvrpcMutation, KvrpcOp};
@@ -5688,11 +5749,11 @@ mod tests {
                 .expect("prewrites");
             store.commit(&[key], 10, 11).expect("commits");
         }
-        // b = 88: EqInt(ColumnRef(1), Int64(88)).
+        // BIT_COUNT(b) = 3 reaches an SDK signature outside the legacy decoder.
         let mut col_offset = Vec::new();
         tidb_codec::encode_int(&mut col_offset, 1);
         let mut lit = Vec::new();
-        tidb_codec::encode_int(&mut lit, 88);
+        tidb_codec::encode_int(&mut lit, 3);
         let condition = tipb::Expr {
             tp: Some(tipb::ExprType::ScalarFunc as i32),
             sig: Some(tipb::ScalarFuncSig::EqInt as i32),
@@ -5702,9 +5763,18 @@ mod tests {
             }),
             children: vec![
                 tipb::Expr {
-                    tp: Some(tipb::ExprType::ColumnRef as i32),
-                    val: Some(col_offset),
-                    ..tipb::Expr::default()
+                    tp: Some(tipb::ExprType::ScalarFunc as i32),
+                    sig: Some(tipb::ScalarFuncSig::BitCount as i32),
+                    field_type: Some(tipb::FieldType {
+                        tp: Some(8),
+                        ..Default::default()
+                    }),
+                    children: vec![tipb::Expr {
+                        tp: Some(tipb::ExprType::ColumnRef as i32),
+                        val: Some(col_offset),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
                 },
                 tipb::Expr {
                     tp: Some(tipb::ExprType::Int64 as i32),
@@ -6150,6 +6220,125 @@ mod tests {
             start_ts: 20,
             ..coprocessor::Request::default()
         }
+    }
+
+    #[test]
+    fn request_selection_stops_at_false_and_preserves_division_policy() {
+        use tidb_model::flags::FLAG_DIVIDED_BY_ZERO_AS_WARNING;
+
+        fn int(value: i64) -> tipb::Expr {
+            let mut bits = Vec::new();
+            tidb_codec::encode_int(&mut bits, value);
+            tipb::Expr {
+                tp: Some(tipb::ExprType::Int64 as i32),
+                val: Some(bits),
+                ..Default::default()
+            }
+        }
+
+        let division = tipb::Expr {
+            tp: Some(tipb::ExprType::ScalarFunc as i32),
+            sig: Some(tipb::ScalarFuncSig::IntDivideInt as i32),
+            field_type: Some(tipb::FieldType {
+                tp: Some(8),
+                ..Default::default()
+            }),
+            children: vec![int(1), int(0)],
+            ..Default::default()
+        };
+        let mut store = MvccStore::new();
+        seed_three_rows(&mut store, 17);
+        let mut req = top_n_request(17, 1, false, 3);
+        let mut dag = tipb::DagRequest::decode(req.data.as_slice()).unwrap();
+        let mut run = |conditions: Vec<tipb::Expr>, flags| {
+            dag.flags = Some(flags);
+            dag.executors[1] = tipb::Executor {
+                tp: Some(tipb::ExecType::TypeSelection as i32),
+                selection: Some(tipb::Selection { conditions }),
+                ..Default::default()
+            };
+            req.data = dag.encode_to_vec();
+            handle_cop_request(&mut store, &req)
+        };
+
+        let strict = run(vec![division.clone()], 0);
+        assert!(strict.other_error.contains("DivisionByZero"), "{strict:?}");
+
+        let warning = run(vec![division.clone()], FLAG_DIVIDED_BY_ZERO_AS_WARNING);
+        assert!(warning.other_error.is_empty(), "{warning:?}");
+        let select = tipb::SelectResponse::decode(warning.data.as_ref()).unwrap();
+        assert_eq!(select.warning_count, Some(3));
+        assert!(select
+            .warnings
+            .iter()
+            .all(|warning| warning.code == Some(1365)));
+
+        let dead = run(vec![int(0), division], 0);
+        assert!(dead.other_error.is_empty(), "{dead:?}");
+        let select = tipb::SelectResponse::decode(dead.data.as_ref()).unwrap();
+        assert_eq!(select.warning_count.unwrap_or(0), 0);
+        assert!(select.warnings.is_empty());
+        assert!(select.chunks.is_empty());
+    }
+
+    #[test]
+    fn request_selection_accepts_typed_enum_and_bit_literals() {
+        fn literal(tp: tipb::ExprType, field_type: i32, bits: Vec<u8>) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tp as i32),
+                val: Some(bits),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(field_type),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn call(sig: tipb::ScalarFuncSig, children: Vec<tipb::Expr>) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                children,
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        let mut enum_value = literal(tipb::ExprType::MysqlEnum, 247, 2u64.to_be_bytes().to_vec());
+        enum_value.field_type.as_mut().unwrap().elems = vec!["a".into(), "b".into()];
+        let as_int = call(tipb::ScalarFuncSig::CastIntAsInt, vec![enum_value]);
+        let bit_value = literal(tipb::ExprType::MysqlBit, 16, vec![2]);
+        let condition = call(tipb::ScalarFuncSig::EqInt, vec![as_int, bit_value]);
+        let mut store = MvccStore::new();
+        seed_three_rows(&mut store, 17);
+        let mut req = top_n_request(17, 1, false, 3);
+        let mut dag = tipb::DagRequest::decode(req.data.as_slice()).unwrap();
+        dag.executors[1] = tipb::Executor {
+            tp: Some(tipb::ExecType::TypeSelection as i32),
+            selection: Some(tipb::Selection {
+                conditions: vec![condition],
+            }),
+            ..Default::default()
+        };
+        req.data = dag.encode_to_vec();
+        let response = handle_cop_request(&mut store, &req);
+        assert!(response.other_error.is_empty(), "{response:?}");
+        let select = tipb::SelectResponse::decode(response.data.as_ref()).unwrap();
+        let row_count = select
+            .chunks
+            .iter()
+            .map(|chunk| {
+                tidb_codec::decode(chunk.rows_data.as_deref().unwrap(), 2)
+                    .unwrap()
+                    .len()
+                    / 2
+            })
+            .sum::<usize>();
+        assert_eq!(row_count, 3);
     }
 
     #[test]

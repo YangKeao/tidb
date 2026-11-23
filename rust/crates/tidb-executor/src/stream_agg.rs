@@ -153,7 +153,7 @@ impl<C: Columns> StreamAggExec<C> {
         let row = chunk.get_row(self.row_cursor);
         let mut key = Vec::new();
         for expr in &self.group_by {
-            let datum = expr.eval(&self.ctx, row)?;
+            let datum = expr.eval_reusing(&self.ctx, row)?;
             key.extend_from_slice(&group_key_part(&expr_collation(expr), &datum));
             key.push(0xff);
         }
@@ -243,7 +243,7 @@ impl<C: Columns> StreamAggExec<C> {
             let input = eval_agg_input(func, &self.ctx, row, &mut extra)?;
             let mut sort_key = Vec::with_capacity(func.order_by.len());
             for (expr, _) in &func.order_by {
-                sort_key.push(expr.eval(&self.ctx, row)?);
+                sort_key.push(expr.eval_reusing(&self.ctx, row)?);
             }
             self.tracker.consume(self.states[c].update(
                 input.value,
