@@ -14,6 +14,7 @@ fn try_sql(session: &mut Session, sql: &str) -> String {
                             format!("s:{}", String::from_utf8_lossy(v.bytes()))
                         }
                         tidb_datatype::Datum::Int(v) => format!("i:{v}"),
+                        tidb_datatype::Datum::UInt(v) => format!("u:{v}"),
                         tidb_datatype::Datum::Null => "Null".to_owned(),
                         other => format!("{other:?}"),
                     })
@@ -46,7 +47,7 @@ fn reference_digest_vectors() {
     );
 
     // The standard CRC-32 check value for "abc".
-    assert_eq!(try_sql(&mut session, "select crc32('abc')"), "i:891568578");
+    assert_eq!(try_sql(&mut session, "select crc32('abc')"), "u:891568578");
 
     // NULL in, NULL out.
     assert_eq!(try_sql(&mut session, "select md5(null)"), "Null");

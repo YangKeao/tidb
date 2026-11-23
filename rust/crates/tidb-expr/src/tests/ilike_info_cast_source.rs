@@ -139,7 +139,7 @@ fn test_ilike() {
                 )),
             ];
             let sf = ScalarFunction::new(CiString::new("ilike"), bool_type, args);
-            let result = sf
+            let result = crate::expression::Expression::ScalarFunction(sf)
                 .eval(&super::NoColumns, tidb_chunk::row::Row::empty())
                 .unwrap_or_else(|err| panic!("{input}/{pattern}/{escape}@{collation}: {err:?}"));
             assert_eq!(
@@ -151,14 +151,12 @@ fn test_ilike() {
     }
 }
 
-/// Go `builtinLikeSig`/`builtinIlikeSig` retain compiled wildcard patterns
-/// only while both pattern and escape are stable within one statement
-/// context. This pins the cache's same-context reuse and context replacement
-/// for both case-sensitive and ASCII-folded patterns.
+/// LIKE stores wildcard patterns for one statement context. ILIKE binds its
+/// normalized literals in the shared prepared program.
 #[test]
 fn like_pattern_cache_reuses_only_within_context() {
     use crate::builtin_ext::BuiltinFuncCache;
-    use crate::like::{CompiledIlikePattern, CompiledLikePattern};
+    use crate::like::CompiledLikePattern;
     use std::sync::Arc;
     use tidb_datatype::Collation;
 
@@ -197,17 +195,7 @@ fn like_pattern_cache_reuses_only_within_context() {
     assert!(new_context.is_match(b"bcd"));
     assert!(!new_context.is_match(b"abc"));
 
-    let ilike_cache = BuiltinFuncCache::<CompiledIlikePattern>::default();
-    let ilike = ilike_cache
-        .get_or_init_cache(3, || {
-            Ok::<_, crate::EvalError>(CompiledIlikePattern::new(
-                b"A%",
-                b'\\',
-                Collation::Utf8Mb4Bin,
-            ))
-        })
-        .expect("ILIKE pattern");
-    assert!(ilike.is_match(b"abc"));
+    assert_eq!(chunk_e("'abc' ILIKE 'A%'"), "INT:1");
 }
 
 /// go-parity-gap: `TestVectorizedBuiltinIlikeFunc`
@@ -283,9 +271,13 @@ fn eval_zero_arg(name: &str, ctx: &InfoSession) -> Datum {
         ret = FieldType::new(tidb_datatype::FieldTypeCode::LongLong);
         ret.add_flags(FieldTypeFlags::UNSIGNED);
     }
-    crate::scalar_function::ScalarFunction::new(tidb_ast::CiString::new(name), ret, vec![])
-        .eval(ctx, tidb_chunk::row::Row::empty())
-        .expect("zero-argument information builtin must evaluate")
+    crate::expression::Expression::ScalarFunction(crate::scalar_function::ScalarFunction::new(
+        tidb_ast::CiString::new(name),
+        ret,
+        vec![],
+    ))
+    .eval(ctx, tidb_chunk::row::Row::empty())
+    .expect("zero-argument information builtin must evaluate")
 }
 
 /// GO PORT of `pkg/expression/builtin_info_test.go:33 TestDatabase`

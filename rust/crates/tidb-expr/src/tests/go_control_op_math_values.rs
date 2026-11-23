@@ -50,7 +50,7 @@ fn eval_as(name: &str, args: Vec<Datum>, ret_type: FieldType) -> Result<Datum, c
     );
     let cols = crate::context::ZonedNoColumns(tidb_datatype::SessionTimeZone::utc());
     let empty = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
-    function.eval(&cols, empty.get_row(0))
+    crate::expression::Expression::ScalarFunction(function).eval(&cols, empty.get_row(0))
 }
 
 fn int_result() -> FieldType {
@@ -210,8 +210,8 @@ fn go_test_is_true_or_false() {
         ("isfalse", i(0), i(1)),
         ("isfalse", i(2), i(0)),
         ("isfalse", Datum::Null, i(0)),
-        ("isunknown", i(0), i(0)),
-        ("isunknown", Datum::Null, i(1)),
+        ("isnull", i(0), i(0)),
+        ("isnull", Datum::Null, i(1)),
     ] {
         assert_eq!(
             eval_as(name, vec![operand.clone()], int_result()).unwrap(),

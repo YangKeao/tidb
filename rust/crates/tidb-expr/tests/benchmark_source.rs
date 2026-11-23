@@ -16,7 +16,7 @@
 
 use std::cell::Cell;
 
-use tidb_datatype::Datum;
+use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 use tidb_expr::{rewriter::rewrite_expr, Columns, ErrorLevel, EvalError, NoColumns};
 
 fn parse_expr(sql_expr: &str) -> tidb_ast::Expr {
@@ -48,6 +48,11 @@ struct CountingContext {
 }
 
 impl Columns for CountingContext {
+    fn column_type(&self, path: &[String]) -> Option<FieldType> {
+        (path.last().is_some_and(|name| name == "c"))
+            .then(|| FieldType::new(FieldTypeCode::LongLong))
+    }
+
     fn get(&self, path: &[String]) -> Option<Datum> {
         (path.last().is_some_and(|name| name == "c")).then(|| {
             self.column_reads.set(self.column_reads.get() + 1);
@@ -129,10 +134,24 @@ fn benchmark_preserves_count_and_error_short_circuits() {
         eval_built("benchmark(1, 1 / 0)", &ctx),
         Err(EvalError::DivisionByZero)
     );
-    assert_eq!(
-        eval_built("benchmark(1, vec_from_text('[1]'))", &NoColumns),
-        Err(EvalError::Unsupported(
-            "VectorFloat32 is not supported for BENCHMARK()"
-        ))
-    );
+    for count in ["0", "1"] {
+        assert_eq!(
+            eval_built(
+                &format!("benchmark({count}, vec_from_text('[1]'))"),
+                &NoColumns
+            ),
+            Err(EvalError::Unsupported(
+                "VectorFloat32 is not supported for BENCHMARK()"
+            ))
+        );
+    }
+    for count in ["NULL", "-1"] {
+        assert_eq!(
+            eval_built(
+                &format!("benchmark({count}, vec_from_text('[1]'))"),
+                &NoColumns
+            ),
+            Ok(Datum::Null)
+        );
+    }
 }

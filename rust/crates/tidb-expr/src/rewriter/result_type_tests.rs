@@ -24,6 +24,7 @@ fn cast_binary_padding_gates_on_the_fixed_type_string_code() {
     fn binary_target(code: FieldTypeCode) -> FieldType {
         let mut target = FieldType::new(code);
         target.set_charset_name("binary");
+        target.set_collation_name("binary");
         target.set_flen(20);
         target.set_decimal(-1);
         target
@@ -44,7 +45,7 @@ fn cast_binary_padding_gates_on_the_fixed_type_string_code() {
     let mut chunk = tidb_chunk::chunk::Chunk::new(std::slice::from_ref(&int_field), 1, 1);
     chunk.append_int64(0, 0);
     let row = chunk.get_row(0);
-    let Datum::Bytes(unpadded) = adjusted_var_string
+    let Datum::Bytes(unpadded) = crate::expression::Expression::ScalarFunction(adjusted_var_string)
         .eval(&crate::context::NoColumns, row)
         .unwrap()
     else {
@@ -57,7 +58,10 @@ fn cast_binary_padding_gates_on_the_fixed_type_string_code() {
         binary_target(FieldTypeCode::String),
         vec![constant],
     );
-    let Datum::Bytes(padded) = fixed_string.eval(&crate::context::NoColumns, row).unwrap() else {
+    let Datum::Bytes(padded) = crate::expression::Expression::ScalarFunction(fixed_string)
+        .eval(&crate::context::NoColumns, row)
+        .unwrap()
+    else {
         panic!("expected bytes")
     };
     assert_eq!(padded.len(), 20, "BINARY(20) pads with NUL bytes");
@@ -271,7 +275,7 @@ mod round_truncate_type_source_tests {
                 result,
                 vec![value.clone(), scale.clone()],
             );
-            let Datum::Decimal(answer) = function
+            let Datum::Decimal(answer) = crate::expression::Expression::ScalarFunction(function)
                 .eval(&crate::context::NoColumns, chunk.get_row(0))
                 .unwrap()
             else {
@@ -349,10 +353,13 @@ mod ceil_floor_type_source_tests {
                     0,
                     &Datum::Decimal(tidb_datatype::Decimal::from_literal("-1.23")),
                 );
-                let result =
-                    ScalarFunction::new(tidb_ast::CiString::new(name), result_type, vec![argument])
-                        .eval(&crate::context::NoColumns, chunk.get_row(0))
-                        .unwrap();
+                let result = crate::expression::Expression::ScalarFunction(ScalarFunction::new(
+                    tidb_ast::CiString::new(name),
+                    result_type,
+                    vec![argument],
+                ))
+                .eval(&crate::context::NoColumns, chunk.get_row(0))
+                .unwrap();
                 let expected = if name == "floor" { -2 } else { -1 };
                 if expect_decimal {
                     let Datum::Decimal(result) = result else {

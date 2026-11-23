@@ -50,7 +50,7 @@ fn eval_string_sig(name: &str, args: Vec<Datum>) -> Result<Datum, crate::EvalErr
     );
     let cols = crate::context::ZonedNoColumns(tidb_datatype::SessionTimeZone::utc());
     let empty = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
-    function.eval(&cols, empty.get_row(0))
+    crate::expression::Expression::ScalarFunction(function).eval(&cols, empty.get_row(0))
 }
 
 fn eval_int_sig(name: &str, args: Vec<Datum>) -> Result<Datum, crate::EvalError> {
@@ -61,7 +61,7 @@ fn eval_int_sig(name: &str, args: Vec<Datum>) -> Result<Datum, crate::EvalError>
     );
     let cols = crate::context::ZonedNoColumns(tidb_datatype::SessionTimeZone::utc());
     let empty = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
-    function.eval(&cols, empty.get_row(0))
+    crate::expression::Expression::ScalarFunction(function).eval(&cols, empty.get_row(0))
 }
 
 fn s(v: &str) -> Datum {
@@ -173,7 +173,7 @@ fn go_test_repeat() {
             vec![const_arg(s("a")), const_arg(i(10_001))],
         );
         let empty = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
-        let value = function
+        let value = crate::expression::Expression::ScalarFunction(function)
             .eval(&SmallPacket, empty.get_row(0))
             .unwrap_or_else(|e| panic!("repeat over packet: {e:?}"));
         assert!(value.is_null(), "past the packet bound repeat answers NULL");

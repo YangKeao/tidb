@@ -84,6 +84,7 @@ fn in_decimal_across_scales_compares_numerically() {
         vec![lhs.clone(), rhs.clone()],
     );
 
+    let in_func = Expression::ScalarFunction(in_func);
     for (index, (_low, high)) in left.iter().zip(right.iter()).enumerate() {
         let row = input.get_row(index);
         let lhs_value = lhs.eval(&crate::context::NoColumns, row).unwrap();

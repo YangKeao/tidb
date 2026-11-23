@@ -297,6 +297,7 @@ fn test_column_substitute_grouping_cleans_hash_code() {
     let mut input = tidb_chunk::chunk::Chunk::new_with_capacity(&[longlong_type()], 2);
     input.append_int64(0, 1);
     input.append_int64(0, 0);
+    let changed = Expression::ScalarFunction(changed);
     assert_eq!(
         changed.eval(&NoColumns, input.get_row(0)).unwrap(),
         Datum::UInt(0)

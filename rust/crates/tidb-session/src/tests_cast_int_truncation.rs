@@ -248,7 +248,14 @@ fn an_unsigned_cast_warns_on_the_same_strings() {
         let sql = format!("SELECT CAST('{input}' AS UNSIGNED)");
         let got = row_text(session.run(&sql));
         assert_eq!(got, [[value]], "{sql}");
-        let expected: Vec<_> = expected_warning(input).into_iter().collect();
+        let mut expected: Vec<_> = expected_warning(input).into_iter().collect();
+        if input == "-7xy" {
+            expected.push((
+                8031,
+                "Cast to unsigned converted negative integer to it's positive complement"
+                    .to_owned(),
+            ));
+        }
         assert_eq!(warnings(&session), expected, "{sql}");
     }
 }

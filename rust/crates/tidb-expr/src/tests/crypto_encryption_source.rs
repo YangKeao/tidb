@@ -1051,11 +1051,17 @@ fn encoding_error_rows_follow_session_charset_conversion() {
     // Go's valid GBK rows are encoded before MD5/PASSWORD see the bytes.
     assert_eq!(
         eval("md5('一二三')").expect("MD5 evaluates"),
-        Datum::new_string("a45d4af7b243e7f393fa09bed72ac73e")
+        Datum::new_collation_string(
+            "a45d4af7b243e7f393fa09bed72ac73e",
+            tidb_datatype::Collation::GbkBin
+        )
     );
     assert_eq!(
         eval("password('一二三四')").expect("PASSWORD evaluates"),
-        Datum::new_string("*48E0460AD45CF66AC6B8C18CB8B4BC8A403D935B")
+        Datum::new_collation_string(
+            "*48E0460AD45CF66AC6B8C18CB8B4BC8A403D935B",
+            tidb_datatype::Collation::GbkBin
+        )
     );
 
     // U+3142 is not representable in GBK, so Go's constant construction and
@@ -1133,6 +1139,20 @@ fn test_compress_and_uncompress_length_framing() {
     // {"", ""} and {"", nil} rows.
     assert_eq!(call("COMPRESS", &[s("")], &NoColumns), s(""));
     assert_eq!(call("COMPRESS", &[Datum::Null], &NoColumns), Datum::Null);
+}
+
+#[test]
+fn compress_uses_the_registered_tikv_byte_frame() {
+    assert_eq!(
+        e("hex(compress('hello world'))"),
+        "STR:0B000000789CCB48CDC9C95728CF2FCA4901001A0B045D"
+    );
+    assert_eq!(
+        e("hex(compress('hello wor012'))"),
+        "STR:0C000000789CCB48CDC9C95728CF2F32303402001D8004202E"
+    );
+    assert_eq!(e("hex(compress(''))"), "STR:");
+    assert_eq!(e("hex(compress(null))"), "NULL");
 }
 
 /// GO PORT of `pkg/expression/builtin_encryption_test.go:616 TestUncompress`

@@ -90,8 +90,12 @@ fn cast_eval(
     ret_type: FieldType,
     ctx: &impl Columns,
 ) -> Result<Datum, EvalError> {
-    ScalarFunction::new(CiString::new(target), ret_type, vec![arg])
-        .eval(ctx, tidb_chunk::row::Row::empty())
+    crate::expression::Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new(target),
+        ret_type,
+        vec![arg],
+    ))
+    .eval(ctx, tidb_chunk::row::Row::empty())
 }
 
 /// A [`Columns`] stub with the statement clock pinned to 2020-10-10 00:00:00
@@ -177,7 +181,9 @@ fn test_arithmetic_plus() {
     let rhs = const_typed(Datum::Int(1), int_ft());
     let sf = ScalarFunction::new(CiString::new("plus"), int_ft(), vec![lhs, rhs]);
     assert_eq!(
-        sf.eval(&cols, tidb_chunk::row::Row::empty()).unwrap(),
+        crate::expression::Expression::ScalarFunction(sf)
+            .eval(&cols, tidb_chunk::row::Row::empty())
+            .unwrap(),
         Datum::Int(13)
     );
 
@@ -191,7 +197,7 @@ fn test_arithmetic_plus() {
                 const_typed(real(b), real_ft()),
             ],
         );
-        sf.eval(&cols, tidb_chunk::row::Row::empty())
+        crate::expression::Expression::ScalarFunction(sf).eval(&cols, tidb_chunk::row::Row::empty())
     };
     fn real(v: f64) -> Datum {
         Datum::Real(v)
@@ -202,27 +208,27 @@ fn test_arithmetic_plus() {
     }
     let null_real = [Datum::Null];
     assert_eq!(
-        ScalarFunction::new(
+        crate::expression::Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("plus"),
             real_ft(),
             vec![
                 const_typed(null_real[0].clone(), FieldType::new(C::Null)),
                 const_typed(real(-0.11101), real_ft()),
             ],
-        )
+        ))
         .eval(&cols, tidb_chunk::row::Row::empty())
         .unwrap(),
         Datum::Null
     );
     assert_eq!(
-        ScalarFunction::new(
+        crate::expression::Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("plus"),
             real_ft(),
             vec![
                 const_typed(Datum::Null, FieldType::new(C::Null)),
                 const_typed(Datum::Null, FieldType::new(C::Null)),
             ],
-        )
+        ))
         .eval(&cols, tidb_chunk::row::Row::empty())
         .unwrap(),
         Datum::Null
@@ -249,7 +255,9 @@ fn test_arithmetic_plus() {
         ],
     );
     assert_eq!(
-        sf.eval(&cols, tidb_chunk::row::Row::empty()).unwrap(),
+        crate::expression::Expression::ScalarFunction(sf)
+            .eval(&cols, tidb_chunk::row::Row::empty())
+            .unwrap(),
         Datum::Int(9007199254740993)
     );
 
@@ -266,7 +274,9 @@ fn test_arithmetic_plus() {
         ],
     );
     assert_eq!(
-        sf.eval(&cols, tidb_chunk::row::Row::empty()).unwrap(),
+        crate::expression::Expression::ScalarFunction(sf)
+            .eval(&cols, tidb_chunk::row::Row::empty())
+            .unwrap(),
         Datum::Int(4)
     );
 }
@@ -298,7 +308,7 @@ fn test_decimal_err_overflow() {
                 const_typed(Datum::Decimal(b.clone()), dec_ft()),
             ],
         );
-        let error = sf
+        let error = crate::expression::Expression::ScalarFunction(sf)
             .eval(&cols, tidb_chunk::row::Row::empty())
             .expect_err("decimal arithmetic must overflow");
         let symbol = match name {
@@ -341,7 +351,7 @@ fn test_arithmetic_overflow_error_message_with_column_name() {
     let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(&[int_ft()], 1);
     chunk.append_datum(0, &Datum::Int(i64::MIN));
 
-    let error = function
+    let error = crate::expression::Expression::ScalarFunction(function)
         .eval(&NoColumns, chunk.get_row(0))
         .expect_err("MinInt64 * -1 must overflow");
     assert_eq!(
@@ -374,7 +384,7 @@ fn test_arithmetic_overflow_error_message_with_column_name() {
     let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(&[int_ft(), int_ft()], 1);
     chunk.append_datum(0, &Datum::Int(2));
     chunk.append_datum(1, &Datum::Int(1));
-    let error = multiply
+    let error = crate::expression::Expression::ScalarFunction(multiply)
         .eval(&NoColumns, chunk.get_row(0))
         .expect_err("derived column expression must overflow");
     assert_eq!(
@@ -401,7 +411,7 @@ fn test_real_arithmetic_overflow_error_message() {
         ],
     );
     let chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    let error = function
+    let error = crate::expression::Expression::ScalarFunction(function)
         .eval(&NoColumns, chunk.get_row(0))
         .expect_err("1e300 * 1e300 must overflow DOUBLE");
     assert_eq!(
@@ -439,25 +449,25 @@ fn test_vectorized_builtin_arithmetic_func() {
         ft
     };
     let eval = |name: &str, l: Datum, r: Datum| {
-        ScalarFunction::new(
+        crate::expression::Expression::ScalarFunction(ScalarFunction::new(
             CiString::new(name),
             num_ft(&l),
             vec![
                 const_typed(l.clone(), num_ft(&l)),
                 const_typed(r.clone(), num_ft(&r)),
             ],
-        )
+        ))
         .eval(&zoned, tidb_chunk::row::Row::empty())
     };
     let eval_unsigned_decimal_rhs = |name: &str, l: Datum, r: Decimal| {
-        ScalarFunction::new(
+        crate::expression::Expression::ScalarFunction(ScalarFunction::new(
             CiString::new(name),
             int_ft(),
             vec![
                 const_typed(l, dec_ft()),
                 const_typed(Datum::Decimal(r), unsigned_dec()),
             ],
-        )
+        ))
         .eval(&zoned, tidb_chunk::row::Row::empty())
     };
 
@@ -1784,6 +1794,19 @@ fn test_wrap_with_cast_as_string_binary_literal_warns_invalid_utf8() {
     // BINARY source.  An invalid UTF-8 byte is truncated at the first bad
     // group, publishes ErrCannotConvertString (3854), and returns the
     // successfully decoded prefix in non-strict mode (empty here).
+    #[derive(Default)]
+    struct NonStrictWarnings(WarningCtx);
+    impl Columns for NonStrictWarnings {
+        fn get(&self, _: &[String]) -> Option<Datum> {
+            None
+        }
+        fn strict_sql_mode(&self) -> bool {
+            false
+        }
+        fn append_warning(&self, code: u16, message: &str) {
+            self.0.append_warning(code, message);
+        }
+    }
     let mut source = FieldType::new(C::VarString);
     source.set_charset_name("binary");
     source.set_collation_name("binary");
@@ -1794,21 +1817,21 @@ fn test_wrap_with_cast_as_string_binary_literal_warns_invalid_utf8() {
         source.clone(),
     );
     let target = FieldType::new(C::VarString);
-    let ctx = WarningCtx::default();
+    let ctx = NonStrictWarnings::default();
     let wrapped = crate::simple_expr::build_cast_function(invalid, target, false).unwrap();
     let out = wrapped
         .eval(&ctx, tidb_chunk::row::Row::empty())
         .expect("CAST AS CHAR should keep the non-strict decoded prefix");
     assert_eq!(out, Datum::new_string(""));
-    assert_eq!(ctx.0.borrow().len(), 1);
-    assert_eq!(ctx.0.borrow()[0].0, 3854);
+    assert_eq!(ctx.0 .0.borrow().len(), 1);
+    assert_eq!(ctx.0 .0.borrow()[0].0, 3854);
 
     // A valid binary payload takes the same decoder path without a warning.
     let valid = const_typed(
         Datum::new_binary_literal(tidb_datatype::BinaryLiteral::from(vec![b'a'])),
         source,
     );
-    let ctx = WarningCtx::default();
+    let ctx = NonStrictWarnings::default();
     let wrapped =
         crate::simple_expr::build_cast_function(valid, FieldType::new(C::VarString), false)
             .unwrap();
@@ -1816,7 +1839,7 @@ fn test_wrap_with_cast_as_string_binary_literal_warns_invalid_utf8() {
         .eval(&ctx, tidb_chunk::row::Row::empty())
         .expect("valid binary string");
     assert_eq!(out, Datum::new_string("a"));
-    assert!(ctx.0.borrow().is_empty());
+    assert!(ctx.0 .0.borrow().is_empty());
 }
 
 #[test]
