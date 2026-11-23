@@ -32,7 +32,7 @@ use tidb_executor_internal_exec::{Executor, ExecutorMeta};
 use tidb_driver_error::ExecError;
 use tidb_chunk::chunk::Chunk;
 use tidb_datatype::{Datum, FieldType};
-use tidb_expr::evaluator::{vectorizable, vectorized_filter_consider_null};
+use tidb_expr::evaluator::{FilterExecution, vectorizable};
 use tidb_expr::expression::Expression;
 use tidb_expr::schema::Schema;
 use tidb_expr::truthy_of;
@@ -44,7 +44,7 @@ use crate::StatementMemory;
 /// Go `SelectionExec`: filters its child's rows by a conjunction of predicates.
 pub struct SelectionExec<C: Columns> {
     meta: ExecutorMeta,
-    filters: Vec<Expression>,
+    filters: FilterExecution,
     fast_filters: Vec<Option<FastSelectionFilter>>,
     batched: bool,
     child: Box<dyn Executor>,
@@ -92,7 +92,7 @@ impl<C: Columns> SelectionExec<C> {
             .collect();
         SelectionExec {
             meta,
-            filters,
+            filters: FilterExecution::new(filters),
             fast_filters,
             batched,
             child,
@@ -108,14 +108,14 @@ impl<C: Columns> SelectionExec<C> {
     /// Whether a row satisfies every filter (all truthy). A false or NULL filter
     /// rejects the row.
     fn row_passes(&self, row: tidb_chunk::row::Row<'_>) -> Result<bool, ExecError> {
-        for (filter, fast_filter) in self.filters.iter().zip(&self.fast_filters) {
+        for (index, fast_filter) in self.fast_filters.iter().enumerate() {
             if let Some(fast_filter) = fast_filter {
                 if !fast_filter.matches(row) {
                     return Ok(false);
                 }
                 continue;
             }
-            let value = filter.eval(&self.ctx, row)?;
+            let value = self.filters.predicate_on_row(&self.ctx, index, row)?;
             if truthy_of(&value)? != Some(true) {
                 return Ok(false);
             }
@@ -137,10 +137,9 @@ impl<C: Columns> SelectionExec<C> {
             .expect("selection child chunk exists while open");
         // Go `selectionExecutorContext.enableVectorizedExpression`.
         let vec_enabled = self.ctx.enable_vectorized_expression();
-        let (selected, _) = vectorized_filter_consider_null(
+        let (selected, _) = self.filters.filter(
             &self.ctx,
             vec_enabled,
-            &self.filters,
             child_chunk,
             Vec::new(),
             Vec::new(),
@@ -262,6 +261,7 @@ impl<C: Columns + Send> SelectionExec<C> {
     /// is already open (`buildExecutorForIndexJoinInternal`).
     pub(crate) fn open_self(&mut self) -> Result<(), ExecError> {
         self.release_child_chunk();
+        self.filters.reset();
         let child_chunk = self.child.new_chunk();
         self.tracker.replace_bytes_used(child_chunk.memory_usage());
         self.child_chunk = Some(child_chunk);
@@ -276,20 +276,15 @@ impl<C: Columns + Send> Executor for SelectionExec<C> {
     /// evaluation property, then its child.
     fn detach(&mut self) -> bool {
         self.filters
+            .predicates()
             .iter()
             .all(|filter| tidb_expr::evaluator::get_optional_eval_props_for_expr(filter).is_empty())
             && self.child.detach()
     }
 
     fn open(&mut self) -> Result<(), ExecError> {
-        self.release_child_chunk();
         self.child.open()?;
-        let child_chunk = self.child.new_chunk();
-        self.tracker.replace_bytes_used(child_chunk.memory_usage());
-        self.child_chunk = Some(child_chunk);
-        self.input_row = 0;
-        self.selected.clear();
-        Ok(())
+        self.open_self()
     }
 
     fn next(&mut self, req: &mut Chunk) -> Result<(), ExecError> {
