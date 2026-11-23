@@ -51,7 +51,7 @@ mod index_lookup_tests;
 mod mpp_task_tests;
 
 use tidb_datatype::CollationCollator;
-use eval_context::{RequestEvalContext, SharedExpression};
+use eval_context::{RequestEvalContext, SharedExpression, SharedProgram};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -1206,14 +1206,18 @@ fn convert_shared(
     expr: &tipb::Expr,
     context: &Arc<RequestEvalContext>,
 ) -> Result<SimpleExpr, String> {
-    tidb_expr::distsql_builtin::pb_to_expr_in(expr, &context.column_types, &context.zone).map(
-        |expression| {
-            SimpleExpr::Shared(Arc::new(SharedExpression {
-                expression,
-                context: Arc::clone(context),
-            }))
-        },
-    )
+    let program = match tidb_expr::rpn::WireExpressionExecution::new(
+        expr, context.as_ref(), &context.column_types, context.flags,
+    ) {
+        Ok(Some(execution)) => SharedProgram::Rpn(std::sync::Mutex::new(execution)),
+        _ => SharedProgram::Typed(tidb_expr::distsql_builtin::pb_to_expr_in(
+            expr, &context.column_types, &context.zone,
+        )?),
+    };
+    Ok(SimpleExpr::Shared(Arc::new(SharedExpression {
+        program,
+        context: Arc::clone(context),
+    })))
 }
 
 /// Evaluates a [`SimpleExpr::Shared`] node over one scanned row.
@@ -1221,10 +1225,17 @@ fn eval_shared(
     expr: &SharedExpression,
     row: &[tidb_datatype::Datum],
 ) -> Result<tidb_datatype::Datum, CopExecError> {
-    let row = tidb_chunk::mutrow::MutRow::mut_row_from_datums(row);
-    expr.expression
-        .eval(expr.context.as_ref(), row.to_row())
-        .map_err(CopExecError::from)
+    match &expr.program {
+        SharedProgram::Rpn(execution) => execution
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .evaluate_datums(expr.context.as_ref(), row),
+        SharedProgram::Typed(expression) => {
+            let row = tidb_chunk::mutrow::MutRow::mut_row_from_datums(row);
+            expression.eval(expr.context.as_ref(), row.to_row())
+        }
+    }
+    .map_err(CopExecError::from)
 }
 
 /// Decode without a DAG for standalone callers. Request execution uses
@@ -1286,7 +1297,7 @@ fn convert_expr_with_context(
                 ..
             }) => SimpleExpr::Json(value),
             expression => SimpleExpr::Shared(Arc::new(SharedExpression {
-                expression,
+                program: SharedProgram::Typed(expression),
                 context: Arc::clone(context),
             })),
         });
@@ -2276,19 +2287,22 @@ mod tests {
         let mut data = Vec::new();
         dag.encode(&mut data).expect("encodes");
         let (range_start, range_end) = tidb_tablecodec::table_key::get_table_handle_key_range(11);
-        let resp = handle_cop_request(
-            &mut store,
-            &coprocessor::Request {
-                tp: REQ_TYPE_DAG,
-                data,
-                ranges: vec![coprocessor::KeyRange {
-                    start: range_start,
-                    end: range_end,
-                }],
-                start_ts: 20,
-                ..coprocessor::Request::default()
-            },
-        );
+        let request = coprocessor::Request {
+            tp: REQ_TYPE_DAG,
+            data,
+            ranges: vec![coprocessor::KeyRange { start: range_start, end: range_end }],
+            start_ts: 20,
+            ..coprocessor::Request::default()
+        };
+        let parsed = build_dag(&request).unwrap();
+        let predicate = &parsed.dag_req.executors[1].selection.as_ref().unwrap().conditions[0];
+        let SimpleExpr::Shared(shared) =
+            convert_expr_with_context(predicate, &parsed.expression_context).unwrap()
+        else {
+            panic!("expected a compiled comparison");
+        };
+        assert!(matches!(shared.program, SharedProgram::Rpn(_)));
+        let resp = handle_cop_request(&mut store, &request);
         assert!(resp.other_error.is_empty(), "{}", resp.other_error);
         let select = tipb::SelectResponse::decode(resp.data.as_ref()).expect("decodes");
         let rows_data = select.chunks[0].rows_data.as_deref().expect("rows");

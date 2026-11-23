@@ -57,10 +57,10 @@ pub(crate) fn recover_hash_agg(output: &crossbeam_channel::Sender<AfFinalResult>
 }
 
 /// Go's `[][]byte` group keys, with the capacities Go's appends leave.
-#[derive(Clone, Debug)]
 pub(crate) struct GroupKeys {
     keys: Vec<Vec<u8>>,
     key_caps: Vec<usize>,
+    expressions: Vec<tidb_expr::evaluator::RowProgram>,
     /// Go `len(groupKey)`.
     len: usize,
     /// Go `cap(groupKey)`.
@@ -70,7 +70,13 @@ pub(crate) struct GroupKeys {
 impl GroupKeys {
     /// Go `getBuffer`'s `make([][]byte, 0, defaultGroupKeyCap)`.
     pub(crate) fn new() -> Self {
-        Self { keys: Vec::new(), key_caps: Vec::new(), len: 0, cap: DEFAULT_GROUP_KEY_CAP }
+        Self {
+            keys: Vec::new(),
+            key_caps: Vec::new(),
+            expressions: Vec::new(),
+            len: 0,
+            cap: DEFAULT_GROUP_KEY_CAP,
+        }
     }
 
     /// The `i`th key.
@@ -165,12 +171,13 @@ pub(crate) fn get_group_key(ctx: &dyn Columns, input: &Chunk, group_key: &mut Gr
 
     let timezone = ctx.time_zone();
     let mut encoded = Vec::new();
-    for item in group_by_items {
+    group_key.expressions.resize_with(group_by_items.len(), Default::default);
+    for (item, expression) in group_by_items.iter().zip(&mut group_key.expressions) {
         let field_type = item.static_type().ok_or_else(|| ExecError::internal("HashAgg group expression has no field type"))?;
         let key_type = crate::group_key::group_key_type(field_type);
         let eval_type = key_type.eval_type();
         for row in 0..num_rows {
-            let value = item.eval(ctx, input.get_row(row)).map_err(ExecError::Eval)?;
+            let value = expression.evaluate(item, ctx, input.get_row(row)).map_err(ExecError::Eval)?;
             encoded.clear();
             tidb_codec::append_hash_group_key_in_timezone(&timezone, &value, &key_type, &mut encoded)
                 .map_err(|error| ExecError::internal(error.to_string()))?;
