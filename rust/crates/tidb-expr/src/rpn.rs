@@ -517,9 +517,6 @@ impl WireExpressionExecution {
         );
         let mut context = new_context(ctx, Some(request_flags));
         let tree = engine::decode(&expr.encode_to_vec()).map_err(query_error)?;
-        if engine::check_supported(&tree).is_err() {
-            return Ok(None);
-        }
         let Some(schema) = columns
             .iter()
             .map(rows::query_field_type)
@@ -527,8 +524,8 @@ impl WireExpressionExecution {
         else {
             return Ok(None);
         };
-        let program = engine::build(tree, &mut context, schema.len(), columns, false, false)
-            .map_err(query_error)?;
+        let program =
+            engine::build_wire(tree, &mut context, &schema, columns).map_err(query_error)?;
         Ok(Some(Self(PreparedExpression {
             program,
             batch_program: None,
@@ -1164,10 +1161,10 @@ fn compile(
     let physical_fields = if physical_input { input_types } else { &[] };
     let count = input_types.len() + bindings.len();
     let batch_program = engine::needs_scalar_guard(&tree, physical_fields)
-        .then(|| engine::build(tree.clone(), ctx, count, physical_fields, true, false))
+        .then(|| engine::build(tree.clone(), ctx, count, physical_fields, false))
         .transpose()
         .map_err(|err| err.to_string())?;
-    engine::build(tree, ctx, count, physical_fields, true, true)
+    engine::build(tree, ctx, count, physical_fields, true)
         .map(|program| {
             Some(CompiledExpression {
                 program,

@@ -32,6 +32,7 @@ use tidb_query_datatype::{
     codec::{
         data_type::{ChunkedVec, ChunkedVecSet, Duration, Enum, Real, ScalarValueRef, VectorValue},
         mysql::{
+            decimal::DECIMAL_STRUCT_SIZE,
             json::{Json, JsonType},
             Decimal as QueryDecimal, DecimalDecoder, DecimalEncoder, Time as QueryTime,
             VectorFloat32 as QueryVector,
@@ -607,11 +608,7 @@ pub(super) fn from_query_value(value: ScalarValueRef<'_>, field: &FieldType) -> 
             let (precision, scale) = value.prec_and_frac();
             encoded.write_decimal(value, precision.max(1), scale)?;
             let (_, decoded, _, _) = tidb_codec::decode_decimal(&encoded).map_err(error)?;
-            let display = value.to_string();
-            let result_scale = display
-                .split_once('.')
-                .map_or(0, |(_, fraction)| fraction.len() as u32);
-            Datum::Decimal(decoded.with_result_scale(result_scale))
+            Datum::Decimal(decoded.with_result_scale(u32::from(decimal_result_scale(value)?)))
         }
         ScalarValueRef::Enum(Some(value)) if field.code() == FieldTypeCode::Set => Datum::Set(
             tidb_datatype::MysqlSet::new(value.name(), value.value()),
@@ -681,7 +678,28 @@ fn to_query_decimal(value: &tidb_datatype::Decimal) -> Result<QueryDecimal> {
             outcome.unwrap()
         }
     };
-    Ok(decimal)
+    let scale = u8::try_from(value.scale()).map_err(error)?;
+    if decimal.frac_cnt() == scale {
+        return Ok(decimal);
+    }
+    let mut raw = decimal_chunk_bytes(&decimal)?;
+    raw[DECIMAL_RESULT_SCALE] = scale;
+    Ok(raw.as_slice().read_decimal_from_chunk()?)
+}
+
+// At the pinned TiKV revision its public chunk codec writes Decimal's repr(C)
+// layout. Its first four bytes are integer digits, stored fractional digits,
+// result scale and sign. Only the result byte can change here.
+const DECIMAL_RESULT_SCALE: usize = 2;
+
+fn decimal_chunk_bytes(value: &QueryDecimal) -> Result<[u8; DECIMAL_STRUCT_SIZE]> {
+    let mut raw = [0; DECIMAL_STRUCT_SIZE];
+    raw.as_mut_slice().write_decimal_to_chunk(value)?;
+    Ok(raw)
+}
+
+pub(super) fn decimal_result_scale(value: &QueryDecimal) -> Result<u8> {
+    Ok(decimal_chunk_bytes(value)?[DECIMAL_RESULT_SCALE])
 }
 
 fn to_query_time(value: Time) -> Result<QueryTime> {
@@ -701,6 +719,27 @@ fn to_query_time(value: Time) -> Result<QueryTime> {
 mod tests {
     use super::*;
     use tidb_datatype::{CoreTime, TimeType};
+
+    #[test]
+    fn decimal_chunk_bridge_keeps_coefficient_and_result_scale_independent() {
+        let native =
+            tidb_datatype::Decimal::from_literal("0.333333333333333333").with_result_scale(3);
+        let query = to_query_decimal(&native).unwrap();
+        assert_eq!(query.to_string(), "0.333");
+        assert_eq!(query.frac_cnt(), 18);
+        let Datum::Decimal(restored) = from_query_value(
+            ScalarValueRef::Decimal(Some(&query)),
+            &FieldType::new(FieldTypeCode::NewDecimal),
+        )
+        .unwrap() else {
+            panic!("expected a decimal");
+        };
+        assert_eq!(restored.scale(), 3);
+        assert_eq!(
+            restored.with_result_scale(18).to_string(),
+            "0.333333333333333333"
+        );
+    }
 
     #[test]
     fn time_bridge_retains_raw_zero_date_and_hidden_date_fields() {

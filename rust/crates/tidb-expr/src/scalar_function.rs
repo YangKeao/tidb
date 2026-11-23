@@ -1466,11 +1466,13 @@ impl PreparedLocalBuiltin {
     pub(crate) fn new(function: &ScalarFunction) -> Self {
         Self {
             collation: function.derived_collation(),
-            cache_pattern: function
-                .args
-                .iter()
-                .skip(1)
-                .all(|argument| argument.const_level() >= ConstLevel::ONLY_IN_CONTEXT),
+            cache_pattern: function.args.iter().skip(1).all(|argument| {
+                matches!(
+                    argument,
+                    Expression::Constant(value)
+                        if value.literal_value().is_some()
+                )
+            }),
             like: Default::default(),
             ilike: Default::default(),
             regexp: Default::default(),

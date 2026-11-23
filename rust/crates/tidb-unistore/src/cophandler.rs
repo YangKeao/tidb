@@ -6282,6 +6282,66 @@ mod tests {
     }
 
     #[test]
+    fn request_selection_accepts_typed_enum_and_bit_literals() {
+        fn literal(tp: tipb::ExprType, field_type: i32, bits: Vec<u8>) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tp as i32),
+                val: Some(bits),
+                field_type: Some(tipb::FieldType {
+                    tp: Some(field_type),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        fn call(sig: tipb::ScalarFuncSig, children: Vec<tipb::Expr>) -> tipb::Expr {
+            tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                children,
+                field_type: Some(tipb::FieldType {
+                    tp: Some(8),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        let mut enum_value = literal(tipb::ExprType::MysqlEnum, 247, 2u64.to_be_bytes().to_vec());
+        enum_value.field_type.as_mut().unwrap().elems = vec!["a".into(), "b".into()];
+        let as_int = call(tipb::ScalarFuncSig::CastIntAsInt, vec![enum_value]);
+        let bit_value = literal(tipb::ExprType::MysqlBit, 16, vec![2]);
+        let condition = call(tipb::ScalarFuncSig::EqInt, vec![as_int, bit_value]);
+        let mut store = MvccStore::new();
+        seed_three_rows(&mut store, 17);
+        let mut req = top_n_request(17, 1, false, 3);
+        let mut dag = tipb::DagRequest::decode(req.data.as_slice()).unwrap();
+        dag.executors[1] = tipb::Executor {
+            tp: Some(tipb::ExecType::TypeSelection as i32),
+            selection: Some(tipb::Selection {
+                conditions: vec![condition],
+            }),
+            ..Default::default()
+        };
+        req.data = dag.encode_to_vec();
+        let response = handle_cop_request(&mut store, &req);
+        assert!(response.other_error.is_empty(), "{response:?}");
+        let select = tipb::SelectResponse::decode(response.data.as_ref()).unwrap();
+        let row_count = select
+            .chunks
+            .iter()
+            .map(|chunk| {
+                tidb_codec::decode(chunk.rows_data.as_deref().unwrap(), 2)
+                    .unwrap()
+                    .len()
+                    / 2
+            })
+            .sum::<usize>();
+        assert_eq!(row_count, 3);
+    }
+
+    #[test]
     fn top_n_desc_keeps_the_largest_in_key_order() {
         use tidb_datatype::Datum;
         let mut store = MvccStore::new();

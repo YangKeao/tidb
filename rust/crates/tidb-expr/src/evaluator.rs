@@ -1125,6 +1125,40 @@ mod tests {
     }
 
     #[test]
+    fn like_pattern_cache_requires_a_literal() {
+        let mut pattern = Constant::new(Datum::Bytes(b"a".to_vec()), string());
+        let mut pattern_column = Column::new(1, string());
+        pattern_column.index = 0;
+        pattern.deferred_expr = Some(Box::new(Expression::Column(pattern_column)));
+        let expressions = [
+            scalar(
+                "like",
+                vec![
+                    string_const("a"),
+                    Expression::Constant(pattern),
+                    int_const(92),
+                ],
+            ),
+            scalar(
+                "like",
+                vec![string_const("a"), string_const("a"), int_const(92)],
+            ),
+        ];
+        let mut input = Chunk::new_with_capacity(&[string()], 2);
+        input.append_bytes(0, b"a");
+        input.append_bytes(0, b"b");
+        let mut output = Chunk::new_with_capacity(&[long(), long()], 2);
+        EvaluatorSuite::new(expressions.to_vec(), false)
+            .run(&NoColumns, &mut input, &mut output)
+            .unwrap();
+
+        assert_eq!(output.get_row(0).get_int64(0), 1);
+        assert_eq!(output.get_row(1).get_int64(0), 0);
+        assert_eq!(output.get_row(0).get_int64(1), 1);
+        assert_eq!(output.get_row(1).get_int64(1), 1);
+    }
+
+    #[test]
     fn constant_batch_preserves_deferred_rows_and_side_effect_ordering() {
         // A deferred constant delegates to its expression in Go; its saved
         // value is not permission to broadcast the first input row.

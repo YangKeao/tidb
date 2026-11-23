@@ -10,7 +10,7 @@ use tidb_query_datatype::{
         batch::LazyBatchColumnVec,
         data_type::{ScalarValue, ScalarValueRef, VectorValue},
     },
-    expr::{EvalContext, Flag},
+    expr::EvalContext,
     EvalType, FieldTypeAccessor,
 };
 use tidb_query_expr::{
@@ -104,15 +104,17 @@ fn host_call(
 }
 
 #[derive(Clone, Copy)]
-enum DecimalDivision {
+enum DecimalArithmetic {
+    Multiply,
     Decimal,
     Signed,
     Unsigned,
 }
 
-impl DecimalDivision {
+impl DecimalArithmetic {
     fn for_call(call: &Expr) -> Option<Self> {
         match call.get_sig() {
+            ScalarFuncSig::MultiplyDecimal => Some(Self::Multiply),
             ScalarFuncSig::DivideDecimal => Some(Self::Decimal),
             ScalarFuncSig::IntDivideDecimal => {
                 let unsigned = call
@@ -137,7 +139,7 @@ impl DecimalDivision {
     ) -> Result<VectorValue> {
         use tidb_query_datatype::codec::{mysql::decimal::Res, Error};
         let kind = match self {
-            Self::Decimal => EvalType::Decimal,
+            Self::Multiply | Self::Decimal => EvalType::Decimal,
             Self::Signed | Self::Unsigned => EvalType::Int,
         };
         let mut result = VectorValue::with_capacity(rows, kind);
@@ -149,6 +151,26 @@ impl DecimalDivision {
                 append_null(&mut result);
                 continue;
             };
+            if matches!(self, Self::Multiply) {
+                use tidb_query_expr::impl_arithmetic::{ArithmeticOp, DecimalMultiply};
+                let value = DecimalMultiply::calc(left, right)?;
+                let value = match value {
+                    Some(value) if value.is_zero() && left.is_negative() != right.is_negative() => {
+                        use tidb_query_datatype::codec::mysql::Decimal;
+                        let scale = usize::from(
+                            (rows::decimal_result_scale(left)?
+                                + rows::decimal_result_scale(right)?)
+                            .min(30),
+                        );
+                        let zero = b"0.000000000000000000000000000000";
+                        let len = if scale == 0 { 1 } else { scale + 2 };
+                        Some(Decimal::from_bytes(&zero[..len])?.unwrap())
+                    }
+                    value => value,
+                };
+                result.push_decimal(value);
+                continue;
+            }
             let Some(division) = left.div(right, ctx.cfg.div_precision_increment) else {
                 ctx.handle_division_by_zero()?;
                 append_null(&mut result);
@@ -169,7 +191,7 @@ impl DecimalDivision {
                 }
             };
             match self {
-                Self::Decimal => result.push_decimal(Some(value)),
+                Self::Multiply | Self::Decimal => result.push_decimal(Some(value)),
                 Self::Signed => {
                     let signed = value.as_i64();
                     if signed.is_overflow() {
@@ -208,7 +230,7 @@ struct Kernel {
     metadata: Box<dyn Any + Send>,
     diagnostic: Option<usize>,
     check_integer_zero_divisor: bool,
-    decimal_division: Option<DecimalDivision>,
+    decimal_arithmetic: Option<DecimalArithmetic>,
 }
 
 fn decorated_kernel(
@@ -242,8 +264,8 @@ fn decorated_kernel(
             }
         }
     }
-    let result = if let Some(division) = kernel.decimal_division {
-        division.evaluate(ctx, count, args)
+    let result = if let Some(arithmetic) = kernel.decimal_arithmetic {
+        arithmetic.evaluate(ctx, count, args)
     } else {
         (kernel.upstream.fn_ptr)(ctx, count, args, extra, kernel.metadata.as_ref())
     };
@@ -323,12 +345,127 @@ pub(super) fn root_kernel(call: &Expr, ctx: &mut EvalContext) -> Result<RpnExpre
         .ok_or_else(|| error("upstream builder emitted an empty expression"))
 }
 
+// An internal annotation on the already decoded PB copy. The upstream
+// builder carries output declarations through its flattening and IN rewrites,
+// but its compiled callbacks no longer carry a ScalarFuncSig.
+const WIRE_INTEGER_DIVISION: u32 = 51000;
+
+pub(super) fn build_wire(
+    mut tree: Expr,
+    ctx: &mut EvalContext,
+    schema: &[FieldType],
+    physical_fields: &[tidb_datatype::FieldType],
+) -> Result<RpnExpression> {
+    fn prepare_declaration(node: &mut Expr) -> Result<()> {
+        if node.get_tp() == ExprType::MysqlBit && node.get_val().len() > 8 {
+            return Err(error("BIT literal exceeds 64 bits"));
+        }
+        if node.get_tp() == ExprType::ScalarFunc && node.get_sig() == ScalarFuncSig::IntDivideInt {
+            node.mut_field_type()
+                .mut_unknown_fields()
+                .add_varint(WIRE_INTEGER_DIVISION, 1);
+        }
+        for child in node.mut_children().iter_mut() {
+            prepare_declaration(child)?;
+        }
+        Ok(())
+    }
+
+    // Decode/validate the complete declared tree and let the storage engine
+    // choose eager versus short circuit nodes, including its depth budget.
+    prepare_declaration(&mut tree)?;
+    let program = RpnExpressionBuilder::build_from_expr_tree(tree, ctx, schema.len())?;
+    Ok(adapt_wire_inputs(program, schema, physical_fields))
+}
+
+fn adapt_wire_inputs(
+    program: RpnExpression,
+    schema: &[FieldType],
+    physical_fields: &[tidb_datatype::FieldType],
+) -> RpnExpression {
+    let mut adapted = Vec::with_capacity(program.len());
+    for node in program.into_inner() {
+        match node {
+            RpnExpressionNode::ColumnRef { offset } => {
+                append_input(&mut adapted, offset, &schema[offset], physical_fields);
+            }
+            RpnExpressionNode::ShortCircuitFnCall {
+                func_meta,
+                args,
+                field_type,
+            } => adapted.push(RpnExpressionNode::ShortCircuitFnCall {
+                func_meta,
+                args: args
+                    .into_vec()
+                    .into_iter()
+                    .map(|arg| adapt_wire_inputs(arg, schema, physical_fields))
+                    .collect(),
+                field_type,
+            }),
+            RpnExpressionNode::FnCall {
+                func_meta,
+                metadata,
+                mut field_type,
+                args_len,
+            } if field_type
+                .get_unknown_fields()
+                .get(WIRE_INTEGER_DIVISION)
+                .is_some() =>
+            {
+                field_type
+                    .mut_unknown_fields()
+                    .fields
+                    .as_mut()
+                    .expect("marked wire declaration")
+                    .remove(&WIRE_INTEGER_DIVISION);
+                adapted.push(callback(
+                    func_meta.name,
+                    meta(func_meta.name, decorated_kernel),
+                    args_len,
+                    field_type,
+                    Box::new(Kernel {
+                        upstream: func_meta,
+                        metadata,
+                        diagnostic: None,
+                        check_integer_zero_divisor: true,
+                        decimal_arithmetic: None,
+                    }),
+                ));
+            }
+            node => adapted.push(node),
+        }
+    }
+    RpnExpression::from(adapted)
+}
+
+fn append_input(
+    nodes: &mut Vec<RpnExpressionNode>,
+    offset: usize,
+    field_type: &FieldType,
+    physical_fields: &[tidb_datatype::FieldType],
+) {
+    if physical_fields
+        .get(offset)
+        .is_some_and(|field| borrowable_field(field, field_type).is_some())
+    {
+        nodes.push(RpnExpressionNode::ColumnRef { offset: offset + 1 });
+    } else {
+        nodes.push(RpnExpressionNode::ColumnRef { offset: 0 });
+        nodes.push(callback(
+            "TiDB input",
+            meta("TiDB input", read_input),
+            1,
+            field_type.clone(),
+            Box::new(offset),
+        ));
+    }
+}
+
 pub(super) fn build(
     tree: Expr,
     ctx: &mut EvalContext,
     input_count: usize,
     physical_fields: &[tidb_datatype::FieldType],
-    native: bool,
     scalar_guards: bool,
 ) -> Result<RpnExpression> {
     let mut nodes = Vec::new();
@@ -337,7 +474,6 @@ pub(super) fn build(
         ctx,
         input_count,
         physical_fields,
-        native,
         scalar_guards,
         &mut nodes,
     )?;
@@ -349,7 +485,6 @@ fn compile(
     ctx: &mut EvalContext,
     input_count: usize,
     physical_fields: &[tidb_datatype::FieldType],
-    native: bool,
     scalar_guards: bool,
     nodes: &mut Vec<RpnExpressionNode>,
 ) -> Result<()> {
@@ -361,47 +496,24 @@ fn compile(
             if offset >= input_count {
                 return Err(error("column reference out of bounds"));
             }
-            if physical_fields
-                .get(offset)
-                .is_some_and(|field| borrowable_field(field, tree.get_field_type()).is_some())
-            {
-                nodes.push(RpnExpressionNode::ColumnRef { offset: offset + 1 });
-                return Ok(());
-            }
-            nodes.push(RpnExpressionNode::ColumnRef { offset: 0 });
-            nodes.push(callback(
-                "TiDB input",
-                meta("TiDB input", read_input),
-                1,
-                tree.take_field_type(),
-                Box::new(offset),
-            ));
+            append_input(nodes, offset, tree.get_field_type(), physical_fields);
         }
         ExprType::ScalarFunc => {
             let sig = tree.get_sig();
             let argc = tree.get_children().len();
-            let special = if native && tree.get_val() == REPEAT_DECLARATION {
+            let special = if tree.get_val() == REPEAT_DECLARATION {
                 Some(ShortCircuitFnMeta {
                     sig,
                     fn_ptr: benchmark,
                 })
-            } else if native && tree.get_val().starts_with(EXECUTION_SEED_DECLARATION) {
+            } else if tree.get_val().starts_with(EXECUTION_SEED_DECLARATION) {
                 let slot = index(&tree.get_val()[EXECUTION_SEED_DECLARATION.len()..])?;
                 let literal = integer_root(slot as i64);
                 let mut args = tree
                     .take_children()
                     .into_vec()
                     .into_iter()
-                    .map(|child| {
-                        build(
-                            child,
-                            ctx,
-                            input_count,
-                            physical_fields,
-                            native,
-                            scalar_guards,
-                        )
-                    })
+                    .map(|child| build(child, ctx, input_count, physical_fields, scalar_guards))
                     .collect::<Result<Vec<_>>>()?;
                 args.push(literal);
                 nodes.push(RpnExpressionNode::ShortCircuitFnCall {
@@ -414,26 +526,14 @@ fn compile(
                 });
                 return Ok(());
             } else {
-                let wire_short_circuit =
-                    matches!(sig, ScalarFuncSig::LogicalAnd | ScalarFuncSig::LogicalOr)
-                        && ctx.cfg.flag.contains(Flag::ENABLE_SHORT_CIRCUIT_EXPRESSION);
-                branch_meta(sig).filter(|_| native || wire_short_circuit)
+                branch_meta(sig)
             };
             if let Some(func_meta) = special {
                 let args = tree
                     .take_children()
                     .into_vec()
                     .into_iter()
-                    .map(|child| {
-                        build(
-                            child,
-                            ctx,
-                            input_count,
-                            physical_fields,
-                            native,
-                            scalar_guards,
-                        )
-                    })
+                    .map(|child| build(child, ctx, input_count, physical_fields, scalar_guards))
                     .collect::<Result<Vec<_>>>()?;
                 nodes.push(RpnExpressionNode::ShortCircuitFnCall {
                     func_meta,
@@ -442,7 +542,7 @@ fn compile(
                 });
                 return Ok(());
             }
-            if native && sig == ScalarFuncSig::Rand && argc == 0 {
+            if sig == ScalarFuncSig::Rand && argc == 0 {
                 nodes.push(callback(
                     "TiDB RAND",
                     meta("TiDB RAND", unseeded_rand),
@@ -452,7 +552,7 @@ fn compile(
                 ));
                 return Ok(());
             }
-            let mut root = if native && sig == ScalarFuncSig::Unspecified {
+            let mut root = if sig == ScalarFuncSig::Unspecified {
                 let slot = index(
                     tree.get_val()
                         .strip_prefix(NULL_HOST_TAG)
@@ -475,36 +575,32 @@ fn compile(
                 args_len,
             } = root
             {
-                let diagnostic = if native {
-                    tree.get_val()
-                        .strip_prefix(NATIVE_DIAGNOSTIC_TAG)
-                        .map(index)
-                        .transpose()?
-                } else {
-                    None
-                };
-                let check_integer_zero_divisor = sig == ScalarFuncSig::IntDivideInt
-                    || native
-                        && matches!(
-                            sig,
-                            ScalarFuncSig::ModInt
-                                | ScalarFuncSig::ModReal
-                                | ScalarFuncSig::ModIntUnsignedUnsigned
-                                | ScalarFuncSig::ModIntUnsignedSigned
-                                | ScalarFuncSig::ModIntSignedUnsigned
-                                | ScalarFuncSig::ModIntSignedSigned
-                        );
-                let decimal_division = native.then(|| DecimalDivision::for_call(&tree)).flatten();
+                let diagnostic = tree
+                    .get_val()
+                    .strip_prefix(NATIVE_DIAGNOSTIC_TAG)
+                    .map(index)
+                    .transpose()?;
+                let check_integer_zero_divisor = matches!(
+                    sig,
+                    ScalarFuncSig::IntDivideInt
+                        | ScalarFuncSig::ModInt
+                        | ScalarFuncSig::ModReal
+                        | ScalarFuncSig::ModIntUnsignedUnsigned
+                        | ScalarFuncSig::ModIntUnsignedSigned
+                        | ScalarFuncSig::ModIntSignedUnsigned
+                        | ScalarFuncSig::ModIntSignedSigned
+                );
+                let decimal_arithmetic = DecimalArithmetic::for_call(&tree);
                 root = if diagnostic.is_some()
                     || check_integer_zero_divisor
-                    || decimal_division.is_some()
+                    || decimal_arithmetic.is_some()
                 {
                     let kernel = Kernel {
                         upstream: func_meta,
                         metadata,
                         diagnostic,
                         check_integer_zero_divisor,
-                        decimal_division,
+                        decimal_arithmetic,
                     };
                     callback(
                         func_meta.name,
@@ -545,10 +641,9 @@ fn compile(
                 }
                 children.truncate(end);
             }
-            let policy = if native && argc > 1 && tree.get_val().starts_with(NULL_HOST_TAG) {
+            let policy = if argc > 1 && tree.get_val().starts_with(NULL_HOST_TAG) {
                 Some(null_guard as Branch)
-            } else if native
-                && scalar_guards
+            } else if scalar_guards
                 && argc == 2
                 && scalar_null_rhs(sig)
                 && !quiet_operand(&tree.get_children()[1], physical_fields)
@@ -563,16 +658,7 @@ fn compile(
                     .take_children()
                     .into_vec()
                     .into_iter()
-                    .map(|child| {
-                        build(
-                            child,
-                            ctx,
-                            input_count,
-                            physical_fields,
-                            native,
-                            scalar_guards,
-                        )
-                    })
+                    .map(|child| build(child, ctx, input_count, physical_fields, scalar_guards))
                     .collect::<Result<Vec<_>>>()?;
                 let mut apply = (0..argc)
                     .map(|offset| RpnExpressionNode::ColumnRef { offset })
@@ -592,7 +678,6 @@ fn compile(
                     ctx,
                     input_count,
                     physical_fields,
-                    native,
                     scalar_guards,
                     nodes,
                 )?;
@@ -1072,10 +1157,6 @@ pub(super) fn bind_cast_in_union(expr: &mut Expr) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn check_supported(tree: &Expr) -> Result<()> {
-    RpnExpressionBuilder::check_expr_tree_supported(tree)
-}
-
 pub(super) fn index_field() -> FieldType {
     let mut field = FieldType::new();
     field.set_tp(8);
@@ -1400,4 +1481,70 @@ fn concat_branch(
         }
         Ok(output)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tidb_query_datatype::expr::Flag;
+
+    fn constant(value: i64) -> Expr {
+        let mut encoded = Vec::new();
+        tidb_codec::encode_int(&mut encoded, value);
+        let mut node = Expr::new();
+        node.set_tp(ExprType::Int64);
+        node.set_field_type(index_field());
+        node.set_val(encoded);
+        node
+    }
+
+    fn call(sig: ScalarFuncSig, left: Expr, right: Expr) -> Expr {
+        let mut node = Expr::new();
+        node.set_tp(ExprType::ScalarFunc);
+        node.set_field_type(index_field());
+        node.set_sig(sig);
+        node.set_children(vec![left, right].into());
+        node
+    }
+
+    #[test]
+    fn wire_logic_keeps_upstream_flattening_and_depth_budget() {
+        let fallback = call(ScalarFuncSig::EqInt, constant(1), constant(1));
+        for alternating in [false, true] {
+            let mut tree = fallback.clone();
+            for depth in 0..36 {
+                let sig = if alternating && depth % 2 == 0 {
+                    ScalarFuncSig::LogicalOr
+                } else {
+                    ScalarFuncSig::LogicalAnd
+                };
+                tree = call(sig, constant(1), tree);
+            }
+            let mut config = tidb_query_datatype::expr::EvalConfig::default();
+            config.flag |= Flag::ENABLE_SHORT_CIRCUIT_EXPRESSION;
+            let mut ctx = EvalContext::new(std::sync::Arc::new(config));
+            let original =
+                RpnExpressionBuilder::build_from_expr_tree(tree.clone(), &mut ctx, 0).unwrap();
+            let adapted = build_wire(tree, &mut ctx, &[], &[]).unwrap();
+            assert_eq!(format!("{adapted:?}"), format!("{original:?}"));
+            let [RpnExpressionNode::ShortCircuitFnCall { args, .. }] = adapted.as_ref() else {
+                panic!("expected a short-circuit root");
+            };
+            assert_eq!(args.len(), if alternating { 2 } else { 37 });
+        }
+    }
+
+    #[test]
+    fn wire_logic_checks_types_even_in_an_unreachable_operand() {
+        let mut invalid = Expr::new();
+        invalid.set_tp(ExprType::String);
+        let mut string = FieldType::new();
+        string.set_tp(253);
+        invalid.set_field_type(string);
+        let tree = call(ScalarFuncSig::LogicalAnd, constant(0), invalid);
+        let mut config = tidb_query_datatype::expr::EvalConfig::default();
+        config.flag |= Flag::ENABLE_SHORT_CIRCUIT_EXPRESSION;
+        let mut ctx = EvalContext::new(std::sync::Arc::new(config));
+        assert!(build_wire(tree, &mut ctx, &[], &[]).is_err());
+    }
 }
