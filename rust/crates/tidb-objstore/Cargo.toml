@@ -43,6 +43,7 @@ uuid = { version = "1", features = ["v4"] }
 zstd = { workspace = true }
 
 [dev-dependencies]
+reqwest12 = { package = "reqwest", version = "0.12.24", default-features = false, features = ["gzip", "deflate"] }
 prost = { workspace = true }
 tempfile = { workspace = true }
 

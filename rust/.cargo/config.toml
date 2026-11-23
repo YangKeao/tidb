@@ -18,3 +18,8 @@ rustflags = ["-Zthreads=8"]
 # `tidb-txnkv` integration tests abort with `has overflowed its stack`.
 # 32 MiB is the size those tests need; it costs one thread's stack per test.
 RUST_MIN_STACK = "33554432"
+
+# Separate Cargo source for Parquet's flate2 >= 1.1 from TiKV's flate2 = 1.0.11.
+# Both indexes are published by crates.io and use the same crate checksums.
+[registries.crates-io-parquet]
+index = "sparse+https://raw.githubusercontent.com/rust-lang/crates.io-index/master/"
