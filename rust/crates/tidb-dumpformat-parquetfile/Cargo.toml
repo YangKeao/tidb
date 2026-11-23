@@ -8,9 +8,9 @@ repository.workspace = true
 description = "Go pkg/dumpformat/parquetfile: the Parquet reader IMPORT INTO parses data files with (Rust rewrite)."
 
 [dependencies]
-bytes = "1"
+bytes = { version = "1", registry = "crates-io-parquet" }
 chrono.workspace = true
-parquet = { version = "58", default-features = false, features = ["snap", "flate2", "flate2-rust_backened", "zstd", "lz4", "brotli"] }
+parquet = { version = "=58.4.1", registry = "crates-io-parquet", default-features = false, features = ["snap", "flate2", "flate2-rust_backened", "zstd", "lz4", "brotli"] }
 tidb-datatype = { path = "../tidb-datatype" }
 tidb-gocontext = { path = "../tidb-gocontext" }
 tidb-objstore = { path = "../tidb-objstore" }
