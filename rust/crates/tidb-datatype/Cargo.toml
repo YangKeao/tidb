@@ -24,6 +24,7 @@ tidb-error = { path = "../tidb-error" }
 tidb-hack = { path = "../tidb-hack" }
 tidb-kvcache = { path = "../tidb-kvcache" }
 tidb-mysql = { path = "../tidb-mysql" }
+tidb_query_datatype = { git = "https://github.com/tikv/tikv.git", rev = "548812e1ef57aef077a2062a9cc356640a6347f5" }
 unicode-general-category.workspace = true
 
 [dev-dependencies]
