@@ -58,7 +58,7 @@ mod tests {
         };
         assert_eq!(ordinary.func_name.original(), "cast_unsigned");
         assert_eq!(
-            ordinary
+            crate::expression::Expression::ScalarFunction(ordinary)
                 .eval(&WarningContext::default(), tidb_chunk::row::Row::empty())
                 .expect("ordinary cast evaluates"),
             Datum::UInt(u64::MAX)
@@ -71,7 +71,7 @@ mod tests {
         };
         assert_eq!(in_union.func_name.original(), "cast_unsigned_in_union");
         assert_eq!(
-            in_union
+            crate::expression::Expression::ScalarFunction(in_union)
                 .eval(&WarningContext::default(), tidb_chunk::row::Row::empty())
                 .expect("UNION cast evaluates"),
             Datum::UInt(0)

@@ -18,25 +18,16 @@ use tidb_datatype::{ConversionFlags, FieldType, FieldTypeCode, VectorFloat32};
 
 use crate::{Datum, EvalError};
 
-pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
-    match (name, vals) {
-        ("VEC_DIMS", [value]) => Some(dims(value)),
-        ("VEC_L1_DISTANCE", [left, right]) => {
-            Some(distance(left, right, VectorFloat32::l1_distance))
-        }
-        ("VEC_L2_DISTANCE", [left, right]) => {
-            Some(distance(left, right, VectorFloat32::l2_distance))
-        }
-        ("VEC_NEGATIVE_INNER_PRODUCT", [left, right]) => {
-            Some(distance(left, right, VectorFloat32::negative_inner_product))
-        }
-        ("VEC_COSINE_DISTANCE", [left, right]) => {
-            Some(distance(left, right, VectorFloat32::cosine_distance))
-        }
-        ("VEC_L2_NORM", [value]) => Some(l2_norm(value)),
-        ("VEC_FROM_TEXT", [value]) => Some(from_text(value)),
-        ("VEC_AS_TEXT", [value]) => Some(as_text(value)),
-        _ => None,
+eager_dispatch! {
+    dispatch(name, vals) {
+        ("VEC_DIMS", 1) => dims(&vals[0]),
+        ("VEC_L1_DISTANCE", 2) => distance(&vals[0], &vals[1], VectorFloat32::l1_distance),
+        ("VEC_L2_DISTANCE", 2) => distance(&vals[0], &vals[1], VectorFloat32::l2_distance),
+        ("VEC_NEGATIVE_INNER_PRODUCT", 2) => distance(&vals[0], &vals[1], VectorFloat32::negative_inner_product),
+        ("VEC_COSINE_DISTANCE", 2) => distance(&vals[0], &vals[1], VectorFloat32::cosine_distance),
+        ("VEC_L2_NORM", 1) => l2_norm(&vals[0]),
+        ("VEC_FROM_TEXT", 1) => from_text(&vals[0]),
+        ("VEC_AS_TEXT", 1) => as_text(&vals[0]),
     }
 }
 

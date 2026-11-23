@@ -67,7 +67,7 @@ use tidb_datatype::FieldType;
 
 pub(crate) use modify::parse_json_modify_paths;
 pub(crate) use path::{parse_path, JsonPath};
-pub(crate) use report::JsonSchemaCache;
+pub(crate) use report::JsonSchemaExecution;
 pub(crate) use value::{
     cast_as_json, cast_as_json_typed, cast_as_json_value_typed, parse_json_document_argument,
 };
@@ -77,48 +77,51 @@ pub(crate) use value::{
 /// `builtinJSON{Type,Extract,Unquote,Quote,Array,Object,Length,Valid,
 /// ArrayAppend,ArrayInsert,SUMCRC32}Sig`.
 pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalError>> {
-    match (name, vals.len()) {
-        ("JSON_VALID", 1) => Some(json_valid(&vals[0])),
-        ("JSON_SCHEMA_VALID", 2) => Some(json_schema_valid(vals)),
-        ("JSON_TYPE", 1) => Some(json_type(&vals[0])),
-        ("JSON_QUOTE", 1) => Some(json_quote(&vals[0])),
-        ("JSON_UNQUOTE", 1) => Some(json_unquote(&vals[0])),
-        ("JSON_ARRAY", 0..) => Some(json_array(vals, &no_arg_types(vals.len()))),
-        ("JSON_OBJECT", 0..) => Some(json_object(vals, &no_arg_types(vals.len()))),
-        ("JSON_LENGTH", 1 | 2) => Some(json_length(vals)),
-        ("JSON_EXTRACT", 2..) => Some(json_extract(vals)),
-        ("JSON_MEMBER_OF" | "json_member_of", 2) => Some(json_member_of(vals)),
-        ("JSON_CONTAINS", 2 | 3) => Some(json_contains(vals)),
-        ("JSON_CONTAINS_PATH", 3..) => Some(json_contains_path(vals)),
-        ("JSON_KEYS", 1 | 2) => Some(json_keys(vals)),
-        ("JSON_REMOVE", 2..) => Some(json_remove(vals)),
-        ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, &no_arg_types(vals.len()))),
-        ("JSON_ARRAY_INSERT", 3..) => Some(json_array_insert(vals, &no_arg_types(vals.len()))),
-        ("JSON_SET", 3..) => Some(json_modify(
-            vals,
-            &no_arg_types(vals.len()),
-            JsonModifyMode::Set,
-        )),
-        ("JSON_INSERT", 3..) => Some(json_modify(
-            vals,
-            &no_arg_types(vals.len()),
-            JsonModifyMode::Insert,
-        )),
-        ("JSON_REPLACE", 3..) => Some(json_modify(
-            vals,
-            &no_arg_types(vals.len()),
-            JsonModifyMode::Replace,
-        )),
-        ("JSON_MERGE", 2..) => Some(json_merge(vals, "json_merge")),
-        ("JSON_MERGE_PRESERVE", 2..) => Some(json_merge(vals, "json_merge_preserve")),
-        ("JSON_MERGE_PATCH", 2..) => Some(json_merge_patch(vals)),
-        ("JSON_SEARCH", 3..) => Some(json_search(vals)),
-        ("JSON_PRETTY", 1) => Some(json_pretty(&vals[0])),
-        ("JSON_SUM_CRC32", 1) => Some(json_sum_crc32(&vals[0])),
-        ("JSON_OVERLAPS", 2) => Some(json_overlaps(vals)),
-        _ => None,
+    if name == "JSON_SCHEMA_VALID" && vals.len() == 2 {
+        return Some(json_schema_valid(vals));
     }
+    dispatch_eager(name, vals)
 }
+
+crate::builtin_ext::eager_dispatch!(dispatch_eager(_name, vals) {
+    ("JSON_VALID", 1) => json_valid(&vals[0]),
+    ("JSON_TYPE", 1) => json_type(&vals[0]),
+    ("JSON_QUOTE", 1) => json_quote(&vals[0]),
+    ("JSON_UNQUOTE", 1) => json_unquote(&vals[0]),
+    ("JSON_ARRAY", 0..) => json_array(vals, &no_arg_types(vals.len())),
+    ("JSON_OBJECT", 0..) => json_object(vals, &no_arg_types(vals.len())),
+    ("JSON_LENGTH", 1 | 2) => json_length(vals),
+    ("JSON_EXTRACT", 2..) => json_extract(vals),
+    ("JSON_MEMBER_OF" | "json_member_of", 2) => json_member_of(vals),
+    ("JSON_CONTAINS", 2 | 3) => json_contains(vals),
+    ("JSON_CONTAINS_PATH", 3..) => json_contains_path(vals),
+    ("JSON_KEYS", 1 | 2) => json_keys(vals),
+    ("JSON_REMOVE", 2..) => json_remove(vals),
+    ("JSON_ARRAY_APPEND", 3..) => json_array_append(vals, &no_arg_types(vals.len())),
+    ("JSON_ARRAY_INSERT", 3..) => json_array_insert(vals, &no_arg_types(vals.len())),
+    ("JSON_SET", 3..) => json_modify(
+        vals,
+        &no_arg_types(vals.len()),
+        JsonModifyMode::Set,
+    ),
+    ("JSON_INSERT", 3..) => json_modify(
+        vals,
+        &no_arg_types(vals.len()),
+        JsonModifyMode::Insert,
+    ),
+    ("JSON_REPLACE", 3..) => json_modify(
+        vals,
+        &no_arg_types(vals.len()),
+        JsonModifyMode::Replace,
+    ),
+    ("JSON_MERGE", 2..) => json_merge(vals, "json_merge"),
+    ("JSON_MERGE_PRESERVE", 2..) => json_merge(vals, "json_merge_preserve"),
+    ("JSON_MERGE_PATCH", 2..) => json_merge_patch(vals),
+    ("JSON_SEARCH", 3..) => json_search(vals),
+    ("JSON_PRETTY", 1) => json_pretty(&vals[0]),
+    ("JSON_SUM_CRC32", 1) => json_sum_crc32(&vals[0]),
+    ("JSON_OVERLAPS", 2) => json_overlaps(vals),
+});
 
 /// The typed sibling of [`dispatch`] for the function class whose value
 /// arguments Go builds through an implicit `CAST(... AS JSON)` with
@@ -226,36 +229,3 @@ fn no_arg_types(len: usize) -> Vec<Option<FieldType>> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-
-/// Protobuf-selected JSON builtins share the root task's value kernels and
-/// constant-path cache. Dynamic paths keep their ordinary per-row validation.
-pub(crate) fn eval_pb(
-    sig: tidb_proto::tipb::ScalarFuncSig,
-    vals: &[Datum],
-    arg_types: &[Option<FieldType>],
-    ctx: &dyn crate::Columns,
-    paths_cache: Option<&crate::builtin_ext::BuiltinFuncCache<Option<Vec<JsonPath>>>>,
-) -> Result<Datum, EvalError> {
-    use tidb_proto::tipb::ScalarFuncSig;
-    match sig {
-        ScalarFuncSig::JsonMemberOfSig => json_member_of(vals),
-        ScalarFuncSig::JsonReplaceSig => {
-            if let Some(cache) = paths_cache {
-                let Some(document) = parse_json_document_argument(&vals[0])? else {
-                    return Ok(Datum::Null);
-                };
-                let paths =
-                    cache.get_or_init_cache(ctx.context_id(), || parse_json_modify_paths(vals))?;
-                let Some(paths) = paths.as_ref() else {
-                    return Ok(Datum::Null);
-                };
-                json_modify_with_document(document, vals, arg_types, JsonModifyMode::Replace, paths)
-            } else {
-                json_modify(vals, arg_types, JsonModifyMode::Replace)
-            }
-        }
-        ScalarFuncSig::JsonArrayAppendSig => json_array_append(vals, arg_types),
-        ScalarFuncSig::JsonMergePatchSig => json_merge_patch(vals),
-        _ => Err(EvalError::Unsupported("unknown JSON protobuf signature")),
-    }
-}

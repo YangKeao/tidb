@@ -59,6 +59,7 @@ pub fn is_mutable_effects_function(name: &str) -> bool {
             | "uuid_v7"
             | "uuid_short"
             | "sleep"
+            | "last_insert_id"
             | "setvar"
             | "getvar"
             | "any_value"
