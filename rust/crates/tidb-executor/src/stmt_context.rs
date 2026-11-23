@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tidb_datatype::Datum;
 use tidb_distsql::{ReplicaReadType, WarningCollector, WarningLevel};
-use tidb_expr::{Columns, CurrentTso, ErrorLevel, MysqlRng};
+use tidb_expr::{Columns, CurrentTso, ErrorLevel, MysqlRng, SeededRand};
 
 const MAX_WARNING_COUNT: usize = u16::MAX as usize;
 /// Go `vardef.DefDistSQLScanConcurrency`, the value a context built without
@@ -541,7 +541,7 @@ pub struct StmtContextData {
     /// constant `RAND(N)` occurrence, created fresh for each STATEMENT (Go
     /// builds a new `builtinFunc` per plan) and advanced once per row by the
     /// evaluator, keyed by the call site's stable identity.
-    rand_seeded: Arc<Mutex<HashMap<usize, MysqlRng>>>,
+    rand_seeded: Arc<SeededRand>,
     /// Go `StatementContext.LastInsertID`/`LastInsertIDSet`: the id this
     /// statement publishes as `LAST_INSERT_ID()`.
     ///
@@ -4261,19 +4261,20 @@ impl Columns for StmtContext {
         }
     }
 
+    fn rand_session_handle(&self) -> Option<Arc<MysqlRng>> {
+        self.rand_session.clone()
+    }
+
     fn rand_next(&self) -> Option<f64> {
         self.rand_session.as_ref().map(|rng| rng.gen())
     }
 
+    fn rand_seeded_state(&self) -> Option<Arc<SeededRand>> {
+        Some(self.rand_seeded.clone())
+    }
+
     fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
-        Some(
-            self.rand_seeded
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(key)
-                .or_insert_with(|| MysqlRng::new_with_seed(seed))
-                .gen(),
-        )
+        Some(self.rand_seeded.generator(key, seed).gen())
     }
 
     fn current_database(&self) -> Option<String> {

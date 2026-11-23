@@ -347,6 +347,7 @@ pub use constant_fold::{
 mod context;
 pub mod convert_charset;
 pub mod evaluator;
+mod upstream_rpn;
 pub mod expr_collation;
 pub mod expr_util;
 pub mod exprctx;
@@ -393,7 +394,7 @@ pub use build::{BuildContext, BuiltStringLength, StringLengthFunction, StringLen
 pub use coerce::truthy_of;
 pub use context::{
     BlockEncryptionMode, Columns, CurrentTso, ErrorLevel, EvalError, JsonError, NoColumns,
-    SequenceEvalError, SessionTimeZone, ZonedNoColumns,
+    SeededRand, SequenceEvalError, SessionTimeZone, ZonedNoColumns,
 };
 pub use grouping::{GroupingFunction, GroupingMetadata, GroupingMetadataError, GroupingMode};
 pub use like::{ilike_match, like_match_with_collation};

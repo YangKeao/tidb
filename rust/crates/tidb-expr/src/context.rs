@@ -18,8 +18,9 @@
 //! evaluation context. It owns no scalar representation; every value crossing
 //! the seam is the dependency-leaf [`tidb_datatype::Datum`].
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tidb_datatype::{Datum, Time};
 
 /// The transaction timestamp visible to one SQL session.
@@ -47,6 +48,22 @@ impl CurrentTso {
     #[must_use]
     pub fn value(&self) -> i64 {
         i64::try_from(self.0.load(Ordering::Acquire)).unwrap_or(i64::MAX)
+    }
+}
+
+/// Seeded RAND streams for one statement, shared by its projection workers.
+#[derive(Default)]
+pub struct SeededRand(Mutex<HashMap<usize, Arc<crate::MysqlRng>>>);
+
+impl SeededRand {
+    /// Gets the generator belonging to this occurrence of RAND.
+    pub fn generator(&self, occurrence: usize, seed: i64) -> Arc<crate::MysqlRng> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(occurrence)
+            .or_insert_with(|| Arc::new(crate::MysqlRng::new_with_seed(seed)))
+            .clone()
     }
 }
 
@@ -172,6 +189,8 @@ pub enum EvalError {
     TruncatedWrongValue(String),
     /// An original datatype error, retaining its registered SQL identity.
     Conversion(tidb_error::terror::TerrorError),
+    /// SQL diagnostic emitted by the TiKV expression evaluator.
+    SharedEvaluation { code: u16, message: String },
     /// Go `expression.ErrCutValueGroupConcat` (1260) raised when
     /// `GROUP_CONCAT` exceeds `group_concat_max_len` in a statement whose
     /// truncate policy is `Error`. Reads and non-strict writes instead append
@@ -965,6 +984,16 @@ pub trait Columns {
     /// TiDB's session `div_precision_increment`.
     fn div_precision_increment(&self) -> u32 {
         4
+    }
+
+    /// Shares the session's existing RAND stream with an execution-local RPN program.
+    fn rand_session_handle(&self) -> Option<Arc<crate::MysqlRng>> {
+        None
+    }
+
+    /// Returns the statement's shared RAND(N) streams.
+    fn rand_seeded_state(&self) -> Option<Arc<SeededRand>> {
+        None
     }
 
     /// Advances this session's `RAND()` generator.

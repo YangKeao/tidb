@@ -183,6 +183,7 @@ fn eval_to_mysql_error(error: EvalError) -> MysqlError {
         EvalError::TruncatedWrongValue(message) => {
             MysqlError::coded(ER_TRUNCATED_WRONG_VALUE, message)
         }
+        EvalError::SharedEvaluation { code, message } => MysqlError::coded(code, message),
         EvalError::Conversion(error) => {
             let error = error.to_sql_error();
             MysqlError::coded(error.code, error.message)

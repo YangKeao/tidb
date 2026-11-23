@@ -15,6 +15,7 @@
 //! `pkg/expression/evaluator.go`: evaluate a projection's calculated
 //! expressions before transferring any direct input-column owners.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -353,6 +354,12 @@ impl EvaluatorProgram {
 pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
     column_swap_helper: Option<ColumnSwapHelper>,
+    upstream: RefCell<Option<UpstreamProjection>>,
+}
+
+struct UpstreamProjection {
+    random: crate::upstream_rpn::RandomScope,
+    expressions: Vec<Option<crate::upstream_rpn::Projection>>,
 }
 
 impl EvaluatorSuite {
@@ -374,6 +381,7 @@ impl EvaluatorSuite {
         Self {
             program,
             column_swap_helper,
+            upstream: RefCell::new(None),
         }
     }
 
@@ -398,11 +406,36 @@ impl EvaluatorSuite {
         let rows = input.num_rows();
         let program = &self.program;
         if program.vectorizable {
-            for (output_index, expression) in program
+            let mut upstream = self.upstream.borrow_mut();
+            let random = crate::upstream_rpn::RandomScope::new(ctx);
+            if upstream
+                .as_ref()
+                .is_none_or(|old| !old.random.is_same_scope(&random))
+            {
+                let expressions = program
+                    .calculated
+                    .iter()
+                    .map(|expression| crate::upstream_rpn::Projection::prepare(expression, &random))
+                    .collect();
+                *upstream = Some(UpstreamProjection {
+                    random,
+                    expressions,
+                });
+            }
+            let prepared = &upstream.as_ref().expect("prepared projection").expressions;
+            for ((output_index, expression), prepared) in program
                 .calculated_output_indexes
                 .iter()
                 .zip(&program.calculated)
+                .zip(prepared)
             {
+                if let Some(prepared) = prepared {
+                    if prepared.run(ctx, input, |value| {
+                        output.append_datum(*output_index, &value)
+                    })? {
+                        continue;
+                    }
+                }
                 if let Expression::ScalarFunction(function) = expression {
                     // Go's typed `VecEvalDecimal` for decimal arithmetic.
                     if function.vec_eval_decimal_arithmetic(input, output, *output_index)? {
