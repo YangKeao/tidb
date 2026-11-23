@@ -23,21 +23,17 @@ use crate::{Datum, EvalError};
 use std::collections::HashMap;
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
-pub(crate) fn dispatch(
-    name: &str,
-    vals: &[Datum],
-    ctx: &dyn crate::Columns,
-) -> Option<Result<Datum, EvalError>> {
-    match (name, vals.len()) {
-        ("SUBSTRING" | "SUBSTR" | "MID", 2) => Some(substring(vals, &crate::NoColumns)),
-        ("LOCATE", 3) => Some(locate3(vals)),
-        ("FORMAT", 3) => Some(format_with_locale(vals, ctx)),
-        ("FIND_IN_SET", 2) => Some(find_in_set(vals)),
-        ("EXPORT_SET", 3..=5) => Some(export_set(vals)),
-        ("LTRIM", 1) => Some(ltrim(&vals[0])),
-        ("RTRIM", 1) => Some(rtrim(&vals[0])),
-        ("TRANSLATE", 3) => Some(translate(vals)),
-        _ => None,
+eager_dispatch! {
+    dispatch(name, vals, ctx) {
+        ("SUBSTRING" | "SUBSTR" | "MID", 2) => substring(vals, &crate::NoColumns),
+        ("LOCATE", 3) => locate3(vals),
+        ("FORMAT", 2) => crate::string_fn::format_num(vals, ctx),
+        ("FORMAT", 3) => format_with_locale(vals, ctx),
+        ("FIND_IN_SET", 2) => find_in_set(vals),
+        ("EXPORT_SET", 3..=5) => export_set(vals),
+        ("LTRIM", 1) => ltrim(&vals[0]),
+        ("RTRIM", 1) => rtrim(&vals[0]),
+        ("TRANSLATE", 3) => translate(vals),
     }
 }
 

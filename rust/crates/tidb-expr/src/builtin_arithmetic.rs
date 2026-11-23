@@ -61,12 +61,7 @@ fn is_constant_binary_literal(expr: &Expression) -> bool {
     if !is_binary_str {
         return false;
     }
-    match expr {
-        Expression::Constant(c) => {
-            matches!(c.value, Datum::BinaryLiteral(_))
-        }
-        _ => false,
-    }
+    expr.binary_literal_source().is_some()
 }
 
 /// Go `numericContextResultType`: the numeric evaluation type an operand takes

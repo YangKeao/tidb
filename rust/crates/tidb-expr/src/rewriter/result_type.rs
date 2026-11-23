@@ -725,23 +725,19 @@ fn clock_fsp(args: &[Expression]) -> Option<i64> {
         [] => 0,
         [Expression::Constant(constant)] => match &constant.value {
             Datum::Null => 0,
-            // Go `types.CheckFsp` (`pkg/types/fsp.go:38`), run at BUILD time
-            // on the constant by `nowFunctionClass.getFunction`: above
-            // `MaxFsp` CLAMPS to 6 (`now(7)` answers as `now(6)`), -1 is the
-            // unspecified marker mapping to 0, and any other negative is a
-            // build error surfacing as this tier's None.
-            Datum::Int(value) => {
-                if *value > 6 {
-                    6
-                } else if *value < 0 {
-                    return None;
-                } else {
-                    *value
-                }
-            }
+            // Preserve the requested value for the clock's diagnostic.
+            // Its output declaration still needs an admissible FSP.
+            Datum::Int(value) => (*value).clamp(0, 6),
             Datum::UInt(value) => i64::try_from(*value).ok()?,
             value => value.sql_string().ok()?.parse().ok()?,
         },
+        [Expression::ScalarFunction(function)]
+            if function.func_name.lowercase() == "unaryminus"
+                && matches!(function.args.as_slice(), [Expression::Constant(value)]
+                    if matches!(value.literal_value(), Some(Datum::Int(_) | Datum::UInt(_)))) =>
+        {
+            0
+        }
         _ => return None,
     };
     (0..=6).contains(&fsp).then_some(fsp)
@@ -1540,7 +1536,10 @@ fn arithmetic_signature_guarded(name: &str, args: &[Expression]) -> Option<Field
         "sqrt" | "pow" | "power" | "exp" | "ln" | "log" | "log2" | "log10" | "sin"
         | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2" | "cot" | "radians" | "degrees"
         | "rand" => crate::builtin_arithmetic::new_return_field_type(tidb_datatype::EvalType::Real),
-        "sign" | "crc32" => int(),
+        "sign" => int(),
+        "crc32" => int()
+            .with_flen(10)
+            .with_added_flags(tidb_datatype::FieldTypeFlags::UNSIGNED),
         // The JSON family's value slice: JSON evaluated as VALUES. Go types
         // the first group `MysqlJson` and the second group as strings/ints.
         //

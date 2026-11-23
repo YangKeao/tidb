@@ -1581,6 +1581,7 @@ struct ParsedDateTime {
     second: u32,
     microsecond: u32,
     saw_date: bool,
+    saw_day_of_year: bool,
     saw_time: bool,
     saw_fraction: bool,
     saw_24_hour: bool,
@@ -1770,6 +1771,7 @@ fn str_to_date_inner(vals: &[Datum], cols: &dyn crate::Columns) -> Result<Datum,
                 };
                 value.day = doy;
                 value.saw_date = true;
+                value.saw_day_of_year = true;
                 date_pos += consumed;
             }
             'H' | 'k' => {
@@ -1894,7 +1896,7 @@ fn str_to_date_inner(vals: &[Datum], cols: &dyn crate::Columns) -> Result<Datum,
         // per-month table), and `ALLOW_INVALID_DATES` keeps it for every
         // month.
         let modes = cols.date_modes();
-        if value.month == 0 {
+        if value.month == 0 && value.saw_day_of_year {
             // go `mysqlTimeFix`: the month-0 results raise
             // ErrWrongValueForFunction (1411) naming the input -- the
             // empty-bytes sentinel the wrapper translates (the %j

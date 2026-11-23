@@ -36,14 +36,22 @@ pub(crate) fn concat_with_context(
     vals: &[Datum],
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.is_empty() {
+    concat_from(vals.len(), |i| Ok(vals[i].clone()), ctx)
+}
+
+pub(crate) fn concat_from(
+    count: usize,
+    mut operand: impl FnMut(usize) -> Result<Datum, EvalError>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    if count == 0 {
         return Err(EvalError::Unsupported(
             "CONCAT requires at least one argument",
         ));
     }
     let mut out = Vec::new();
-    for v in vals {
-        match coerce_str_bytes(v)? {
+    for index in 0..count {
+        match coerce_str_bytes(&operand(index)?)? {
             Some(s) => {
                 if out.len().saturating_add(s.len()) as u64 > ctx.max_allowed_packet() {
                     ctx.handle_allowed_packet_overflowed("concat")?;
@@ -1116,19 +1124,27 @@ pub(crate) fn concat_ws_with_context(
     vals: &[Datum],
     ctx: &dyn crate::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.len() < 2 {
+    concat_ws_from(vals.len(), |i| Ok(vals[i].clone()), ctx)
+}
+
+pub(crate) fn concat_ws_from(
+    count: usize,
+    mut operand: impl FnMut(usize) -> Result<Datum, EvalError>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    if count < 2 {
         return Err(EvalError::Unsupported(
             "CONCAT_WS requires at least two arguments",
         ));
     }
-    let Some(sep) = coerce_str_bytes(&vals[0])? else {
+    let Some(sep) = coerce_str_bytes(&operand(0)?)? else {
         return Ok(Datum::Null);
     };
     let mut out = Vec::new();
     let mut have_part = false;
     let mut target_len = 0_u64;
-    for (index, value) in vals[1..].iter().enumerate() {
-        let Some(value) = coerce_str_bytes(value)? else {
+    for index in 0..count - 1 {
+        let Some(value) = coerce_str_bytes(&operand(index + 1)?)? else {
             continue;
         };
         target_len = target_len.saturating_add(value.len() as u64);

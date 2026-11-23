@@ -187,6 +187,15 @@ pub(crate) fn eval_cast(
             }))
         }
         CastType::Decimal { flen, scale } => {
+            if let Datum::Real(value) | Datum::Float32(value) = &v {
+                let (_, status) = tidb_datatype::MyDecimal::from_float64(*value);
+                if status == Some(tidb_datatype::DecimalError::Overflow) {
+                    ctx.handle_truncate(&format!(
+                        "Truncated incorrect DECIMAL value: '{}'",
+                        tidb_datatype::format_float_g_shortest(*value),
+                    ))?;
+                }
+            }
             report_decimal_input_truncation(&v, ctx);
             let source = to_decimal_for_cast(&v);
             // `WrapWithCastAsDecimal` leaves the target scale unspecified for
@@ -878,11 +887,9 @@ fn report_negative_string_unsigned(v: &Datum, ctx: &dyn crate::Columns) {
         return;
     };
     let trimmed = text.trim();
-    if trimmed.len() <= 1
-        || !trimmed.starts_with('-')
-        || !int_prefix_consumed_all(trimmed)
-        || trimmed.parse::<i64>().is_err()
-    {
+    let digits = trimmed.strip_prefix('-').unwrap_or_default();
+    let prefix_end = digits.bytes().take_while(u8::is_ascii_digit).count() + 1;
+    if digits.is_empty() || prefix_end == 1 || trimmed[..prefix_end].parse::<i64>().is_err() {
         return;
     }
     ctx.append_warning(
@@ -1365,7 +1372,11 @@ fn cast_to_time_value(
         // The go warning text renders the PARSED value: the string sources
         // parse at go's MaxFsp (6), so the zero time renders with its full
         // `.000000` fraction (oracle-captured on g-fsp's DAYOFYEAR row).
-        invalid_time_warning(ctx, &s, 6);
+        if kind == tidb_datatype::TimeType::Date {
+            ctx.append_warning(1292, "Incorrect datetime value: '0000-00-00'");
+        } else {
+            invalid_time_warning(ctx, &s, fsp.unwrap_or(6));
+        }
         return Ok(None);
     }
     Ok(Some(truncate_clock_for_date(time, kind)))
@@ -1797,6 +1808,13 @@ fn invalid_time_warning(ctx: &dyn crate::Columns, input: &str, fsp: i64) {
             ctx.append_warning(
                 1292,
                 &format!("Incorrect datetime value: '0000-00-00 00:00:00{fraction}'"),
+            );
+            return;
+        }
+        if month > 12 && day_digits > 0 && head[2].bytes().all(|byte| byte.is_ascii_digit()) {
+            ctx.append_warning(
+                1292,
+                &format!("Incorrect datetime value: '{year}-{month}-{day}'"),
             );
             return;
         }

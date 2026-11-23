@@ -19,8 +19,26 @@
 //! the seam is the dependency-leaf [`tidb_datatype::Datum`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use tidb_datatype::{Datum, Time};
+
+/// First successful seed conversion and its stream for a statement occurrence.
+#[derive(Clone, Default)]
+pub struct StatementSeededRandom(Arc<Mutex<Option<crate::MysqlRng>>>);
+
+impl StatementSeededRandom {
+    pub(crate) fn demand(&self) -> crate::rpn::StatementRand<'_> {
+        let mut rng = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(rng) = rng.as_ref() {
+            return crate::rpn::StatementRand::Draw(rng.gen());
+        }
+        // Hold the reservation until the common loop finishes the seed
+        // expression. Dropping it after an error permits another demand.
+        crate::rpn::StatementRand::Initialize(Box::new(move |seed| {
+            rng.insert(crate::MysqlRng::new_with_seed(seed)).gen()
+        }))
+    }
+}
 
 /// The transaction timestamp visible to one SQL session.
 ///
@@ -55,6 +73,13 @@ impl CurrentTso {
 pub enum EvalError {
     /// The expression uses a construct outside the currently ported domain.
     Unsupported(&'static str),
+    /// A diagnostic from the shared evaluation backend.
+    SharedEvaluation {
+        /// MySQL error number.
+        code: u16,
+        /// Message produced by the shared kernel.
+        message: String,
+    },
     /// Go `plannererrors.ErrBadField` (1054): a column path no visible
     /// schema resolves, carried AS WRITTEN (dot-joined). The clause name Go
     /// appends (`clauseMsg`, `planbuilder.go:132`) belongs to the resolving
@@ -444,8 +469,7 @@ pub use tidb_datatype::SessionTimeZone;
 ///
 /// Go selects an immutable AES signature from this value while building the
 /// expression. Rust carries the same validated statement snapshot through
-/// [`Columns`], so every row of one statement uses one mode without reaching
-/// back into mutable session state.
+/// [`Columns`], so every row uses the fixed statement mode.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BlockEncryptionMode {
     /// AES-128 ECB, TiDB's shipped default.
@@ -516,8 +540,19 @@ impl BlockEncryptionMode {
 
 /// Resolves column and session state during evaluation.
 pub trait Columns {
+    /// Reusable programs owned by the current statement and its fixed settings.
+    fn row_evaluation_cache(&self) -> Option<&crate::RowEvaluationCache> {
+        None
+    }
+
     /// Returns the referenced column, matched by its final name segment.
     fn get(&self, path: &[String]) -> Option<Datum>;
+
+    /// A column's declared type, when this syntax-tree scope has a schema.
+    /// Resolving it does not read the current row.
+    fn column_type(&self, _path: &[String]) -> Option<tidb_datatype::FieldType> {
+        None
+    }
 
     /// Go `EvalContext.CtxID`, used by signature-local lazy caches. A context
     /// that has no statement lifetime uses zero, which keeps expression-only
@@ -719,6 +754,11 @@ pub trait Columns {
     /// The statement snapshot of `@@block_encryption_mode`.
     fn block_encryption_mode(&self) -> BlockEncryptionMode {
         BlockEncryptionMode::default()
+    }
+
+    /// TiKV flag representation of the native statement class where known.
+    fn expression_statement_flags(&self) -> Option<u64> {
+        None
     }
 
     /// Go `errctx.ErrGroupDividedByZero`'s level for the running statement.
@@ -975,6 +1015,16 @@ pub trait Columns {
     /// Advances one statement-scoped constant `RAND(N)` occurrence.
     fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
         let _ = (key, seed);
+        None
+    }
+
+    /// Advances a seed from the shared one-row program in this statement.
+    fn rand_program_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
+        self.rand_seeded_next(key, seed)
+    }
+
+    /// Shares first-demand RAND conversion between scalar calls in this statement.
+    fn statement_seeded_random(&self, _key: usize) -> Option<crate::StatementSeededRandom> {
         None
     }
 

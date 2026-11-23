@@ -28,40 +28,28 @@ pub(crate) fn dispatch(name: &str, vals: &[Datum]) -> Option<Result<Datum, EvalE
 }
 
 /// Dispatches this family while preserving warnings from implicit casts.
-pub(crate) fn dispatch_in(
-    name: &str,
-    vals: &[Datum],
-    ctx: &dyn crate::Columns,
-) -> Option<Result<Datum, EvalError>> {
-    match (name, vals) {
-        ("UUID", []) => Some(uuid_v1()),
-        ("UUID_V4", []) => Some(uuid_v4()),
-        ("UUID_V7", []) => Some(uuid_v7()),
-        ("ANY_VALUE", [value]) => Some(Ok(value.clone())),
-        // Go's nameConstFunctionClass selects a typed signature from the
-        // second argument and every builtinNameConst*Sig evaluator returns
-        // that argument directly.  The first argument is column-label
-        // metadata, not part of the scalar value.  This value-only leaf can
-        // therefore preserve every representable Datum without converting
-        // it through a text or numeric signature.  ETDatetime, ETDuration,
-        // ETJson, and ETVectorFloat32 remain explicit boundaries because the
-        // seed Datum domain intentionally has no corresponding variants.
-        ("NAME_CONST", [_, value]) => Some(Ok(value.clone())),
-        ("IS_UUID", [value]) => Some(is_uuid(value)),
-        ("UUID_VERSION", [value]) => Some(uuid_version(value)),
-        ("UUID_TIMESTAMP", [value]) => Some(uuid_timestamp(value)),
-        ("UUID_TO_BIN", [value]) => Some(uuid_to_bin(value, None)),
-        ("UUID_TO_BIN", [value, flag]) => Some(uuid_to_bin(value, Some(flag))),
-        ("BIN_TO_UUID", [value]) => Some(bin_to_uuid(ctx, value, None)),
-        ("BIN_TO_UUID", [value, flag]) => Some(bin_to_uuid(ctx, value, Some(flag))),
-        ("TIDB_SHARD", [value]) => Some(tidb_shard(value, ctx)),
-        ("TIDB_DECODE_KEY", [value]) => Some(tidb_decode_key(value, ctx)),
-        ("VITESS_HASH", [value]) => Some(vitess_hash(value, ctx)),
-        _ => None,
+eager_dispatch! {
+    dispatch_in(name, vals, ctx) {
+        ("UUID", 0) => uuid_v1(),
+        ("UUID_V4", 0) => uuid_v4(),
+        ("UUID_V7", 0) => uuid_v7(),
+        ("ANY_VALUE", 1) => Ok(vals[0].clone()),
+        // NAME_CONST's first operand is the exposed column label.
+        ("NAME_CONST", 2) => Ok(vals[1].clone()),
+        ("IS_UUID", 1) => is_uuid(&vals[0]),
+        ("UUID_VERSION", 1) => uuid_version(&vals[0]),
+        ("UUID_TIMESTAMP", 1) => uuid_timestamp(&vals[0]),
+        ("UUID_TO_BIN", 1) => uuid_to_bin(&vals[0], None),
+        ("UUID_TO_BIN", 2) => uuid_to_bin(&vals[0], Some(&vals[1])),
+        ("BIN_TO_UUID", 1) => bin_to_uuid(ctx, &vals[0], None),
+        ("BIN_TO_UUID", 2) => bin_to_uuid(ctx, &vals[0], Some(&vals[1])),
+        ("TIDB_SHARD", 1) => tidb_shard(&vals[0], ctx),
+        ("TIDB_DECODE_KEY", 1) => tidb_decode_key(&vals[0], ctx),
+        ("VITESS_HASH", 1) => vitess_hash(&vals[0], ctx),
     }
 }
 
-fn tidb_decode_key(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
+pub(crate) fn tidb_decode_key(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
     if value.is_null() {
         return Ok(Datum::Null);
     }

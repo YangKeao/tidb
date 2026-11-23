@@ -587,6 +587,42 @@ pub(crate) fn propagate_type(expr: &mut Expression, eval_type: EvalType) {
 }
 
 impl Expression {
+    /// The rewriter duplicates an occurrence while preserving Go's seed stream.
+    pub(crate) fn clone_with_rand_streams(&mut self) -> Self {
+        let mut clone = self.clone();
+        let mut pending = vec![(self, &mut clone)];
+        while let Some((original, copy)) = pending.pop() {
+            if let (Self::ScalarFunction(original), Self::ScalarFunction(copy)) = (original, copy) {
+                if original.func_name.lowercase() == "rand" && !original.args.is_empty() {
+                    original.share_rand_call(copy);
+                }
+                pending.extend(original.args.iter_mut().zip(&mut copy.args));
+            }
+        }
+        clone
+    }
+
+    pub(crate) fn binary_literal_source(&self) -> Option<&crate::constant::Constant> {
+        let constant = match self {
+            Expression::Constant(constant) => constant,
+            Expression::ScalarFunction(function) if function.func_name.lowercase() == "ifnull" => {
+                let [Expression::Constant(first), second] = function.args.as_slice() else {
+                    return None;
+                };
+                if first.literal_value()?.is_null() {
+                    return second.binary_literal_source();
+                }
+                first
+            }
+            _ => return None,
+        };
+        matches!(
+            constant.literal_value(),
+            Some(tidb_datatype::Datum::BinaryLiteral(_))
+        )
+        .then_some(constant)
+    }
+
     /// Go `Expression.HashCode`: the type-tagged canonical byte encoding used as
     /// a map/dedup key. Structural and context-free.
     pub fn hash_code(&mut self) -> &[u8] {
@@ -721,13 +757,95 @@ impl Expression {
         ctx: &dyn crate::context::Columns,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<tidb_datatype::Datum, crate::context::EvalError> {
+        if matches!(self, Expression::ScalarFunction(_)) {
+            if let Some(value) = crate::rpn::try_evaluate_row(self, ctx, row)? {
+                return Ok(self.apply_enum_set_as_int(value));
+            }
+        }
+        self.eval_unprepared(ctx, row)
+    }
+
+    /// Evaluate a finalized bound tree that will be reused by this statement.
+    pub fn eval_reusing(
+        &self,
+        ctx: &dyn crate::context::Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<tidb_datatype::Datum, crate::context::EvalError> {
+        self.eval_reusing_bound(self, ctx, row)
+    }
+
+    /// Append values in logical row order with the statement's scalar operand
+    /// semantics, holding one prepared program and scratch space for the batch.
+    pub fn append_scalar_rows_reusing(
+        &self,
+        ctx: &dyn crate::context::Columns,
+        input: &tidb_chunk::chunk::Chunk,
+        output: &mut Vec<tidb_datatype::Datum>,
+    ) -> Result<(), crate::context::EvalError> {
+        if input.num_rows() != 0 {
+            if let Some(cache) = ctx.row_evaluation_cache() {
+                return cache.append_scalar_rows(self, ctx, input, output);
+            }
+            for row in 0..input.num_rows() {
+                output.push(self.eval(ctx, input.get_row(row))?);
+            }
+        }
+        Ok(())
+    }
+
+    /// Append a warning-free batch's non-NULL mask for a flat, stateless
+    /// integer program. An unsupported or noisy batch uses ordinary row evaluation.
+    pub fn append_quiet_int_presence(
+        &self,
+        ctx: &dyn crate::Columns,
+        chunk: &tidb_chunk::chunk::Chunk,
+        output: &mut Vec<bool>,
+    ) {
+        if let Some(cache) = ctx.row_evaluation_cache() {
+            cache.append_quiet_int_presence(self, ctx, chunk, output);
+        }
+    }
+
+    /// Evaluate a row of known datums through the bound declaration, reusing
+    /// the statement program's one-row chunk when the input type is stable.
+    pub fn eval_reusing_datums<'a>(
+        &self,
+        declaration: &Self,
+        ctx: &dyn crate::context::Columns,
+        fields: &[tidb_datatype::FieldType],
+        values: impl Iterator<Item = &'a tidb_datatype::Datum>,
+    ) -> Result<tidb_datatype::Datum, crate::context::EvalError> {
+        crate::rpn::evaluate_datum_row(self, declaration, ctx, fields, values)
+    }
+
+    /// Evaluate a rebound tree whose finalized declaration identifies it
+    /// within these fixed statement settings.
+    pub fn eval_reusing_bound(
+        &self,
+        declaration: &Self,
+        ctx: &dyn crate::context::Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<tidb_datatype::Datum, crate::context::EvalError> {
+        match ctx.row_evaluation_cache() {
+            Some(cache) => cache.evaluate(self, declaration, ctx, row),
+            None => self.eval(ctx, row),
+        }
+    }
+
+    pub(crate) fn eval_unprepared(
+        &self,
+        ctx: &dyn crate::context::Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<tidb_datatype::Datum, crate::context::EvalError> {
         let value = match self {
             Expression::Column(c) => c.eval(row),
             Expression::Constant(c) => c
                 .eval_on_row_with_error_value(ctx, row)
                 .map_err(|(_, error)| error),
             Expression::CorrelatedColumn(c) => Ok(c.eval()),
-            Expression::ScalarFunction(c) => c.eval(ctx, row),
+            Expression::ScalarFunction(_) => Err(crate::context::EvalError::Unsupported(
+                "typed expression has no shared declaration",
+            )),
         }?;
         Ok(self.apply_enum_set_as_int(value))
     }
@@ -748,7 +866,10 @@ impl Expression {
             .map_err(|error| (tidb_datatype::Datum::Null, error))
     }
 
-    fn apply_enum_set_as_int(&self, value: tidb_datatype::Datum) -> tidb_datatype::Datum {
+    pub(crate) fn apply_enum_set_as_int(
+        &self,
+        value: tidb_datatype::Datum,
+    ) -> tidb_datatype::Datum {
         // `WrapWithCastAsInt` follows Go's hybrid ENUM path by setting
         // `EnumSetAsIntFlag` on the source expression and returning it without
         // building another cast node. The row/constant seam still materializes
@@ -1437,7 +1558,7 @@ mod tests {
 
         // The vector arithmetic signatures are regular scalar functions too:
         // their declared return type and their value stay in the vector
-        // domain all the way through ScalarFunction::eval.
+        // domain through the shared typed evaluator.
         let vector_type = FieldType::new(FieldTypeCode::VectorFloat32);
         let vector = |values| {
             Expression::Constant(Constant::new(

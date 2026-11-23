@@ -170,14 +170,40 @@ impl ArgPattern {
         }
     }
 
-    fn matches(self, argument: &PbScalar) -> bool {
-        self.eval.is_none_or(|eval| eval == argument.eval_type())
+    fn matches(self, argument: ArgumentType) -> bool {
+        self.eval.is_none_or(|eval| eval == argument.eval)
             && self
                 .unsigned
-                .is_none_or(|unsigned| unsigned == argument.is_unsigned())
+                .is_none_or(|unsigned| unsigned == argument.unsigned)
             && self
                 .binary_string
-                .is_none_or(|binary| binary == argument.is_binary_string())
+                .is_none_or(|binary| binary == argument.binary_string)
+    }
+}
+
+struct ArgumentType {
+    eval: EvalType,
+    unsigned: bool,
+    binary_string: bool,
+}
+
+impl From<&FieldType> for ArgumentType {
+    fn from(field: &FieldType) -> Self {
+        Self {
+            eval: field.eval_type(),
+            unsigned: field.is_unsigned(),
+            binary_string: field.is_binary_string(),
+        }
+    }
+}
+
+impl From<&PbScalar> for ArgumentType {
+    fn from(argument: &PbScalar) -> Self {
+        Self {
+            eval: argument.eval_type(),
+            unsigned: argument.is_unsigned(),
+            binary_string: argument.is_binary_string(),
+        }
     }
 }
 
@@ -1556,7 +1582,7 @@ pub const CATALOG: &[BuiltinSignature] = &[
     signature(
         "hour",
         &[ArgPattern::ANY],
-        &[EvalType::Datetime],
+        &[EvalType::Duration],
         EvalType::Int,
         ScalarFuncSig::Hour,
         false,
@@ -1564,7 +1590,7 @@ pub const CATALOG: &[BuiltinSignature] = &[
     signature(
         "minute",
         &[ArgPattern::ANY],
-        &[EvalType::Datetime],
+        &[EvalType::Duration],
         EvalType::Int,
         ScalarFuncSig::Minute,
         false,
@@ -1572,7 +1598,7 @@ pub const CATALOG: &[BuiltinSignature] = &[
     signature(
         "second",
         &[ArgPattern::ANY],
-        &[EvalType::Datetime],
+        &[EvalType::Duration],
         EvalType::Int,
         ScalarFuncSig::Second,
         false,
@@ -1580,7 +1606,7 @@ pub const CATALOG: &[BuiltinSignature] = &[
     signature(
         "microsecond",
         &[ArgPattern::ANY],
-        &[EvalType::Datetime],
+        &[EvalType::Duration],
         EvalType::Int,
         ScalarFuncSig::MicroSecond,
         false,
@@ -1934,7 +1960,7 @@ const fn string_signature(
 /// `None` means no cast is needed, which is what `WrapWithCastAsReal` and
 /// friends do when the argument already evaluates as the target type. A source
 /// family with no row here is one this tier refuses rather than guesses at.
-const fn cast_signature(from: EvalType, to: EvalType) -> Option<Option<ScalarFuncSig>> {
+pub(crate) const fn cast_signature(from: EvalType, to: EvalType) -> Option<Option<ScalarFuncSig>> {
     if matches!(
         (from, to),
         (EvalType::Int, EvalType::Int)
@@ -1951,7 +1977,26 @@ const fn cast_signature(from: EvalType, to: EvalType) -> Option<Option<ScalarFun
         // Go returns the argument untouched, so no node is added at all.
         return Some(None);
     }
-    Some(Some(match (from, to) {
+    match explicit_cast_signature(from, to) {
+        // The wire encoder does not insert vector formatting implicitly.
+        Some(ScalarFuncSig::CastVectorFloat32AsString) | None => None,
+        Some(sig) => Some(Some(sig)),
+    }
+}
+
+/// Resolve a CAST even when changing only the target's metadata.
+pub(crate) const fn explicit_cast_signature(from: EvalType, to: EvalType) -> Option<ScalarFuncSig> {
+    Some(match (from, to) {
+        (EvalType::Int, EvalType::Int) => ScalarFuncSig::CastIntAsInt,
+        (EvalType::Real, EvalType::Real) => ScalarFuncSig::CastRealAsReal,
+        (EvalType::Decimal, EvalType::Decimal) => ScalarFuncSig::CastDecimalAsDecimal,
+        (EvalType::String, EvalType::String) => ScalarFuncSig::CastStringAsString,
+        (EvalType::Duration, EvalType::Duration) => ScalarFuncSig::CastDurationAsDuration,
+        (EvalType::Json, EvalType::Json) => ScalarFuncSig::CastJsonAsJson,
+        (EvalType::VectorFloat32, EvalType::String) => ScalarFuncSig::CastVectorFloat32AsString,
+        (EvalType::VectorFloat32, EvalType::VectorFloat32) => {
+            ScalarFuncSig::CastVectorFloat32AsVectorFloat32
+        }
         (EvalType::Real, EvalType::Int) => ScalarFuncSig::CastRealAsInt,
         (EvalType::Int, EvalType::Real) => ScalarFuncSig::CastIntAsReal,
         (EvalType::Decimal, EvalType::Int) => ScalarFuncSig::CastDecimalAsInt,
@@ -2010,7 +2055,7 @@ const fn cast_signature(from: EvalType, to: EvalType) -> Option<Option<ScalarFun
         (EvalType::Json, EvalType::Datetime | EvalType::Timestamp) => ScalarFuncSig::CastJsonAsTime,
         (EvalType::Json, EvalType::Duration) => ScalarFuncSig::CastJsonAsDuration,
         _ => return None,
-    }))
+    })
 }
 
 /// All coercions the protobuf encoder can insert around catalog arguments.
@@ -2322,9 +2367,7 @@ fn resolve_conditional(name: &str, args: &[PbScalar]) -> Option<&'static Builtin
 /// returns nil for both.
 #[must_use]
 pub fn resolve(name: &str, args: &[PbScalar]) -> Option<&'static BuiltinSignature> {
-    if let Some(signature) = resolve_conditional(name, args) {
-        return Some(signature);
-    }
+    let conditional = resolve_conditional(name, args);
     if let Some(signature) = resolve_date_arithmetic(name, args) {
         return Some(signature);
     }
@@ -2332,6 +2375,7 @@ pub fn resolve(name: &str, args: &[PbScalar]) -> Option<&'static BuiltinSignatur
         return resolve_unix_timestamp(args);
     }
     if name == "ifnull"
+        && conditional.is_none_or(|signature| signature.sig == ScalarFuncSig::IfNullString)
         && !matches!(
             args,
             [
@@ -2347,14 +2391,33 @@ pub fn resolve(name: &str, args: &[PbScalar]) -> Option<&'static BuiltinSignatur
         // assigning a possibly wrong collation to the TiKV expression.
         return None;
     }
+    conditional.or_else(|| resolve_fixed_signature(name, args.iter()))
+}
+
+/// Select the existing fixed-arity signature using only argument declarations.
+///
+/// The caller applies evaluation policy and coercions. Protocol-specific
+/// refusal, dynamic temporal resolution and control-flow binding are separate.
+#[must_use]
+pub fn resolve_declared_signature(
+    name: &str,
+    args: &[&FieldType],
+) -> Option<&'static BuiltinSignature> {
+    resolve_fixed_signature(name, args.iter().copied())
+}
+
+fn resolve_fixed_signature<A: Into<ArgumentType>>(
+    name: &str,
+    args: impl ExactSizeIterator<Item = A> + Clone,
+) -> Option<&'static BuiltinSignature> {
     CATALOG.iter().find(|candidate| {
         candidate.name == name
             && candidate.selector.len() == args.len()
             && candidate
                 .selector
                 .iter()
-                .zip(args)
-                .all(|(pattern, argument)| pattern.matches(argument))
+                .zip(args.clone())
+                .all(|(pattern, argument)| pattern.matches(argument.into()))
     })
 }
 
@@ -2522,8 +2585,10 @@ pub fn field_type_to_pb(field_type: &FieldType) -> Option<tidb_proto::tipb::Fiel
     let mut result = pb_field_type(
         i32::from(field_type.code().mysql_type()),
         field_type.flags(),
-        i32::try_from(field_type.flen()).ok()?,
-        i32::try_from(field_type.decimal()).ok()?,
+        // Go ToPBFieldType narrows both signed fields to int32. Long
+        // JSON/blob declarations at four GiB minus one carry -1 here.
+        field_type.flen() as i32,
+        field_type.decimal() as i32,
         field_type.charset_name(),
         field_type.collation_name(),
     );
@@ -2567,6 +2632,23 @@ pub struct ColumnDescriptor {
     pub elems: Vec<String>,
     /// Whether the descriptor carries TiDB's ARRAY marker.
     pub array: bool,
+}
+
+impl ColumnDescriptor {
+    /// Use the expression's declared input type at a local execution boundary.
+    pub fn from_field_type(field_type: &FieldType) -> Option<Self> {
+        let encoded = field_type_to_pb(field_type)?;
+        Some(Self {
+            tp: encoded.tp?,
+            flag: encoded.flag?,
+            flen: encoded.flen?,
+            decimal: encoded.decimal?,
+            charset: encoded.charset?,
+            collation: field_type.collation_name().to_owned(),
+            elems: encoded.elems,
+            array: encoded.array.unwrap_or(false),
+        })
+    }
 }
 
 /// Lowers a described call into the TiPB expression Go's `ExprToPB` builds for
@@ -2721,8 +2803,7 @@ pub fn to_pb(
         PbScalar::Call { signature, args } => {
             let mut children = Vec::with_capacity(args.len());
             for (index, argument) in args.iter().enumerate() {
-                let required =
-                    signature.arg_type_at(index, args.len(), argument.eval_type())?;
+                let required = signature.arg_type_at(index, args.len(), argument.eval_type())?;
                 children.push(coerced_to_pb(argument, required, columns)?);
             }
             let return_field_type = signature.return_field_type(scalar.is_unsigned(), &children)?;
@@ -3015,6 +3096,26 @@ mod tests {
         PbScalar::Column {
             offset: 0,
             field_type: FieldType::new(code),
+        }
+    }
+
+    #[test]
+    fn declaration_only_signature_selection_preserves_overload_order() {
+        let signed = FieldType::new(FieldTypeCode::LongLong);
+        let mut unsigned = signed.clone();
+        unsigned.add_flags(UNSIGNED_FLAG);
+        let real = FieldType::new(FieldTypeCode::Double);
+        for (name, types) in [
+            ("mod", [&signed, &unsigned]),
+            ("mod", [&real, &signed]),
+            ("gt", [&unsigned, &signed]),
+        ] {
+            let arguments = types.map(|field| PbScalar::Column {
+                offset: 0,
+                field_type: field.clone(),
+            });
+            let typed = resolve_declared_signature(name, &types).unwrap();
+            assert_eq!(Some(typed), resolve(name, &arguments));
         }
     }
 

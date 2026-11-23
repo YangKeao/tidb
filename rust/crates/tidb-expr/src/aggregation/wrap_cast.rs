@@ -191,18 +191,7 @@ pub fn wrap_with_cast_as_decimal(expr: Expression) -> Result<Expression, EvalErr
     if source.eval_type() == EvalType::Decimal {
         return Ok(expr);
     }
-    let mut tp = FieldType::new(FieldTypeCode::NewDecimal);
-    tp.set_flen_under_limit(source.flen());
-    tp.set_decimal_under_limit(source.decimal());
-    if source.eval_type() == EvalType::Int {
-        tp.set_flen(minimal_decimal_len_for_holding_integer(source.code()));
-        tp.set_decimal(0);
-    }
-    if tp.flen() == UNSPECIFIED_LENGTH || tp.flen() > MAX_DECIMAL_WIDTH {
-        tp.set_flen(MAX_DECIMAL_WIDTH);
-    }
-    set_bin_chs_cln_flag(&mut tp);
-    tp.add_flags(source.flags() & (FieldTypeFlags::UNSIGNED | FieldTypeFlags::NOT_NULL));
+    let tp = decimal_cast_field_type(&source);
     let mut cast_expr = build_cast_function(expr, tp, false)?;
     // Go's `ConstStrict` tail records the exact result shape on the cast node.
     // This is observable through callers that inspect `GetType`, and it is
@@ -222,6 +211,23 @@ pub fn wrap_with_cast_as_decimal(expr: Expression) -> Result<Expression, EvalErr
         }
     }
     Ok(cast_expr)
+}
+
+/// Target metadata for an implicit DECIMAL cast.
+pub(crate) fn decimal_cast_field_type(source: &FieldType) -> FieldType {
+    let mut tp = FieldType::new(FieldTypeCode::NewDecimal);
+    tp.set_flen_under_limit(source.flen());
+    tp.set_decimal_under_limit(source.decimal());
+    if source.eval_type() == EvalType::Int {
+        tp.set_flen(minimal_decimal_len_for_holding_integer(source.code()));
+        tp.set_decimal(0);
+    }
+    if tp.flen() == UNSPECIFIED_LENGTH || tp.flen() > MAX_DECIMAL_WIDTH {
+        tp.set_flen(MAX_DECIMAL_WIDTH);
+    }
+    set_bin_chs_cln_flag(&mut tp);
+    tp.add_flags(source.flags() & (FieldTypeFlags::UNSIGNED | FieldTypeFlags::NOT_NULL));
+    tp
 }
 
 /// Go `WrapWithCastAsString` (`builtin_cast.go:2769`).
@@ -275,10 +281,7 @@ pub fn wrap_with_cast_as_string(
 ///
 /// Go mutates the caller's `*types.FieldType`; Rust takes it by value and
 /// returns the wrapped expression, so the mutation is not observable outside.
-pub fn wrap_with_cast_as_time(
-    expr: Expression,
-    mut tp: FieldType,
-) -> Result<Expression, EvalError> {
+pub fn wrap_with_cast_as_time(expr: Expression, tp: FieldType) -> Result<Expression, EvalError> {
     let source = type_of(&expr);
     let source_code = source.code();
     if tp.code() == source_code {
@@ -289,6 +292,11 @@ pub fn wrap_with_cast_as_time(
     {
         return Ok(expr);
     }
+    build_cast_function(expr, temporal_cast_field_type(&source, tp), false)
+}
+
+/// Target metadata for a temporal cast, including its source-derived FSP.
+pub(crate) fn temporal_cast_field_type(source: &FieldType, mut tp: FieldType) -> FieldType {
     match source.eval_type() {
         EvalType::Int => tp.set_decimal(MIN_FSP),
         EvalType::String | EvalType::Real | EvalType::Json => tp.set_decimal(MAX_FSP),
@@ -314,7 +322,7 @@ pub fn wrap_with_cast_as_time(
         _ => {}
     }
     set_bin_chs_cln_flag(&mut tp);
-    build_cast_function(expr, tp, false)
+    tp
 }
 
 /// Go `WrapWithCastAsDuration` (`builtin_cast.go:2853`).
@@ -323,6 +331,11 @@ pub fn wrap_with_cast_as_duration(expr: Expression) -> Result<Expression, EvalEr
     if source.code() == FieldTypeCode::Duration {
         return Ok(expr);
     }
+    build_cast_function(expr, duration_cast_field_type(&source), false)
+}
+
+/// Target metadata for an implicit TIME cast.
+pub(crate) fn duration_cast_field_type(source: &FieldType) -> FieldType {
     let mut tp = FieldType::new(FieldTypeCode::Duration);
     match source.code() {
         FieldTypeCode::Datetime | FieldTypeCode::Timestamp | FieldTypeCode::Date => {
@@ -334,7 +347,7 @@ pub fn wrap_with_cast_as_duration(expr: Expression) -> Result<Expression, EvalEr
     if tp.decimal() > 0 {
         tp.set_flen(tp.flen() + 1 + tp.decimal());
     }
-    build_cast_function(expr, tp, false)
+    tp
 }
 
 /// Go `WrapWithCastAsJSON` (`builtin_cast.go:2873`).

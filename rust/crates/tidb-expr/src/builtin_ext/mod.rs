@@ -22,6 +22,43 @@
 
 use crate::{Datum, EvalError};
 
+// Declare eager value functions once for planning and execution. The matcher
+// admits the name and argument count without evaluating an argument.
+macro_rules! eager_dispatch {
+    ($function:ident($name:ident, $values:ident $(, $context:ident)?) {
+        $(($name_pattern:pat, $count:pat) => $result:expr),* $(,)?
+    }) => {
+        pub(super) fn accepts(name: &str, count: usize) -> bool {
+            matches!((name, count), $(($name_pattern, $count))|*)
+        }
+
+        pub(crate) fn $function(
+            $name: &str,
+            $values: &[crate::Datum],
+            $($context: &dyn crate::Columns,)?
+        ) -> Option<Result<crate::Datum, crate::EvalError>> {
+            match ($name, $values.len()) {
+                $(($name_pattern, $count) => Some($result),)*
+                _ => None,
+            }
+        }
+    };
+}
+
+pub(crate) use eager_dispatch;
+
+pub(crate) fn accepts_eager(name: &str, count: usize) -> bool {
+    let name = name.to_ascii_uppercase();
+    crypto::accepts(&name, count)
+        || string2::accepts(&name, count)
+        || vec::accepts(&name, count)
+        || json::accepts(&name, count)
+        || json2::accepts(&name, count)
+        || info::accepts(&name, count)
+        || misc::accepts(&name, count)
+        || crate::time_fn::accepts(&name, count)
+}
+
 pub(crate) mod cache;
 pub(crate) mod compare2;
 pub(crate) mod crypto;
@@ -29,6 +66,7 @@ pub(crate) mod info;
 pub(crate) mod json;
 pub(crate) mod json2;
 pub(crate) mod misc;
+pub(crate) use misc::tidb_decode_key;
 pub(crate) mod regexp;
 pub(crate) mod string2;
 pub(crate) mod vec;
@@ -40,7 +78,7 @@ pub(crate) use json::{
     cast_as_json, cast_as_json_typed, cast_as_json_value_typed,
     dispatch_typed as json_dispatch_typed,
     dispatch_typed_with_paths_and_document as json_dispatch_typed_with_paths_and_document,
-    parse_json_document_argument, parse_json_modify_paths, JsonPath, JsonSchemaCache,
+    parse_json_document_argument, parse_json_modify_paths, JsonPath,
 };
 pub(crate) use string2::{
     build_find_in_set_lookup, find_in_set_lookup, find_in_set_with_collation, FindInSetLookup,
