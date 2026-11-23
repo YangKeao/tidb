@@ -302,3 +302,5 @@ pub(crate) fn eval_pb(
         _ => Err(EvalError::Unsupported("unknown JSON protobuf signature")),
     }
 }
+
+pub(crate) use report::JsonSchemaExecution;

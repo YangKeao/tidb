@@ -300,6 +300,8 @@ pub struct ScalarFunction {
     pb_builtin: PbBuiltin,
     /// Go `builtinRandSig.mysqlRng`; Clone shares its generator.
     rand_rng: Option<RandGenerator>,
+    // The occurrence is shared by cloned bound trees and outlives temporary addresses.
+    rand_occurrence: Option<usize>,
     /// Lazily-filled `HashCode` cache (Go `hashcode`).
     hashcode: Vec<u8>,
     /// Go `BuiltinGroupingImplSig` metadata installed by `SetMetadata`.
@@ -644,6 +646,10 @@ impl ScalarFunction {
         collation: CollationInfo,
         sig: crate::builtin::SigFields,
     ) -> Self {
+        static NEXT_RAND_OCCURRENCE: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let rand_occurrence = (func_name.lowercase() == "rand" && args.len() == 1)
+            .then(|| NEXT_RAND_OCCURRENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
         Self {
             func_name,
             ret_type: Some(ret_type),
@@ -654,6 +660,7 @@ impl ScalarFunction {
                 crate::builtin::SigFields::Rand { seed } => Some(RandGenerator(std::sync::Arc::new(crate::MysqlRng::new_with_seed(seed)))),
                 _ => None,
             },
+            rand_occurrence,
             hashcode: Vec::new(),
             grouping_metadata: None,
             cannot_convert_string_as_warning: false,
@@ -1246,7 +1253,7 @@ impl ScalarFunction {
     /// The user-variable name a `getvar`/`setvar` call carries in its first
     /// argument, which the rewriter built as a constant because the name is a
     /// build-time token rather than a value.
-    fn uservar_name(&self) -> Option<String> {
+    pub(crate) fn uservar_name(&self) -> Option<String> {
         let Expression::Constant(name) = self.args.first()? else {
             return None;
         };
@@ -1258,7 +1265,90 @@ impl ScalarFunction {
     /// type -- see [`Self::coerce_to_ret_type`] for why that is the whole
     /// point of Go's `Eval` and not an afterthought.
     pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
+        self.eval_native(ctx, row)
+    }
+
+    pub(crate) fn eval_native(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         let value = self.pb_builtin.eval(self, ctx, row)?;
+        self.finish_value(value)
+    }
+
+    pub(crate) fn rand_occurrence(&self) -> Option<usize> {
+        self.rand_occurrence
+    }
+
+    pub(crate) fn requires_row_order(&self) -> bool {
+        let name = self.func_name.lowercase();
+        crate::expr_util::is_mutable_effects_function(name)
+            || advisory_lock_spec(name).is_some()
+            || matches!(name, "nextval" | "lastval" | "setval" | "last_insert_id")
+    }
+
+    pub(crate) fn accepts_eager_values(&self) -> bool {
+        matches!(self.pb_builtin.kernel, Kernel::Values(_) | Kernel::Method(_))
+    }
+
+    pub(crate) fn weight_string_input_required(&self) -> Option<bool> {
+        match self.signature_fields() {
+            crate::builtin::SigFields::WeightStringNull => Some(false),
+            crate::builtin::SigFields::WeightString { .. } => Some(true),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn rejects_vector_json_cast(&self) -> bool {
+        self.is_cast_as_json()
+            && matches!(self.args.as_slice(), [value]
+                if value.static_type().is_some_and(|field| field.eval_type() == EvalType::VectorFloat32))
+    }
+
+    pub(crate) fn vector_json_cast_error() -> EvalError {
+        EvalError::Vector("cannot cast from vector to json".to_owned())
+    }
+
+    pub(crate) fn native_vector_extremum(&self) -> Option<std::cmp::Ordering> {
+        if self.args.len() < 2 || self.get_static_type()?.eval_type() != EvalType::VectorFloat32 {
+            return None;
+        }
+        match self.func_name.lowercase() {
+            "greatest" => Some(std::cmp::Ordering::Greater),
+            "least" => Some(std::cmp::Ordering::Less),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn native_vector_operator(&self) -> Option<BinaryOp> {
+        if self.args.len() == 2
+            && self
+                .get_static_type()
+                .is_some_and(|field| field.eval_type() == EvalType::VectorFloat32)
+        {
+            return binary_op_for_name(self.func_name.lowercase())
+                .filter(|op| matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul));
+        }
+        None
+    }
+
+    pub(crate) fn shared_arithmetic_error(
+        &self,
+        domain: &'static str,
+        ctx: &dyn Columns,
+        _scalar: bool,
+        _decimals: [Option<&tidb_datatype::Decimal>; 2],
+    ) -> Option<EvalError> {
+        let operation = binary_op_for_name(self.func_name.lowercase())?;
+        if operation == BinaryOp::IntDiv {
+            return None;
+        }
+        Some(match domain {
+            "DOUBLE" => real_arithmetic_overflow_error(self, operation, ctx),
+            "DECIMAL" => decimal_arithmetic_overflow_error(self, operation, ctx),
+            "BIGINT" | "BIGINT UNSIGNED" => arithmetic_overflow_error(self, operation, ctx),
+            _ => return None,
+        })
+    }
+
+    fn finish_value(&self, value: Datum) -> Result<Datum, EvalError> {
         // Go ScalarFunction.Eval interprets an evalInt carrier through
         // the wire result type, independently of the argument flags.
         let value = match (value, self.get_static_type()) {
@@ -1433,7 +1523,7 @@ impl ScalarFunction {
 
     /// The argument evaluation domain selected by Go's arithmetic builder.
     /// DIV returns Int but consumes Decimal unless both arguments are Int.
-    fn numeric_operand_domain(&self) -> Option<EvalType> {
+    pub(crate) fn numeric_operand_domain(&self) -> Option<EvalType> {
         self.pb_builtin.numeric_domain()
     }
 
@@ -1738,7 +1828,7 @@ impl ScalarFunction {
 /// Go typed GETVAR evaluation reads the live value through its already selected
 /// signature. Integer signatures read the carrier; decimal/real/string signatures
 /// apply their source conversions independently of declared display width.
-fn uservar_as_kind(kind: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+pub(crate) fn uservar_as_kind(kind: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     use tidb_ast::CastType;
     if value.is_null() {
         return Ok(Datum::Null);
@@ -4286,4 +4376,222 @@ pub fn conv_reads_bits(argument: &Expression) -> bool {
     };
     crate::expr_util::builder::is_cast_name(&function.func_name.lowercase())
         && function.args.first().is_some_and(hybrid_or_binary_literal)
+}
+
+
+pub(crate) fn advisory_lock_spec(name: &str) -> Option<(&'static str, usize)> {
+    Some(match name {
+        "get_lock" => ("get_lock", 2),
+        "release_lock" => ("release_lock", 1),
+        "is_free_lock" => ("is_free_lock", 1),
+        "is_used_lock" => ("is_used_lock", 1),
+        "release_all_locks" => ("release_all_locks", 0),
+        _ => return None,
+    })
+}
+
+pub(crate) fn advisory_lock_name_value(
+    value: &Datum,
+    field: Option<&FieldType>,
+    ctx: &dyn Columns,
+) -> Result<String, EvalError> {
+    advisory_lock_name(crate::cast::cast_arg_as_string(value, field, ctx)?)
+}
+
+pub(crate) fn cast_numeric_value(
+    field: &FieldType,
+    value: Datum,
+    target: EvalType,
+    ctx: &dyn Columns,
+    vectorized: bool,
+    source_text: impl FnOnce() -> Option<String>,
+) -> Result<Datum, EvalError> {
+    if value.is_null() || field.eval_type() == target {
+        return Ok(value);
+    }
+    if target == EvalType::Int {
+        if let Datum::Decimal(value) = &value {
+            return Ok(Datum::Int(value.round_to_i64_saturating()));
+        }
+    }
+    let value = match value {
+        Datum::Int(bits) if field.is_unsigned() => Datum::UInt(bits as u64),
+        Datum::Float32(value) => Datum::Real(f64::from(value as f32)),
+        value => value,
+    };
+    let code = match target {
+        EvalType::Int => tidb_datatype::FieldTypeCode::LongLong,
+        EvalType::Real => tidb_datatype::FieldTypeCode::Double,
+        EvalType::Decimal => tidb_datatype::FieldTypeCode::NewDecimal,
+        _ => return Err(EvalError::Unsupported("numeric argument cast domain")),
+    };
+    if field.eval_type() == EvalType::String && !field.is_hybrid() {
+        let bytes = match &value {
+            Datum::String(value) => value.bytes(),
+            Datum::Bytes(value) => value.as_slice(),
+            _ => return Err(EvalError::Unsupported("string arithmetic argument domain")),
+        };
+        return cast_string_numeric_argument(field, bytes, target, ctx, vectorized);
+    }
+    if let Datum::Json(json) = &value {
+        if target == EvalType::Real {
+            let converted = tidb_datatype::json_to_float(json);
+            if converted.event.is_some() {
+                if let Some(bytes) = json.as_string() {
+                    let text = String::from_utf8_lossy(bytes);
+                    ctx.handle_truncate_error(tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL.generate(format!(
+                        "Truncated incorrect DOUBLE value: '{}'",
+                        tidb_datatype::float_warning_input(&text),
+                    )))?;
+                } else {
+                    ctx.handle_truncate_error(tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL.generate(format!("Truncated incorrect FLOAT value: '{json}'")))?;
+                }
+            }
+            return Ok(Datum::Real(converted.value));
+        }
+        if target == EvalType::Int {
+            // go `builtinCastJSONAsIntSig`: the document's text re-reads as
+            // an integer (StrToInt), raising go's 1292 truncation warning
+            // when the text is not a clean integer — captured:
+            // `bitand(j, j)` over `{}` warns twice and answers 0, while the
+            // JSON number `3` coerces silently.
+            let as_text = Datum::new_string_datum(json.to_string());
+            crate::cast::report_int_truncation(&as_text, ctx)?;
+            return Ok(Datum::Int(crate::cast::to_i64_signed(&as_text)));
+        }
+    }
+    let value = if target == EvalType::Decimal
+        && matches!(value, Datum::Time(_) | Datum::Duration(_) | Datum::Json(_))
+    {
+        // Time/Duration.ToNumber and ConvertJSONToDecimal precede target
+        // precision fitting. JSON's integer path must never pass through f64.
+        let warnings = crate::constant::ConversionWarnings(ctx);
+        let zone = ctx.time_zone();
+        let context = tidb_datatype::ConversionContext::new(
+            ctx.type_flags(),
+            tidb_datatype::ConversionLocation::from_time_zone(&zone),
+            &warnings,
+        );
+        let (decimal, error) = value
+            .to_decimal_with_context(&context)
+            .map_err(|_| EvalError::Unsupported("numeric decimal argument conversion failed"))?;
+        if let Some(error) = error {
+            return Err(EvalError::Conversion(error));
+        }
+        Datum::Decimal(decimal)
+    } else {
+        value
+    };
+    let value = if let (EvalType::Decimal, Datum::Real(real)) = (target, &value) {
+        // Every integral double in [-2^53, 2^53] has the same exact integer
+        // decimal as Go's shortest-float formatting followed by FromString.
+        // Negative zero keeps the source parser's sign behavior below.
+        if real.abs() <= 9_007_199_254_740_992.0
+            && real.fract() == 0.0
+            && (*real != 0.0 || !real.is_sign_negative())
+        {
+            let value = Datum::Decimal(tidb_datatype::Decimal::from_int(*real as i64));
+            let target = numeric_decimal_cast_type(field);
+            return if target.decimal() < 0 {
+                Ok(value)
+            } else {
+                convert_numeric_datum(value, &target, ctx)
+            };
+        }
+        let (decimal, error) = tidb_datatype::MyDecimal::from_float64(*real);
+        match error {
+            Some(tidb_datatype::DecimalError::Overflow) => {
+                if ctx.truncate_level() == crate::context::ErrorLevel::Error {
+                    return Err(EvalError::Conversion(tidb_datatype::types_errors::ERR_OVERFLOW.clone()));
+                }
+                ctx.handle_truncate_error(tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL.generate(format!(
+                    "Truncated incorrect DECIMAL value: '{}'",
+                    source_text().unwrap_or_else(|| tidb_datatype::format_float_g_shortest(*real))
+                )))?;
+            }
+            Some(tidb_datatype::DecimalError::Truncated) | None => {}
+            Some(_) => return Err(EvalError::Conversion(tidb_datatype::types_errors::ERR_BAD_NUMBER.clone())),
+        }
+        Datum::Decimal(tidb_datatype::Decimal::from_my_decimal(&decimal))
+    } else {
+        value
+    };
+    let target_field = if target == EvalType::Decimal {
+        numeric_decimal_cast_type(field)
+    } else {
+        FieldType::new(code)
+    };
+    // IntAsDecimal constructs the decimal before applying source metadata.
+    // ProduceDecWithSpecifiedTp is a no-op when scale is unspecified.
+    if target == EvalType::Decimal && target_field.decimal() < 0 {
+        return Ok(match value {
+            Datum::Int(value) => Datum::Decimal(tidb_datatype::Decimal::from_int(value)),
+            Datum::UInt(value) => Datum::Decimal(tidb_datatype::Decimal::from_uint(value)),
+            value => value,
+        });
+    }
+    convert_numeric_datum(value, &target_field, ctx)
+}
+
+pub(crate) struct PreparedContextInput(ScalarFunction);
+
+impl PreparedContextInput {
+    pub(crate) fn new(function: &ScalarFunction) -> Self {
+        Self(function.clone())
+    }
+
+    pub(crate) fn read(&self, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+        self.0.eval_native(ctx, Row::empty())
+    }
+}
+
+pub(crate) struct PreparedLocalBuiltin {
+    function: ScalarFunction,
+    fields: Vec<FieldType>,
+}
+
+impl PreparedLocalBuiltin {
+    pub(crate) fn name(&self) -> &str {
+        self.function.func_name.lowercase()
+    }
+
+    pub(crate) fn new(function: &ScalarFunction) -> Self {
+        let fields: Vec<_> = function.args.iter()
+            .map(|arg| crate::wrap_cast::type_of(arg))
+            .collect();
+        let mut function = function.clone();
+        for (index, argument) in function.args.iter_mut().enumerate() {
+            if matches!(argument, Expression::Constant(value) if value.literal_value().is_some()) {
+                continue;
+            }
+            let mut column = crate::column::Column::new(index as i64, fields[index].clone());
+            column.index = index as i64;
+            *argument = Expression::Column(column);
+        }
+        Self { function, fields }
+    }
+
+    pub(crate) fn evaluate(&self, mut values: Vec<Datum>, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+        // The SQL builder stores the sequence identifier as NUL-separated
+        // bytes. RPN materializes a string column with its declared collation,
+        // so restore the identifier's carrier before calling the native kernel.
+        if matches!(self.name(), "nextval" | "lastval" | "setval") {
+            if let Some(value @ Datum::String(_)) = values.first_mut() {
+                let Datum::String(name) = std::mem::replace(value, Datum::Null) else { unreachable!() };
+                *value = Datum::Bytes(name.bytes().to_vec());
+            }
+        }
+        let function = &self.function;
+        match function.pb_builtin.kernel {
+            Kernel::Values(kernel) => function.finish_value(kernel(&values, ctx)?),
+            Kernel::Method(kernel) => function.finish_value(kernel(function, &values, ctx)?),
+            _ => {
+                let mut input = Chunk::new_chunk_with_capacity(&self.fields, 1);
+                for (i, value) in values.iter().enumerate() {
+                    input.append_datum(i, value);
+                }
+                function.eval_native(ctx, input.get_row(0))
+            }
+        }
+    }
 }

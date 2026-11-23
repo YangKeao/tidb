@@ -188,18 +188,7 @@ pub fn wrap_with_cast_as_decimal(
     if source.eval_type() == EvalType::Decimal {
         return Ok(expr);
     }
-    let mut tp = FieldType::new(FieldTypeCode::NewDecimal);
-    tp.set_flen_under_limit(source.flen());
-    tp.set_decimal_under_limit(source.decimal());
-    if source.eval_type() == EvalType::Int {
-        tp.set_flen(minimal_decimal_len_for_holding_integer(source.code()));
-        tp.set_decimal(0);
-    }
-    if tp.flen() == UNSPECIFIED_LENGTH || tp.flen() > MAX_DECIMAL_WIDTH {
-        tp.set_flen(MAX_DECIMAL_WIDTH);
-    }
-    set_bin_chs_cln_flag(&mut tp);
-    tp.add_flags(source.flags() & (FieldTypeFlags::UNSIGNED | FieldTypeFlags::NOT_NULL));
+    let tp = decimal_cast_field_type(&source);
     let mut cast_expr = build_cast_function(ctx, expr, tp)?;
     if cast_expr.const_level() == ConstLevel::STRICT {
         if let Ok(tidb_datatype::Datum::Decimal(value)) = ctx.eval_constant(&cast_expr) {
@@ -266,7 +255,7 @@ pub fn wrap_with_cast_as_string(
 pub fn wrap_with_cast_as_time(
     ctx: &dyn BuildContext,
     expr: Expression,
-    mut tp: FieldType,
+    tp: FieldType,
 ) -> Result<Expression, EvalError> {
     let source = type_of(&expr);
     let source_code = source.code();
@@ -278,31 +267,7 @@ pub fn wrap_with_cast_as_time(
     {
         return Ok(expr);
     }
-    match source.eval_type() {
-        EvalType::Int => tp.set_decimal(MIN_FSP),
-        EvalType::String | EvalType::Real | EvalType::Json => tp.set_decimal(MAX_FSP),
-        EvalType::Datetime | EvalType::Timestamp | EvalType::Duration => {
-            tp.set_decimal(source.decimal());
-        }
-        EvalType::Decimal => {
-            tp.set_decimal(source.decimal());
-            if tp.decimal() > MAX_FSP {
-                tp.set_decimal(MAX_FSP);
-            }
-        }
-        EvalType::VectorFloat32 => {}
-    }
-    match tp.code() {
-        FieldTypeCode::Date => tp.set_flen(MAX_DATE_WIDTH),
-        FieldTypeCode::Datetime | FieldTypeCode::Timestamp => {
-            tp.set_flen(MAX_DATETIME_WIDTH_NO_FSP);
-            if tp.decimal() > 0 {
-                tp.set_flen(tp.flen() + 1 + tp.decimal());
-            }
-        }
-        _ => {}
-    }
-    set_bin_chs_cln_flag(&mut tp);
+    let tp = temporal_cast_field_type(&source, tp);
     build_cast_function(ctx, expr, tp)
 }
 
@@ -315,17 +280,7 @@ pub fn wrap_with_cast_as_duration(
     if source.code() == FieldTypeCode::Duration {
         return Ok(expr);
     }
-    let mut tp = FieldType::new(FieldTypeCode::Duration);
-    match source.code() {
-        FieldTypeCode::Datetime | FieldTypeCode::Timestamp | FieldTypeCode::Date => {
-            tp.set_decimal(source.decimal());
-        }
-        _ => tp.set_decimal(MAX_FSP),
-    }
-    tp.set_flen(MAX_DURATION_WIDTH_NO_FSP);
-    if tp.decimal() > 0 {
-        tp.set_flen(tp.flen() + 1 + tp.decimal());
-    }
+    let tp = duration_cast_field_type(&source);
     build_cast_function(ctx, expr, tp)
 }
 
@@ -389,4 +344,64 @@ pub fn connection_charset(ctx: &impl Columns) -> (String, String) {
         return ("utf8mb4".to_owned(), "utf8mb4_bin".to_owned());
     }
     (chs.to_owned(), coll.to_owned())
+}
+
+pub(crate) fn decimal_cast_field_type(source: &FieldType) -> FieldType {
+    let mut tp = FieldType::new(FieldTypeCode::NewDecimal);
+    tp.set_flen_under_limit(source.flen());
+    tp.set_decimal_under_limit(source.decimal());
+    if source.eval_type() == EvalType::Int {
+        tp.set_flen(minimal_decimal_len_for_holding_integer(source.code()));
+        tp.set_decimal(0);
+    }
+    if tp.flen() == UNSPECIFIED_LENGTH || tp.flen() > MAX_DECIMAL_WIDTH {
+        tp.set_flen(MAX_DECIMAL_WIDTH);
+    }
+    set_bin_chs_cln_flag(&mut tp);
+    tp.add_flags(source.flags() & (FieldTypeFlags::UNSIGNED | FieldTypeFlags::NOT_NULL));
+    tp
+}
+
+pub(crate) fn temporal_cast_field_type(source: &FieldType, mut tp: FieldType) -> FieldType {
+    match source.eval_type() {
+        EvalType::Int => tp.set_decimal(MIN_FSP),
+        EvalType::String | EvalType::Real | EvalType::Json => tp.set_decimal(MAX_FSP),
+        EvalType::Datetime | EvalType::Timestamp | EvalType::Duration => {
+            tp.set_decimal(source.decimal());
+        }
+        EvalType::Decimal => {
+            tp.set_decimal(source.decimal());
+            if tp.decimal() > MAX_FSP {
+                tp.set_decimal(MAX_FSP);
+            }
+        }
+        EvalType::VectorFloat32 => {}
+    }
+    match tp.code() {
+        FieldTypeCode::Date => tp.set_flen(MAX_DATE_WIDTH),
+        FieldTypeCode::Datetime | FieldTypeCode::Timestamp => {
+            tp.set_flen(MAX_DATETIME_WIDTH_NO_FSP);
+            if tp.decimal() > 0 {
+                tp.set_flen(tp.flen() + 1 + tp.decimal());
+            }
+        }
+        _ => {}
+    }
+    set_bin_chs_cln_flag(&mut tp);
+    tp
+}
+
+pub(crate) fn duration_cast_field_type(source: &FieldType) -> FieldType {
+    let mut tp = FieldType::new(FieldTypeCode::Duration);
+    match source.code() {
+        FieldTypeCode::Datetime | FieldTypeCode::Timestamp | FieldTypeCode::Date => {
+            tp.set_decimal(source.decimal());
+        }
+        _ => tp.set_decimal(MAX_FSP),
+    }
+    tp.set_flen(MAX_DURATION_WIDTH_NO_FSP);
+    if tp.decimal() > 0 {
+        tp.set_flen(tp.flen() + 1 + tp.decimal());
+    }
+    tp
 }

@@ -148,6 +148,7 @@ impl EvalErrorSql for EvalError {
             // HY000 (3150, 3064), and a sequence failure is either 4135 (HY000)
             // or 1146 (42S02). Deriving it from the code is the only answer that
             // holds for every one.
+            EvalError::SharedEvaluation { code, message } => sql_error(code, message),
             EvalError::Unsupported(reason) => sql_error(1105, reason),
             EvalError::NotImplemented(name) => {
                 go(&expression::ERR_NOT_SUPPORTED_YET, &[name.as_ref().into()])

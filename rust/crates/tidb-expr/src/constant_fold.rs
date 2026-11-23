@@ -232,7 +232,7 @@ fn fold_current_value_in(
     // arguments is explicitly excluded (it is a normal expression of its
     // argument).
     let deferred_self = is_deferred_function(func.func_name.lowercase(), func.args.len());
-    let value = crate::eval_expression_once(expr, ctx).ok()?;
+    let value = crate::eval_constant_for_folding(expr, ctx).ok()?;
     let mut ret_type = expr.static_type()?.clone();
     if !has_null_arg {
         if value.is_null() {
@@ -322,7 +322,7 @@ fn special_fold(
             let argument = func.args.first()?;
             if let Expression::Constant(constant) = argument {
                 let deferred = constant.literal_value().is_none();
-                let value = crate::eval_expression_once(expr, ctx).ok()?;
+                let value = crate::eval_constant_for_folding(expr, ctx).ok()?;
                 let mut folded =
                     crate::constant::Constant::new(value, expr.static_type()?.clone());
                 folded.collation = func.collation.clone();

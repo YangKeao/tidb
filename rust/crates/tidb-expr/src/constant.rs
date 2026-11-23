@@ -349,10 +349,21 @@ impl Constant {
             }
             return Ok(self.value.clone());
         };
-        if self.deferred_expr.is_none() || value.is_null() {
+        if self.deferred_expr.is_none() {
             return Ok(value);
         }
-        let target = self.ret_type.as_ref().ok_or_else(|| {
+        Self::convert_deferred_value(value, self.ret_type.as_ref(), ctx)
+    }
+
+    pub(crate) fn convert_deferred_value(
+        value: Datum,
+        target: Option<&FieldType>,
+        ctx: &dyn crate::Columns,
+    ) -> Result<Datum, (Datum, EvalError)> {
+        if value.is_null() {
+            return Ok(value);
+        }
+        let target = target.ok_or_else(|| {
             (
                 value.clone(),
                 EvalError::Unsupported("deferred constant has no result type"),

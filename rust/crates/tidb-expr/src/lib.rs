@@ -108,6 +108,8 @@ pub mod distsql_builtin;
 mod regexp;
 pub mod rewriter;
 mod row;
+pub mod rpn;
+pub(crate) use tidb_exprctx as context;
 pub mod scalar_function;
 pub mod scalar_subquery;
 pub mod schema;
@@ -356,6 +358,19 @@ pub fn eval_expression_once(
     let mut dual = tidb_chunk::chunk::Chunk::new_empty_chunk(&[]);
     dual.set_num_virtual_rows(1);
     expression.eval(ctx, dual.get_row(0))
+}
+
+// Folding uses the native expression API to preserve the saved Datum and
+// declaration that the function classes and the plan cache observe.
+pub(crate) fn eval_constant_for_folding(
+    expression: &expression::Expression,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    let mut dual = tidb_chunk::chunk::Chunk::new_empty_chunk(&[]);
+    dual.set_num_virtual_rows(1);
+    expression
+        .eval_string(ctx, dual.get_row(0))
+        .map(|value| expression.apply_enum_set_as_int(value))
 }
 
 /// Applies a binary operator to already-evaluated operands. Exposed so callers
