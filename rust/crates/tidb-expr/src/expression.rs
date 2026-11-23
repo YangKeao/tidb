@@ -780,7 +780,10 @@ impl Expression {
         ctx: &dyn tidb_exprctx::context::Columns,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<tidb_datatype::Datum, tidb_exprctx::context::EvalError> {
-        let value = self.eval_string(ctx, row)?;
+        let value = match crate::rpn::try_evaluate_direct_row(self, ctx, row)? {
+            Some(value) => value,
+            None => self.eval_string(ctx, row)?,
+        };
         Ok(self.apply_enum_set_as_int(value))
     }
 
@@ -819,7 +822,7 @@ impl Expression {
             .map_err(|error| (tidb_datatype::Datum::Null, error))
     }
 
-    fn apply_enum_set_as_int(&self, value: tidb_datatype::Datum) -> tidb_datatype::Datum {
+    pub(crate) fn apply_enum_set_as_int(&self, value: tidb_datatype::Datum) -> tidb_datatype::Datum {
         // `WrapWithCastAsInt` follows Go's hybrid ENUM path by setting
         // `EnumSetAsIntFlag` on the source expression and returning it without
         // building another cast node. The row/constant seam still materializes
@@ -839,6 +842,27 @@ impl Expression {
             }
         }
         value
+    }
+
+    pub(crate) fn binary_literal_source(&self) -> Option<&crate::constant::Constant> {
+        let constant = match self {
+            Expression::Constant(constant) => constant,
+            Expression::ScalarFunction(function) if function.func_name.lowercase() == "ifnull" => {
+                let [Expression::Constant(first), second] = function.args.as_slice() else {
+                    return None;
+                };
+                if first.literal_value()?.is_null() {
+                    return second.binary_literal_source();
+                }
+                first
+            }
+            _ => return None,
+        };
+        matches!(
+            constant.literal_value(),
+            Some(tidb_datatype::Datum::BinaryLiteral(_))
+        )
+        .then_some(constant)
     }
 
     /// Go `Expression.GetType` without an `EvalContext`: the expression's static

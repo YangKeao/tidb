@@ -59,6 +59,13 @@ pub use tidb_variable::vars::CurrentTso;
 /// Why an expression could not be evaluated in the supported domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalError {
+    /// An error raised by the shared TiKV expression evaluator.
+    SharedEvaluation {
+        /// MySQL error code.
+        code: u16,
+        /// MySQL error message.
+        message: String,
+    },
     /// The expression uses a construct outside the currently ported domain.
     Unsupported(&'static str),
     /// Go `plannererrors.ErrBadField` (1054): a column path no visible
@@ -479,6 +486,41 @@ pub struct MLogCommitTSEstimation {
     pub retained_upper_tso: u64,
 }
 
+/// The result of requesting this statement occurrence's seeded randomness.
+pub enum SeededRandomDemand<'a> {
+    /// Take the next value from an initialized stream.
+    Draw(f64),
+    /// Initialize the stream after evaluating the seed successfully.
+    Initialize(Box<dyn FnOnce(i64) -> f64 + 'a>),
+}
+
+/// First successful seed conversion and its stream for a statement occurrence.
+#[derive(Clone, Default)]
+pub struct StatementSeededRandom(std::sync::Arc<std::sync::Mutex<Option<tidb_mathutil::MysqlRng>>>);
+
+impl StatementSeededRandom {
+    /// Draw a value from this occurrence using a seed that has already been evaluated.
+    pub fn next(&self, seed: i64) -> f64 {
+        match self.demand() {
+            SeededRandomDemand::Draw(value) => value,
+            SeededRandomDemand::Initialize(initialize) => initialize(seed),
+        }
+    }
+
+    /// Draw from an initialized occurrence or reserve its first seed.
+    pub fn demand(&self) -> SeededRandomDemand<'_> {
+        let mut rng = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(rng) = rng.as_ref() {
+            return SeededRandomDemand::Draw(rng.gen());
+        }
+        // Hold the reservation until the common loop finishes the seed
+        // expression. Dropping it after an error permits another demand.
+        SeededRandomDemand::Initialize(Box::new(move |seed| {
+            rng.insert(tidb_mathutil::MysqlRng::new_with_seed(seed)).gen()
+        }))
+    }
+}
+
 /// Resolves column and session state during evaluation.
 pub trait Columns {
     /// Returns the referenced column, matched by its final name segment.
@@ -885,6 +927,16 @@ pub trait Columns {
 
     /// Advances this session's `RAND()` generator.
     fn rand_next(&self) -> Option<f64> {
+        None
+    }
+
+    /// Return the lazy random stream owned by this statement occurrence.
+    fn statement_seeded_random(&self, _key: usize) -> Option<StatementSeededRandom> {
+        None
+    }
+
+    /// SQL statement behavior flags used by the coprocessor evaluator.
+    fn expression_statement_flags(&self) -> Option<u64> {
         None
     }
 

@@ -108,6 +108,8 @@ pub mod distsql_builtin;
 mod regexp;
 pub mod rewriter;
 mod row;
+pub mod rpn;
+pub(crate) use tidb_exprctx as context;
 pub mod scalar_function;
 pub mod scalar_subquery;
 pub mod schema;

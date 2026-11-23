@@ -16,6 +16,8 @@ use tidb_ast::CiString;
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 use tidb_proto::tipb;
 
+pub use crate::rpn::WireExpressionExecution;
+
 /// Go `PbTypeToFieldType`.
 #[must_use]
 pub fn pb_type_to_field_type(tp: &tipb::FieldType) -> FieldType {
@@ -327,7 +329,7 @@ mod tests {
 
     #[test]
     fn legacy_families_compose_through_one_recursive_decoder() {
-        use tipb::ScalarFuncSig::*;
+        use tidb_proto::tipb::ScalarFuncSig::*;
         let int_type = tipb::FieldType {
             tp: Some(8),
             decimal: Some(0),
@@ -472,7 +474,7 @@ mod tests {
 
     #[test]
     fn go_rejected_arithmetic_variants_do_not_gain_fallback_support() {
-        use tipb::ScalarFuncSig::*;
+        use tidb_proto::tipb::ScalarFuncSig::*;
         for sig in [
             IntDivideIntSignedSigned,
             IntDivideIntSignedUnsigned,
@@ -704,7 +706,7 @@ mod tests {
     /// `WeekWithMode`; the vectors are `TestUnaryNot`'s and `TestWeek`'s.
     #[test]
     fn protobuf_unary_not_and_week_with_mode_decode_in_their_own_domain() {
-        use tipb::ScalarFuncSig::*;
+        use tidb_proto::tipb::ScalarFuncSig::*;
         let value = |expression: &Expression| {
             crate::expr_to_pb::PbConverter::new(&crate::NoColumns, false, &tidb_datatype::SessionTimeZone::utc())
                 .expr_to_pb(expression)
@@ -782,7 +784,7 @@ mod tests {
 
     #[test]
     fn protobuf_extract_signatures_read_the_value_in_their_own_domain() {
-        use tipb::ScalarFuncSig::*;
+        use tidb_proto::tipb::ScalarFuncSig::*;
         let datetime = tidb_datatype::parse_datetime("2019-04-12 14:00:00", &chrono::Utc, true, false)
             .unwrap()
             .time;
@@ -845,7 +847,7 @@ mod tests {
         function.func_name = CiString::new("lower");
         let row = tidb_chunk::mutrow::MutRow::mut_row_from_datums(&[]);
         assert_eq!(
-            function
+            crate::expression::Expression::ScalarFunction(function)
                 .eval(&crate::NoColumns, row.to_row())
                 .unwrap()
                 .sql_string()

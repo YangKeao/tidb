@@ -1464,3 +1464,12 @@ mod tests {
         assert!(dispatch("UNCOMPRESSED_LENGTH", &[s("a"), s("b")], &ctx).is_none());
     }
 }
+
+
+pub(crate) fn aes_operand_count(mode: BlockEncryptionMode, arg_count: usize) -> Option<usize> {
+    if mode.iv_required() {
+        (arg_count == 3).then_some(3)
+    } else {
+        (2..=3).contains(&arg_count).then_some(2)
+    }
+}

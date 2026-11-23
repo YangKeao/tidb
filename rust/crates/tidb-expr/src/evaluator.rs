@@ -16,7 +16,9 @@
 //! expressions before transferring any direct input-column owners.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
+
+use crate::rpn::PreparedExpression;
 
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::chunk_util::ColumnSwapHelper;
@@ -67,6 +69,121 @@ pub fn vectorizable(expressions: &[Expression]) -> bool {
     !((nextval > 0 && (lastval > 0 || setval > 0)) || nextval > 1)
 }
 
+/// Filter definitions and their execution-local programs. One instance
+/// evaluates the same predicates across every batch of a Selection or
+/// residual filter and starts again when that execution reopens.
+pub struct FilterExecution {
+    predicates: Arc<[Expression]>,
+    prepared: RefCell<Vec<Option<Option<PreparedExpression>>>>,
+}
+
+impl FilterExecution {
+    /// Bind the predicates of one filter execution.
+    #[must_use]
+    pub fn new(predicates: Vec<Expression>) -> Self {
+        Self {
+            prepared: RefCell::new(empty_program_slots(predicates.len())),
+            predicates: predicates.into(),
+        }
+    }
+
+    /// Open another execution over the same immutable predicates.
+    #[must_use]
+    pub fn start_execution(&self) -> Self {
+        Self {
+            predicates: Arc::clone(&self.predicates),
+            prepared: RefCell::new(empty_program_slots(self.predicates.len())),
+        }
+    }
+
+    /// Restore fresh execution state when reopening the same filter.
+    pub fn reset(&mut self) {
+        for slot in self.prepared.get_mut() {
+            *slot = None;
+        }
+    }
+
+    /// Borrow the bound predicates.
+    #[must_use]
+    pub fn predicates(&self) -> &[Expression] {
+        &self.predicates
+    }
+
+    /// Match Go's filtered physical mask and intersect the chunk's selection.
+    pub fn filter<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        let (mut selected, nulls) = self.filter_physical(
+            ctx,
+            vec_enabled,
+            input,
+            selected,
+            nulls,
+            !vec_enabled || !vectorizable(&self.predicates),
+        )?;
+        apply_input_selection(input, &mut selected);
+        Ok((selected, nulls))
+    }
+
+    /// Match Go's three-valued physical mask before applying any selection.
+    pub fn vec_eval_bool<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        self.filter_physical(ctx, vec_enabled, input, selected, nulls, false)
+    }
+
+    fn filter_physical<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+        row_based: bool,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        filter_physical_rows(
+            ctx,
+            vec_enabled,
+            &self.predicates,
+            &mut self.prepared.borrow_mut(),
+            input,
+            selected,
+            nulls,
+            row_based,
+        )
+    }
+
+    /// Evaluate a single predicate when the caller must process rows in order.
+    pub fn predicate_on_row(
+        &self,
+        ctx: &dyn Columns,
+        predicate: usize,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        let expression = &self.predicates[predicate];
+        evaluate_prepared_row(
+            expression,
+            &mut self.prepared.borrow_mut()[predicate],
+            ctx,
+            row,
+        )
+    }
+}
+
+fn empty_program_slots(count: usize) -> Vec<Option<Option<PreparedExpression>>> {
+    (0..count).map(|_| None).collect()
+}
+
 /// Go `expression.VecEvalBool`/`VectorizedFilterConsiderNull`.
 ///
 /// The returned mask is indexed by the physical rows of `input`, just like
@@ -91,6 +208,7 @@ pub fn vectorized_filter_consider_null<C: Columns>(
         ctx,
         vec_enabled,
         filters,
+        &mut empty_program_slots(filters.len()),
         input,
         selected,
         nulls,
@@ -111,13 +229,16 @@ pub fn vec_eval_bool<C: Columns>(
     selected: Vec<bool>,
     nulls: Vec<bool>,
 ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
-    filter_physical_rows(ctx, vec_enabled, filters, input, selected, nulls, false)
+    filter_physical_rows(
+        ctx, vec_enabled, filters, &mut empty_program_slots(filters.len()), input, selected, nulls, false,
+    )
 }
 
 fn filter_physical_rows<C: Columns>(
     ctx: &C,
     vec_enabled: bool,
     filters: &[Expression],
+    programs: &mut [Option<Option<PreparedExpression>>],
     input: &Chunk,
     mut selected: Vec<bool>,
     mut nulls: Vec<bool>,
@@ -140,7 +261,7 @@ fn filter_physical_rows<C: Columns>(
     // filter is not vectorizable. Keep the same filter-major order and
     // three-valued truth handling in that branch.
     if row_based {
-        for filter in filters {
+        for (filter, slot) in filters.iter().zip(programs) {
             let int_type = filter
                 .static_type()
                 .is_some_and(|ty| ty.eval_type() == tidb_datatype::EvalType::Int);
@@ -148,7 +269,7 @@ fn filter_physical_rows<C: Columns>(
                 if !selected[row_index] {
                     continue;
                 }
-                let value = filter.eval(ctx, input.physical_row(row_index))?;
+                let value = evaluate_prepared_row(filter, slot, ctx, input.physical_row(row_index))?;
                 let truth = crate::truthy_of(&value)?;
                 if truth.is_none() && int_type {
                     nulls[row_index] = true;
@@ -175,13 +296,36 @@ fn filter_physical_rows<C: Columns>(
             },
         )
     };
-    for filter in filters {
+    for (filter, slot) in filters.iter().zip(programs) {
         if sel.is_empty() {
             break;
         }
         let column_wise = vec_enabled && crate::chunk_executor::vectorized(filter);
         is_zero.clear();
-        if column_wise {
+        let prepared = if matches!(filter, Expression::ScalarFunction(_)) {
+            prepare_expression(slot, filter, ctx, input.num_cols())?
+        } else {
+            None
+        };
+        if let Some(prepared) = prepared {
+            let emit = |value| {
+                let value = filter.apply_enum_set_as_int(value);
+                let value = if column_wise {
+                    crate::scalar_function::can_implicit_eval_int(
+                        filter, &value, tidb_datatype::EvalType::Real,
+                    ).unwrap_or(value)
+                } else {
+                    value
+                };
+                is_zero.push(typed_truth_code(&value, filter)?);
+                Ok(())
+            };
+            if column_wise {
+                prepared.evaluate_rows(ctx, input, &sel, true, emit)?;
+            } else {
+                prepared.evaluate_scalar_selection(ctx, input, &sel, emit)?;
+            }
+        } else if column_wise {
             let mut selected_input = input.clone();
             selected_input.set_sel(Some(sel.clone()));
             let field = filter.static_type().expect("typed filter");
@@ -310,6 +454,7 @@ pub struct EvaluatorProgram {
     calculated_output_indexes: Vec<usize>,
     calculated: Vec<Expression>,
     vectorizable: bool,
+    parallelizable: bool,
     column_mapping: HashMap<usize, Vec<usize>>,
 }
 
@@ -342,16 +487,23 @@ impl EvaluatorProgram {
         }
 
         let vectorizable = vectorizable(&calculated);
+        let parallelizable = vectorizable && !calculated.iter().any(has_mutable_effects);
         Self {
             calculated_output_indexes,
             calculated,
             vectorizable,
+            parallelizable,
             column_mapping,
         }
     }
 }
 
 impl EvaluatorProgram {
+    /// Whether projection batches may run in independent worker executions.
+    pub fn parallelizable(&self) -> bool {
+        self.parallelizable
+    }
+
     /// Go `defaultEvaluator.RequiredOptionalEvalProps`: every optional
     /// evaluation property the calculated (non-column) expressions require.
     #[must_use]
@@ -439,11 +591,57 @@ fn builtin_required_optional_eval_props(name: &str) -> OptionalEvalPropKeySet {
     }
 }
 
+fn prepare_expression<'a>(
+    slot: &'a mut Option<Option<PreparedExpression>>,
+    expr: &Expression,
+    ctx: &dyn Columns,
+    columns: usize,
+) -> Result<Option<&'a mut PreparedExpression>, EvalError> {
+    if slot.is_none() {
+        *slot = Some(PreparedExpression::new(expr, ctx, columns)?);
+    }
+    Ok(slot.as_mut().and_then(Option::as_mut))
+}
+
+fn evaluate_prepared_row(
+    expr: &Expression,
+    slot: &mut Option<Option<PreparedExpression>>,
+    ctx: &dyn Columns,
+    row: tidb_chunk::row::Row<'_>,
+) -> Result<Datum, EvalError> {
+    if matches!(expr, Expression::ScalarFunction(_)) {
+        if let Some(prepared) = prepare_expression(slot, expr, ctx, row.len())? {
+            return prepared
+                .evaluate_row(ctx, row)
+                .map(|value| expr.apply_enum_set_as_int(value));
+        }
+    }
+    expr.eval(ctx, row)
+}
+
+/// Execution state for repeatedly evaluating one bound expression on rows.
+#[derive(Default)]
+pub struct RowProgram(Option<Option<PreparedExpression>>);
+
+impl RowProgram {
+    /// Evaluate on the current row, using the bound program when it can
+    /// represent the current expression's declaration.
+    pub fn evaluate(
+        &mut self,
+        expression: &Expression,
+        ctx: &dyn Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        evaluate_prepared_row(expression, &mut self.0, ctx, row)
+    }
+}
+
 /// Go `EvaluatorSuite`: executes a projection program with an execution-local
 /// column ownership cache. Calculated expressions finish before owner moves,
 /// so an evaluation error cannot leave the input chunk half-consumed.
 pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
+    prepared: RefCell<Vec<Option<Option<PreparedExpression>>>>,
     column_swap_helper: Option<ColumnSwapHelper>,
 }
 
@@ -464,8 +662,16 @@ impl EvaluatorSuite {
         let column_swap_helper = (!program.column_mapping.is_empty())
             .then(|| ColumnSwapHelper::from_mapping(program.column_mapping.clone()));
         Self {
+            prepared: RefCell::new(program.calculated.iter().map(|_| None).collect()),
             program,
             column_swap_helper,
+        }
+    }
+
+    /// Reopen the projection with fresh expression execution state.
+    pub fn reset(&mut self) {
+        for slot in self.prepared.get_mut() {
+            *slot = None;
         }
     }
 
@@ -495,40 +701,73 @@ impl EvaluatorSuite {
     ) -> Result<(), EvaluatorError> {
         let rows = input.num_rows();
         let program = &self.program;
+        let mut prepared = self.prepared.borrow_mut();
         if program.vectorizable {
-            let vec_enabled = ctx.enable_vectorized_expression();
-            for (output_index, expression) in program
+            for (position, (output_index, expression)) in program
                 .calculated_output_indexes
                 .iter()
                 .zip(&program.calculated)
+                .enumerate()
             {
-                // Go `defaultEvaluator.run`: each expression independently
-                // selects its signature's typed vector kernel or row evaluation.
-                let vectorized = vec_enabled && crate::chunk_executor::vectorized(expression);
-                if vectorized
+                if rows != 0 && ctx.enable_vectorized_expression() {
+                    if let Some(source) = crate::rpn::batch_source(expression, ctx)? {
+                        if let Some(shared) = prepare_expression(
+                            &mut prepared[position],
+                            source,
+                            ctx,
+                            input.num_cols(),
+                        )? {
+                            shared.append_projection(ctx, input, output, *output_index)?;
+                            continue;
+                        }
+                    }
+                }
+                if let Expression::Constant(constant) = expression {
+                    // Go Constant.VecEval* broadcasts only non-deferred
+                    // constants. Deferred expressions still consume rows;
+                    // parameter values are read anew for every chunk.
+                    if constant.deferred_expr.is_none() {
+                        if rows != 0 {
+                            let value = constant.eval_in(ctx)?;
+                            for _ in 0..rows {
+                                output.append_datum(*output_index, &value);
+                            }
+                        }
+                        continue;
+                    }
+                }
+                if ctx.enable_vectorized_expression()
+                    && crate::chunk_executor::vectorized(expression)
                     && crate::scalar_function::vec_eval::eval_one(
-                        expression,
-                        ctx,
-                        input,
-                        output,
-                        *output_index,
+                        expression, ctx, input, output, *output_index,
                     )?
                 {
                     continue;
                 }
                 for row_index in 0..rows {
-                    let value = expression.eval(ctx, input.get_row(row_index))?;
+                    let value = evaluate_prepared_row(
+                        expression,
+                        &mut prepared[position],
+                        ctx,
+                        input.get_row(row_index),
+                    )?;
                     output.append_datum(*output_index, &value);
                 }
             }
         } else {
             for row_index in 0..rows {
-                for (output_index, expression) in program
+                for (position, (output_index, expression)) in program
                     .calculated_output_indexes
                     .iter()
                     .zip(&program.calculated)
+                    .enumerate()
                 {
-                    let value = expression.eval(ctx, input.get_row(row_index))?;
+                    let value = evaluate_prepared_row(
+                        expression,
+                        &mut prepared[position],
+                        ctx,
+                        input.get_row(row_index),
+                    )?;
                     output.append_datum(*output_index, &value);
                 }
             }
@@ -1755,5 +1994,39 @@ mod tests {
             // exposes NULL only for equality rewritten from IN.
             assert_eq!(row_nulls, expected_nulls, "{name} row evaluator");
         }
+    }
+}
+
+
+pub(crate) fn has_scalar_effects(expression: &Expression) -> bool {
+    contains_effect(expression, &|function| {
+        // Seeded streams belong to the program. Preserve the established
+        // per-mode demand order when NULLIF shares a seeded occurrence.
+        function.requires_row_order()
+            && (function.func_name.lowercase() != "rand" || function.args.is_empty())
+    })
+}
+
+pub(crate) fn has_mutable_effects(expression: &Expression) -> bool {
+    contains_effect(expression, &|function| function.requires_row_order())
+}
+
+fn contains_effect(
+    expression: &Expression,
+    matches: &impl Fn(&crate::scalar_function::ScalarFunction) -> bool,
+) -> bool {
+    match expression {
+        Expression::ScalarFunction(function) => {
+            matches(function)
+                || function
+                    .args
+                    .iter()
+                    .any(|arg| contains_effect(arg, matches))
+        }
+        Expression::Constant(constant) => constant
+            .deferred_expr
+            .as_deref()
+            .is_some_and(|arg| contains_effect(arg, matches)),
+        Expression::Column(_) | Expression::CorrelatedColumn(_) | Expression::ScalarSubQuery(_) => false,
     }
 }

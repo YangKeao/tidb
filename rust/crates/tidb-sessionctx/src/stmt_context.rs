@@ -1405,7 +1405,7 @@ pub struct StmtContextData {
     /// constant `RAND(N)` occurrence, created fresh for each STATEMENT (Go
     /// builds a new `builtinFunc` per plan) and advanced once per row by the
     /// evaluator, keyed by the call site's stable identity.
-    rand_seeded: Arc<Mutex<HashMap<usize, MysqlRng>>>,
+    rand_seeded: Arc<Mutex<HashMap<usize, tidb_exprctx::context::StatementSeededRandom>>>,
     /// Go `StatementContext.LastInsertID`/`LastInsertIDSet`: the id this
     /// statement publishes as `LAST_INSERT_ID()`.
     ///
@@ -7839,15 +7839,26 @@ impl Columns for StmtContext {
         self.rand_session.as_ref().map(|rng| rng.gen())
     }
 
-    fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
+    fn statement_seeded_random(
+        &self,
+        key: usize,
+    ) -> Option<tidb_exprctx::context::StatementSeededRandom> {
         Some(
             self.rand_seeded
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .entry(key)
-                .or_insert_with(|| MysqlRng::new_with_seed(seed))
-                .gen(),
+                .or_default()
+                .clone(),
         )
+    }
+
+    fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
+        self.statement_seeded_random(key).map(|random| random.next(seed))
+    }
+
+    fn expression_statement_flags(&self) -> Option<u64> {
+        Some(self.push_down_flags())
     }
 
     fn current_database(&self) -> Option<String> {
