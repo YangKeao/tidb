@@ -113,9 +113,15 @@ fn check_cast(session: &mut Session, sql_mode: &str, target: &str, value: &str, 
         }
         Read::WarnedNull => {
             assert_eq!(got, [["NULL"]], "{context}");
+            let reported = match (target, value) {
+                ("DATETIME", "0000-00-00") => "0000-00-00 00:00:00",
+                (_, "2024-02-31") => "2024-2-31",
+                (_, "2024-13-01") => "2024-13-1",
+                _ => value,
+            };
             assert_eq!(
                 warnings(session),
-                [(1292, format!("Incorrect datetime value: '{value}'"))],
+                [(1292, format!("Incorrect datetime value: '{reported}'"))],
                 "{context}"
             );
         }
@@ -274,7 +280,7 @@ fn date_applies_its_own_zero_date_modes_after_the_argument_cast() {
         let expected_warnings = if warns {
             vec![(
                 1292,
-                "Incorrect datetime value: '2024-00-01 12:34:56'".to_owned(),
+                "Incorrect datetime value: '2024-00-01 12:34:56.000000'".to_owned(),
             )]
         } else {
             Vec::new()

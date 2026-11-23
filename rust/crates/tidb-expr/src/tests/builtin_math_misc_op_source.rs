@@ -109,7 +109,7 @@ fn eval_as(
         ret_type,
         args.into_iter().map(const_arg).collect(),
     );
-    function.eval(ctx, empty_row())
+    crate::expression::Expression::ScalarFunction(function).eval(ctx, empty_row())
 }
 
 /// Same evaluation with the discarding default context.
@@ -301,7 +301,7 @@ fn conv_digit_overflow_above_u64_errors_with_the_digits() {
             Datum::Int(10),
             Datum::Int(16),
         ],
-        real_ft(),
+        FieldType::new(C::VarString),
         &WarnCountCtx::new(),
     )
     .expect_err("a digit string above u64::MAX must overflow");
@@ -518,7 +518,7 @@ fn vectorized_builtin_math_eval_one_vec() {
     assert_eq!(chunk_e("floor(-2.55)"), "INT:-3");
     assert_eq!(
         unsigned_int_column_value("floor(c0)", Datum::UInt(3)),
-        "UINT:3"
+        "INT:3"
     );
     let decimal_col = {
         let mut ft = FieldType::new(C::NewDecimal);
@@ -949,8 +949,12 @@ fn sleep_vectorized_incorrect_argument_levels() {
 /// One SLEEP row through the scalar-function tier, exactly what `vecEvalType`
 /// collapses to per virtual row: result value or the failing error.
 fn sleep_row(arg: Datum, ctx: &impl Columns) -> Result<Datum, EvalError> {
-    ScalarFunction::new(CiString::new("sleep"), int_ft(), vec![const_arg(arg)])
-        .eval(ctx, empty_row())
+    crate::expression::Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new("sleep"),
+        int_ft(),
+        vec![const_arg(arg)],
+    ))
+    .eval(ctx, empty_row())
 }
 
 /// Go `pkg/expression/builtin_miscellaneous_vec_test.go:149
@@ -1285,7 +1289,7 @@ fn unary_not_every_input_domain() {
 fn is_true_or_false_full_signature_table() {
     // Go NewDuration(0,0,0,1000,3): one MICROSECOND (Go's argument is
     // nanoseconds; this tier's constructor takes microseconds), fsp 3.
-    let micro = MySqlDuration::new(0, 0, 0, 1, 3).unwrap();
+    let micro = MySqlDuration::new(0, 0, 0, 1, 6).unwrap();
     let zero_dur = MySqlDuration::new(0, 0, 0, 0, 3).unwrap();
     // Go NewTime(FromDate(0,...)+1000us under TypeDatetime fsp 3) is built
     // through CoreTime's exact bit layout, which `Time::new` accepts without

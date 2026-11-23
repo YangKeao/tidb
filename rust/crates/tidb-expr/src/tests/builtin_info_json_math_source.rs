@@ -98,16 +98,28 @@ fn const_arg(datum: Datum) -> Expression {
 }
 
 fn eval_as(name: &str, args: Vec<Datum>, ret_type: FieldType, ctx: &impl Columns) -> Datum {
-    ScalarFunction::new(
+    crate::expression::Expression::ScalarFunction(ScalarFunction::new(
         CiString::new(name),
         ret_type,
         args.into_iter().map(const_arg).collect(),
-    )
+    ))
     .eval(ctx, tidb_chunk::row::Row::empty())
     .expect("source row must evaluate")
 }
 
+pub(crate) fn typed_json_predicate(name: &str, vals: &[Datum]) -> Result<Datum, EvalError> {
+    Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new(name),
+        int_ft(),
+        vals.iter().cloned().map(const_arg).collect(),
+    ))
+    .eval(&NoColumns, tidb_chunk::row::Row::empty())
+}
+
 fn json_call(name: &str, vals: &[Datum]) -> Result<Datum, EvalError> {
+    if matches!(name, "JSON_CONTAINS_PATH" | "JSON_OVERLAPS") {
+        return typed_json_predicate(name, vals);
+    }
     json_dispatch(name, vals)
         .or_else(|| json2::dispatch(name, vals))
         .expect("JSON family should own name/arity")
@@ -194,9 +206,13 @@ impl Columns for InfoColumns {
 }
 
 fn eval_info(name: &str, result_type: FieldType, ctx: &InfoColumns) -> Datum {
-    ScalarFunction::new(CiString::new(name), result_type, vec![])
-        .eval(ctx, tidb_chunk::row::Row::empty())
-        .expect("session information builtin must evaluate")
+    crate::expression::Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new(name),
+        result_type,
+        vec![],
+    ))
+    .eval(ctx, tidb_chunk::row::Row::empty())
+    .expect("session information builtin must evaluate")
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +931,12 @@ fn json_overlaps() {
         Datum::Null
     );
     for (left, right, want) in [
+        ("[1e-17]", "[2e-17]", 0),
+        (r#"[{"k":1}]"#, r#"[{"k":1.0}]"#, 1),
+        (r#"{"k":[{"x":1}]}"#, r#"{"k":[{"x":1.0}]}"#, 1),
+        ("0", "1e-9", 1),
+        ("0.0", "1e-9", 0),
+        ("[18446744073709551615]", "[18446744073709551614]", 0),
         ("[1, 2]", "[2,3]", 1),
         ("[1, 2]", "2", 1),
         (r#"[{"a":1}]"#, r#"{"a":1}"#, 1),
@@ -1488,20 +1510,23 @@ fn json_schema_valid_cache() {
     let function = ScalarFunction::new(CiString::new("json_schema_valid"), int_ft(), args);
     let empty = tidb_chunk::chunk::Chunk::new_with_capacity(&[], 1);
     assert_eq!(
-        function.eval(&NoColumns, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(function.clone())
+            .eval(&NoColumns, empty.get_row(0))
+            .unwrap(),
         Datum::Int(1)
     );
     let cloned = function.clone();
     assert_eq!(
-        cloned.eval(&NoColumns, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(cloned)
+            .eval(&NoColumns, empty.get_row(0))
+            .unwrap(),
         Datum::Int(1)
     );
 }
 
 /// Go `builtinJSONSchemaValidSig.schemaCache` is keyed by `CtxID`, not only by
-/// strict literals. A prepared parameter belongs to one statement context, so
-/// changing it under the same context deliberately keeps the cached schema;
-/// the next context gets a fresh schema.
+/// strict literals. The same prepared expression sees a stable binding within
+/// a statement and a fresh schema on the next execution.
 #[test]
 fn json_schema_valid_cache_replaces_context_only_schema() {
     struct SchemaContext {
@@ -1527,55 +1552,38 @@ fn json_schema_valid_cache_replaces_context_only_schema() {
 
     let mut schema = Constant::new(json_s(r#"{"type":"object"}"#), text_ft());
     schema.param_marker = Some(ParamMarker { order: 0 });
-    let function = ScalarFunction::new(
+    let expression = Expression::ScalarFunction(ScalarFunction::new(
         CiString::new("json_schema_valid"),
         int_ft(),
         vec![Expression::Constant(schema), const_arg(json_s("[]"))],
-    );
+    ));
     let row = tidb_chunk::row::Row::empty();
-    assert_eq!(
-        function
-            .eval(
-                &SchemaContext {
-                    context_id: 7,
-                    schema: json_s(r#"{"type":"object"}"#),
-                },
-                row,
-            )
-            .unwrap(),
-        Datum::Int(0)
-    );
-    assert_eq!(
-        function
-            .eval(
-                &SchemaContext {
-                    context_id: 7,
-                    schema: json_s("{}"),
-                },
-                row,
-            )
-            .unwrap(),
-        Datum::Int(0)
-    );
-    assert_eq!(
-        function
-            .eval(
-                &SchemaContext {
-                    context_id: 8,
-                    schema: json_s("{}"),
-                },
-                row,
-            )
-            .unwrap(),
-        Datum::Int(1)
-    );
+    for (context_id, schema, expected) in [
+        (7, r#"{"type":"object"}"#, 0),
+        (7, r#"{"type":"object"}"#, 0),
+        (8, "{}", 1),
+    ] {
+        let ctx = SchemaContext {
+            context_id,
+            schema: json_s(schema),
+        };
+        let mut execution = crate::rpn::PreparedExpression::new(&expression, &ctx, 0)
+            .unwrap()
+            .expect("typed JSON_SCHEMA_VALID program");
+        assert_eq!(
+            execution.evaluate_row(&ctx, row).unwrap(),
+            Datum::Int(expected)
+        );
+        assert_eq!(
+            execution.evaluate_row(&ctx, row).unwrap(),
+            Datum::Int(expected)
+        );
+    }
 }
 
-/// Go's `jsonModify` keeps context-only constant paths in the signature's
-/// cache. A prepared path is stable for one statement context and is replaced
-/// for the next context, while value arguments are still evaluated per row.
+/// The same JSON_SET declaration is reused with one stable path per execution.
 #[test]
-fn json_modify_path_cache_replaces_context_only_paths() {
+fn json_modify_reads_prepared_path_for_each_execution() {
     struct PathContext {
         context_id: u64,
         path: Datum,
@@ -1599,52 +1607,27 @@ fn json_modify_path_cache_replaces_context_only_paths() {
 
     let mut path = Constant::new(json_s("$.a"), text_ft());
     path.param_marker = Some(ParamMarker { order: 0 });
-    let function = ScalarFunction::new(
+    let expression = Expression::ScalarFunction(ScalarFunction::new(
         CiString::new("json_set"),
-        text_ft(),
+        FieldType::new(FieldTypeCode::Json),
         vec![
-            const_arg(json_s("{}")),
+            const_arg(Datum::Json(tidb_datatype::BinaryJSON::parse("{}").unwrap())),
             Expression::Constant(path),
             const_arg(Datum::Int(1)),
         ],
-    );
+    ));
     let row = tidb_chunk::row::Row::empty();
-    assert_eq!(
-        function
-            .eval(
-                &PathContext {
-                    context_id: 11,
-                    path: json_s("$.a"),
-                },
-                row,
-            )
-            .unwrap(),
-        json_s(r#"{"a": 1}"#)
-    );
-    assert_eq!(
-        function
-            .eval(
-                &PathContext {
-                    context_id: 11,
-                    path: json_s("$.b"),
-                },
-                row,
-            )
-            .unwrap(),
-        json_s(r#"{"a": 1}"#)
-    );
-    assert_eq!(
-        function
-            .eval(
-                &PathContext {
-                    context_id: 12,
-                    path: json_s("$.b"),
-                },
-                row,
-            )
-            .unwrap(),
-        json_s(r#"{"b": 1}"#)
-    );
+    for (context_id, path, expected) in [(11, "$.a", r#"{"a": 1}"#), (12, "$.b", r#"{"b": 1}"#)] {
+        let ctx = PathContext {
+            context_id,
+            path: json_s(path),
+        };
+        let mut execution = crate::rpn::PreparedExpression::new(&expression, &ctx, 0)
+            .unwrap()
+            .expect("typed JSON_SET program");
+        json_eq(&execution.evaluate_row(&ctx, row).unwrap(), expected);
+        json_eq(&execution.evaluate_row(&ctx, row).unwrap(), expected);
+    }
 }
 
 /// Go `pkg/expression/builtin_json_vec_test.go:152 TestVectorizedBuiltinJSONFunc`.
@@ -1878,10 +1861,13 @@ fn exp() {
         math_call("EXP", &[Datum::new_string("tidb")]).unwrap(),
         Datum::Real(1.0)
     );
-    assert!(matches!(
+    assert_eq!(
         math_call("EXP", &[Datum::Real(100_000.0)]),
-        Err(EvalError::FloatOverflow)
-    ));
+        Err(EvalError::DataOutOfRange {
+            value: "DOUBLE",
+            expression: "exp(100000)".into(),
+        })
+    );
 }
 
 /// Go `pkg/expression/builtin_math_test.go:177 TestFloor`.
@@ -2180,5 +2166,80 @@ fn truncate() {
             got.compare(&want, Collation::Binary) == Ok(std::cmp::Ordering::Equal),
             "TRUNCATE{args:?} = {got:?}, want {want:?}"
         );
+    }
+}
+
+#[test]
+fn extract_reads_runtime_unit_with_typed_operands() {
+    use crate::column::Column;
+    use tidb_chunk::chunk::Chunk;
+
+    let extract = |unit: Datum, value: Datum, source: FieldType| {
+        let fields = [text_ft(), source];
+        let mut input = Chunk::new_with_capacity(&fields, 1);
+        input.append_datum(0, &unit);
+        input.append_datum(1, &value);
+        let arguments = fields
+            .into_iter()
+            .enumerate()
+            .map(|(index, field)| {
+                let mut column = Column::new(index as i64, field);
+                column.index = index as i64;
+                Expression::Column(column)
+            })
+            .collect();
+        Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("extract"),
+            int_ft(),
+            arguments,
+        ))
+        .eval(&NoColumns, input.get_row(0))
+    };
+    for (unit, value, source, expected) in [
+        ("year", json_s("2024-03-15"), text_ft(), Datum::Int(2024)),
+        (
+            "year",
+            Datum::Int(20240315123045),
+            int_ft(),
+            Datum::Int(2024),
+        ),
+        (
+            "year",
+            Datum::Int(2024),
+            FieldType::new(FieldTypeCode::Year),
+            Datum::Int(2024),
+        ),
+        (
+            "hour",
+            json_s("2024-03-15 10:30:45"),
+            text_ft(),
+            Datum::Int(10),
+        ),
+        ("minute", json_s("-25:03:04"), text_ft(), Datum::Int(-3)),
+        ("day_hour", json_s("1 02:03:04"), text_ft(), Datum::Int(26)),
+        (
+            "day_second",
+            json_s("2024-03-15 02:03:04"),
+            text_ft(),
+            Datum::Int(15020304),
+        ),
+        ("bogus", Datum::Null, text_ft(), Datum::Null),
+    ] {
+        assert_eq!(
+            extract(json_s(unit), value.clone(), source),
+            Ok(expected),
+            "{unit} {value:?}"
+        );
+    }
+    assert_eq!(
+        extract(Datum::Null, json_s("bad"), text_ft()),
+        Ok(Datum::Null)
+    );
+    for (unit, value, message) in [
+        ("bogus", "2024-03-15", "invalid unit BOGUS"),
+        ("day_hour", "bad", "Truncated incorrect time value: 'bad'"),
+    ] {
+        let error = extract(json_s(unit), json_s(value), text_ft()).unwrap_err();
+        assert!(format!("{error:?}").contains(message), "{error:?}");
     }
 }

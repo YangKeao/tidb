@@ -22,9 +22,7 @@ use crate::Datum;
 use serde_json::json;
 
 fn call(name: &str, vals: &[Datum]) -> Datum {
-    dispatch(name, vals)
-        .expect("JSON family should own name/arity")
-        .expect("Go-derived valid vector should evaluate")
+    call_result(name, vals).expect("Go-derived valid vector should evaluate")
 }
 
 fn s(value: &str) -> Datum {
@@ -50,6 +48,9 @@ fn rendered(datum: Datum) -> String {
 }
 
 fn call_result(name: &str, vals: &[Datum]) -> Result<Datum, crate::EvalError> {
+    if matches!(name, "JSON_CONTAINS_PATH" | "JSON_OVERLAPS") {
+        return crate::tests::typed_json_predicate(name, vals);
+    }
     dispatch(name, vals).expect("JSON family should own name/arity")
 }
 

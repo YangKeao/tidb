@@ -413,3 +413,32 @@ fn clamping_a_system_variable_warns_1292_with_the_original_value() {
         );
     }
 }
+
+#[test]
+fn a_check_constraint_uses_the_writing_statements_like_escape() {
+    let mut session = Session::new();
+    session
+        .run("SET @@global.tidb_enable_check_constraint=1")
+        .unwrap();
+    session.run("SET sql_mode=''").unwrap();
+    session.run(r"CREATE TABLE check_rebind (id BIGINT PRIMARY KEY, s VARCHAR(20), CHECK(s LIKE 'ok\\%'))").unwrap();
+    let violation = session
+        .run("INSERT INTO check_rebind VALUES (1,CONCAT('ok',CHAR(92),'1'))")
+        .unwrap_err();
+    assert_eq!(violation.to_mysql_error().code, 3819);
+    session
+        .run("SET tidb_enable_no_backslash_escapes_in_like=ON")
+        .unwrap();
+    session.run("SET sql_mode='NO_BACKSLASH_ESCAPES'").unwrap();
+    let rows = (1..=128)
+        .map(|id| format!(r"({id},'ok\{id}')"))
+        .collect::<Vec<_>>()
+        .join(",");
+    session
+        .run(&format!("INSERT INTO check_rebind VALUES {rows}"))
+        .unwrap();
+    let StmtResult::Rows(rows) = session.run("SELECT COUNT(*) FROM check_rebind").unwrap() else {
+        panic!("expected rows");
+    };
+    assert_eq!(rows[0][0].label(), "INT:128");
+}

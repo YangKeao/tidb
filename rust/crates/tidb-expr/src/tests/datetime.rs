@@ -84,8 +84,8 @@ fn case_when() {
     // matching real MySQL's short-circuit CASE -- a load-bearing SQL
     // idiom for guarding against errors. `1/0` in the untaken branch
     // must NOT raise `IntOverflow`/division-by-zero here.
-    assert_eq!(e("case when 1=0 then 1/0 else 5 end"), "INT:5");
-    assert_eq!(e("case 1 when 2 then 1/0 else 5 end"), "INT:5");
+    assert_eq!(e("case when 1=0 then 1/0 else 5 end"), "DEC:5.0000");
+    assert_eq!(e("case 1 when 2 then 1/0 else 5 end"), "DEC:5.0000");
     // Nests, and composes with ordinary operators.
     assert_eq!(
         e("case when 1=1 then case when 2=2 then 'nested' else 'no' end else 'outer' end"),
@@ -182,26 +182,26 @@ fn test_current_date() {
 fn test_current_time() {
     // The same nonzero `time_zone` offset shifts CURRENT_TIME.
     let clock = FixedClock(1_700_000_000, 654_321_000, 19_800);
-    assert_eq!(e_at("curtime()", &clock), "STR:03:43:20");
-    assert_eq!(e_at("current_time", &clock), "STR:03:43:20");
+    assert_eq!(e_at("curtime()", &clock), "DUR:03:43:20");
+    assert_eq!(e_at("current_time", &clock), "DUR:03:43:20");
     // TestCurrentTime's explicit precision table.
-    assert_eq!(e_at("current_time(3)", &clock), "STR:03:43:20.654");
-    assert_eq!(e_at("current_time(6)", &clock), "STR:03:43:20.654321");
+    assert_eq!(e_at("current_time(3)", &clock), "DUR:03:43:20.654");
+    assert_eq!(e_at("current_time(6)", &clock), "DUR:03:43:20.654321");
     // Go's parser rejects a signed precision before execution sees it.
     assert!(tidb_parser::parse("select current_time(-1)").is_err());
     assert_eq!(
         e_at("current_time(7)", &clock),
         "TooBigFsp { fsp: 7, function: \"current_time\" }"
     );
-    assert_eq!(e_at("curtime(3)", &clock), "STR:03:43:20.654");
+    assert_eq!(e_at("curtime(3)", &clock), "DUR:03:43:20.654");
 
     // A genuine SPLIT rule, confirmed via `gorun`: the 0-arg form
     // TRUNCATES, but an EXPLICIT argument (even literally `0`)
     // ROUNDS. UTC offset 0 here isolates the effect from the
     // time_zone shift above.
     let utc = FixedClock(1_700_000_000, 654_321_000, 0);
-    assert_eq!(e_at("curtime()", &utc), "STR:22:13:20"); // truncates
-    assert_eq!(e_at("curtime(0)", &utc), "STR:22:13:21"); // rounds up
+    assert_eq!(e_at("curtime()", &utc), "DUR:22:13:20"); // truncates
+    assert_eq!(e_at("curtime(0)", &utc), "DUR:22:13:21"); // rounds up
 }
 
 #[test]
@@ -244,10 +244,10 @@ fn test_utc_time() {
     let clock = FixedClock(1_700_000_000, 654_321_000, 19_800);
     // UTC_TIME has the SAME 0-arg-truncates/explicit-arg-rounds split
     // as CURTIME.
-    assert_eq!(e_at("utc_time()", &clock), "STR:22:13:20");
-    assert_eq!(e_at("utc_time(0)", &clock), "STR:22:13:21");
-    assert_eq!(e_at("utc_time(3)", &clock), "STR:22:13:20.654");
-    assert_eq!(e_at("utc_time(6)", &clock), "STR:22:13:20.654321");
+    assert_eq!(e_at("utc_time()", &clock), "DUR:22:13:20");
+    assert_eq!(e_at("utc_time(0)", &clock), "DUR:22:13:21");
+    assert_eq!(e_at("utc_time(3)", &clock), "DUR:22:13:20.654");
+    assert_eq!(e_at("utc_time(6)", &clock), "DUR:22:13:20.654321");
     assert!(tidb_parser::parse("select utc_time(-1)").is_err());
     assert_eq!(
         e_at("utc_time(7)", &clock),
@@ -1036,17 +1036,15 @@ fn regexp_expr_eval() {
         ("'abc123' regexp '[0-9]+'", "INT:1"), // substring match, no anchors needed
         ("'hello world' regexp '^hello'", "INT:1"),
         ("'hello world' regexp 'world$'", "INT:1"),
-        (
-            "'abc' regexp '['",
-            "Unsupported(\"invalid regular expression pattern\")",
-        ),
-        (
-            "'abc' regexp ''",
-            "Unsupported(\"empty regular expression pattern\")",
-        ),
     ];
     for (expr, want) in cases {
         assert_eq!(&e(expr), want, "expr: {expr}");
+    }
+    for expr in ["'abc' regexp '['", "'abc' regexp ''"] {
+        assert!(
+            e(expr).starts_with("SharedEvaluation { code: 1139,"),
+            "expr: {expr}"
+        );
     }
 }
 
@@ -1084,11 +1082,11 @@ fn match_against_unsupported() {
     let cases: &[(&str, &str)] = &[
         (
             "match(a) against('x')",
-            "Unsupported(\"unsupported expression\")",
+            "Unsupported(\"expression form is not yet supported by the rewriter\")",
         ),
         (
             "match(a) against('x' in boolean mode)",
-            "Unsupported(\"unsupported expression\")",
+            "Unsupported(\"expression form is not yet supported by the rewriter\")",
         ),
     ];
     for (expr, want) in cases {

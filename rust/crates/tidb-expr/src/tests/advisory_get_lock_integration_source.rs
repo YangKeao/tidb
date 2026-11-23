@@ -132,7 +132,7 @@ fn test_get_lock_call_semantics_table() {
         );
         let mut chunk = tidb_chunk::chunk::Chunk::new_empty(&[]);
         chunk.set_num_virtual_rows(1);
-        let err = function
+        let err = crate::expression::Expression::ScalarFunction(function)
             .eval(&session, chunk.get_row(0))
             .expect_err("one-argument get_lock must fail");
         match err {

@@ -318,14 +318,14 @@ fn sleep_errctx_levels_and_null_arguments_follow_the_caller() {
     }
 
     fn sleep_row(arg: Datum, ctx: &impl Columns) -> Result<Datum, EvalError> {
-        ScalarFunction::new(
+        crate::expression::Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("sleep"),
             FieldType::new(FieldTypeCode::LongLong),
             vec![Expression::Constant(Constant::new(
                 arg,
                 FieldType::new(FieldTypeCode::Double),
             ))],
-        )
+        ))
         .eval(ctx, empty_row())
     }
 
