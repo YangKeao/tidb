@@ -636,6 +636,17 @@ impl Decimal {
         self.storage_scale
     }
 
+    /// Restore the visible scale without dropping stored arithmetic precision.
+    #[must_use]
+    pub fn with_result_scale(mut self, scale: u32) -> Self {
+        if scale > self.storage_scale {
+            self.digits = pad_scale(&self.digits, self.storage_scale, scale).into();
+            self.storage_scale = scale;
+        }
+        self.scale = scale;
+        self
+    }
+
     /// Stamps the declared `DECIMAL(M, D)` column shape onto this value.
     ///
     /// Source: Go `Datum.convertToMysqlDecimal`'s
