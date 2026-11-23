@@ -16,12 +16,10 @@
 
 use std::process::ExitCode;
 
-// Go's runtime owns its own allocator; the Rust node's statement path is
-// allocation-heavy (parse/plan/stage churn dominates its CPU profile), so the
-// binary runs on jemalloc like production TiKV instead of glibc malloc.
+// The expression dependency registers System. Link jemalloc's malloc and
+// free symbols for System and the existing heap-profiling controls.
 #[cfg(feature = "jemalloc")]
-#[global_allocator]
-static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+use tikv_jemalloc_sys as _;
 
 use tidb_server::{run_configured_node, NodeConfig, NodeConfigError};
 

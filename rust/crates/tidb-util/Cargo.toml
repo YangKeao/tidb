@@ -21,6 +21,7 @@ testexport = []
 ## Reads live-allocation counters from the running jemalloc,
 ## the Go-`HeapAlloc`-equivalent input the memory arbitrator samples.
 jemalloc = ["tidb-allocator-stats/jemalloc"]
+unprefixed-jemalloc = ["jemalloc", "tidb-allocator-stats/unprefixed-jemalloc"]
 
 [build-dependencies]
 chrono.workspace = true
