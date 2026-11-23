@@ -168,20 +168,22 @@ fn div_reads_unsignedness_from_the_field_type_not_the_datum_kind() {
     let double_unsigned = || flagged(FieldTypeCode::Double, FieldTypeFlags::UNSIGNED);
     let decimal_unsigned = || flagged(FieldTypeCode::NewDecimal, FieldTypeFlags::UNSIGNED);
     let seven_decimal = || Datum::new_decimal(crate::Decimal::from_literal("7.00"));
-    assert_eq!(
-        over_columns(
+    for (sql, fields) in [
+        (
             "d DIV -1",
-            columns![("d", double_unsigned(), Datum::Real(7.0))]
+            columns![("d", double_unsigned(), Datum::Real(7.0))],
         ),
-        "IntOverflow"
-    );
-    assert_eq!(
-        over_columns(
+        (
             "e DIV -1",
-            columns![("e", decimal_unsigned(), seven_decimal())]
+            columns![("e", decimal_unsigned(), seven_decimal())],
         ),
-        "IntOverflow"
-    );
+    ] {
+        let error = over_columns(sql, fields);
+        assert!(
+            error.starts_with("DataOutOfRange { value: \"BIGINT UNSIGNED\""),
+            "{error}"
+        );
+    }
     assert_eq!(
         over_columns(
             "d DIV -8",

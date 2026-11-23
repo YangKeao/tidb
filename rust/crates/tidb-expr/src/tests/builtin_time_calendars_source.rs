@@ -959,7 +959,14 @@ fn tidb_bounded_staleness_safets_windows_and_monotonicity() {
         tidb_ast::Expr::String("2025-01-02 10:00:00".to_owned()),
     ];
     assert_eq!(
-        crate::func::eval_func("TIDB_BOUNDED_STALENESS", &ast_args, &ctx, None),
+        crate::eval_in(
+            &tidb_ast::Expr::Func {
+                name: "TIDB_BOUNDED_STALENESS".to_owned(),
+                args: ast_args.into(),
+                origin_position: 0,
+            },
+            &ctx,
+        ),
         Ok(Datum::Time(
             Time::from_date_checked(2020, 6, 7, 8, 9, 10, 123_000, TimeType::DateTime, 3).unwrap(),
         ))

@@ -108,11 +108,20 @@ pub(super) fn json_overlaps(vals: &[Datum]) -> Result<Datum, EvalError> {
     if left.is_null() || right.is_null() {
         return Ok(Datum::Null);
     }
-    parse_json_document_argument_strict(left, 1, "json_overlaps")?;
-    parse_json_document_argument_strict(right, 2, "json_overlaps")?;
-    let left = json_argument(left, StringArgument::Document, None)?;
-    let right = json_argument(right, StringArgument::Document, None)?;
-    Ok(Datum::Int(i64::from(json_overlaps_value(&left, &right))))
+    let document = |value, argument| {
+        let parsed = parse_json_document_argument_strict(value, argument, "json_overlaps")?;
+        match (value, parsed) {
+            (Datum::Json(document), _) => Ok(document.clone()),
+            (_, Some(parsed)) => tidb_datatype::BinaryJSON::from_value(&parsed)
+                .map_err(|_| EvalError::Json(JsonError::InvalidText)),
+            (_, None) => Err(EvalError::Json(JsonError::InvalidText)),
+        }
+    };
+    let left = document(left, 1)?;
+    let right = document(right, 2)?;
+    let overlaps = tidb_datatype::overlaps_binary_json(&left, &right)
+        .map_err(|_| EvalError::Json(JsonError::InvalidText))?;
+    Ok(Datum::Int(i64::from(overlaps)))
 }
 
 /// `JSON_CONTAINS_PATH(json_doc, one_or_all, path [, path] ...)`, port of
@@ -185,27 +194,6 @@ fn json_contains_value(document: &Json, candidate: &Json) -> bool {
                 .any(|value| json_contains_value(value, candidate)),
         },
         _ => json_equal(document, candidate),
-    }
-}
-
-fn json_overlaps_value(left: &Json, right: &Json) -> bool {
-    if !matches!(left, Json::Array(_)) && matches!(right, Json::Array(_)) {
-        return json_overlaps_value(right, left);
-    }
-    match left {
-        Json::Object(object) => match right {
-            Json::Object(right) => right
-                .iter()
-                .any(|(key, value)| object.get(key).is_some_and(|left| json_equal(left, value))),
-            _ => false,
-        },
-        Json::Array(values) => match right {
-            Json::Array(right) => values
-                .iter()
-                .any(|left| right.iter().any(|right| json_equal(left, right))),
-            _ => values.iter().any(|left| json_equal(left, right)),
-        },
-        _ => json_equal(left, right),
     }
 }
 

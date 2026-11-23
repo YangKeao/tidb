@@ -887,6 +887,14 @@ fn round_or_truncate(vals: &[Datum], round: bool, ctx: &dyn Columns) -> Result<D
 /// which is fixed when the expression is built. The values-only evaluator has
 /// no result `FieldType`, so it passes `None`; [`crate::ScalarFunction`] owns
 /// that type and passes the declared scale here.
+fn rounded_integer(value: f64) -> i64 {
+    if value >= -(i64::MIN as f64) {
+        i64::MIN
+    } else {
+        value as i64
+    }
+}
+
 pub(crate) fn round_or_truncate_with_result_decimal(
     vals: &[Datum],
     round: bool,
@@ -933,7 +941,7 @@ pub(crate) fn round_or_truncate_with_result_decimal(
                 Datum::Int(*i)
             } else {
                 Datum::Int(if round {
-                    go_round_float(*i as f64, d) as i64
+                    rounded_integer(go_round_float(*i as f64, d))
                 } else {
                     go_truncate_int(*i, d)
                 })
@@ -952,7 +960,7 @@ pub(crate) fn round_or_truncate_with_result_decimal(
                     // `ROUND(CAST(18446744073709551610 AS UNSIGNED), -1)` is
                     // `18446744073709551606`, which is `-6` rounded to `-10`
                     // and re-read unsigned, not `...610` rounded up.
-                    go_round_float(*i as i64 as f64, d) as i64 as u64
+                    rounded_integer(go_round_float(*i as i64 as f64, d)) as u64
                 } else {
                     // `builtinTruncateUintSig` operates on the original
                     // uint64, not through `EvalReal`/f64.  The distinction is

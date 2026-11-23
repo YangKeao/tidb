@@ -104,6 +104,7 @@ use tidb_chunk::iterator::LendingIterator;
 use tidb_chunk::mutrow::MutRow;
 use tidb_chunk::row::Row;
 use tidb_datatype::{Datum, FieldType};
+use tidb_expr::evaluator::FilterExecution;
 use tidb_expr::expression::Expression;
 use tidb_expr::Columns;
 
@@ -200,9 +201,16 @@ pub fn eval_bool<C: Columns>(
     exprs: &[Expression],
     row: Row<'_>,
 ) -> Result<(bool, bool), ExecError> {
+    eval_predicates(exprs, |_, expr| expr.eval(ctx, row))
+}
+
+fn eval_predicates(
+    exprs: &[Expression],
+    mut eval: impl FnMut(usize, &Expression) -> Result<Datum, tidb_expr::EvalError>,
+) -> Result<(bool, bool), ExecError> {
     let mut has_null = false;
-    for expr in exprs {
-        let data = expr.eval(ctx, row)?;
+    for (index, expr) in exprs.iter().enumerate() {
+        let data = eval(index, expr)?;
         if matches!(data, Datum::Null) {
             if !is_eq_cond_from_in(expr) {
                 return Ok((false, false));
@@ -240,7 +248,7 @@ pub struct BaseJoiner<C: Columns> {
     ctx: C,
     vectorized: bool,
     /// Go `conditions`: the non-equality `ON` predicates ("other conditions").
-    conditions: Vec<Expression>,
+    conditions: FilterExecution,
     /// Go `defaultInner`: the all-NULL (or default) inner row an outer join
     /// pads with. Only built for `LeftOuterJoin`/`RightOuterJoin`.
     default_inner: Option<MutRow>,
@@ -326,13 +334,14 @@ impl<C: Columns + Clone> BaseJoiner<C> {
         output: &mut Chunk,
         outer_col_len: usize,
     ) -> Result<bool, ExecError> {
-        self.selected = tidb_expr::evaluator::vectorized_filter(
+        let (selected, _) = self.conditions.filter(
             &self.ctx,
             self.vectorized,
-            &self.conditions,
             input,
             std::mem::take(&mut self.selected),
+            std::mem::take(&mut self.is_null),
         )?;
+        self.selected = selected;
 
         let mut outer_col_len = outer_col_len;
         let (mut inner_col_offset, mut outer_col_offset) = (0, input.num_cols() - outer_col_len);
@@ -412,10 +421,9 @@ impl<C: Columns + Clone> BaseJoiner<C> {
         inner_cols_len: usize,
         outer_row_status: &mut [OuterRowStatusFlag],
     ) -> Result<(), ExecError> {
-        let (selected, nulls) = tidb_expr::evaluator::vectorized_filter_consider_null(
+        let (selected, nulls) = self.conditions.filter(
             &self.ctx,
             self.vectorized,
-            &self.conditions,
             input,
             std::mem::take(&mut self.selected),
             std::mem::take(&mut self.is_null),
@@ -459,7 +467,7 @@ impl<C: Columns + Clone> BaseJoiner<C> {
         BaseJoiner {
             ctx: self.ctx.clone(),
             vectorized: self.vectorized,
-            conditions: self.conditions.clone(),
+            conditions: self.conditions.start_execution(),
             default_inner: self.default_inner.clone(),
             outer_is_right: self.outer_is_right,
             chk: self.chk.clone(),
@@ -475,7 +483,14 @@ impl<C: Columns + Clone> BaseJoiner<C> {
     /// Go `len(j.conditions) == 0`, the shared body of
     /// `isSemiJoinWithoutCondition` for every semi-family joiner.
     fn has_no_condition(&self) -> bool {
-        self.conditions.is_empty()
+        self.conditions.predicates().is_empty()
+    }
+
+    fn eval_shallow_conditions(&self) -> Result<(bool, bool), ExecError> {
+        let row = self.shallow_row();
+        eval_predicates(self.conditions.predicates(), |index, _| {
+            self.conditions.predicate_on_row(&self.ctx, index, row)
+        })
     }
 
     /// The joiner's `MaxChunkSize`, kept because Go's `baseJoiner` carries it
@@ -578,7 +593,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for SemiJoiner<C> {
         if inners.is_empty() {
             return Ok((false, false));
         }
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             chk.append_row_by_col_idxs(outer, self.base.l_used.as_deref());
             inners.reach_end();
             return Ok((true, false));
@@ -588,11 +603,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for SemiJoiner<C> {
                 .make_shallow_join_row(self.base.outer_is_right, inner, outer);
             // For a semi join a NULL condition is safely treated as FALSE, so
             // Go ignores `EvalBool`'s nullness here and so does this.
-            let (matched, _) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (matched, _) = self.base.eval_shallow_conditions()?;
             if matched {
                 chk.append_row_by_col_idxs(outer, self.base.l_used.as_deref());
                 inners.reach_end();
@@ -612,7 +623,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for SemiJoiner<C> {
     ) -> Result<(), ExecError> {
         outer_row_status.clear();
         let mut budget = num_to_append(chk);
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             while budget > 0 {
                 let Some(outer) = outers.current() else { break };
                 chk.append_row_by_col_idxs(outer, self.base.l_used.as_deref());
@@ -626,11 +637,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for SemiJoiner<C> {
             let Some(outer) = outers.current() else { break };
             self.base
                 .make_shallow_join_row(self.base.outer_is_right, inner, outer);
-            let (matched, _) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (matched, _) = self.base.eval_shallow_conditions()?;
             if matched {
                 outer_row_status.push(OuterRowStatusFlag::Matched);
                 let outer = outers.current().expect("still positioned on a row");
@@ -688,18 +695,14 @@ impl<C: Columns + Clone + Send + 'static> Joiner for NullAwareAntiSemiJoiner<C> 
         }
         // Step 2: with no other condition every inner row is valid, so the
         // right side is non-empty and the probe row is refused.
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             inners.reach_end();
             return Ok((true, false));
         }
         while let Some(inner) = inners.current() {
             self.base
                 .make_shallow_join_row(self.base.outer_is_right, inner, outer);
-            let (valid, _) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (valid, _) = self.base.eval_shallow_conditions()?;
             // For `x NOT IN (y set)`, one x found in y settles it: refuse the
             // probe row and append nothing.
             if valid {
@@ -763,7 +766,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for AntiSemiJoiner<C> {
         if inners.is_empty() {
             return Ok((false, false));
         }
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             inners.reach_end();
             return Ok((true, false));
         }
@@ -771,11 +774,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for AntiSemiJoiner<C> {
         while let Some(inner) = inners.current() {
             self.base
                 .make_shallow_join_row(self.base.outer_is_right, inner, outer);
-            let (matched, is_null) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (matched, is_null) = self.base.eval_shallow_conditions()?;
             if matched {
                 inners.reach_end();
                 return Ok((true, false));
@@ -795,7 +794,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for AntiSemiJoiner<C> {
     ) -> Result<(), ExecError> {
         outer_row_status.clear();
         let mut budget = num_to_append(chk);
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             // Go walks the WHOLE iterator here, ignoring `numToAppend`,
             // because no row is appended to `chk` on this path.
             while outers.current().is_some() {
@@ -808,11 +807,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for AntiSemiJoiner<C> {
             let Some(outer) = outers.current() else { break };
             self.base
                 .make_shallow_join_row(self.base.outer_is_right, inner, outer);
-            let (matched, is_null) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (matched, is_null) = self.base.eval_shallow_conditions()?;
             outer_row_status.push(if matched {
                 OuterRowStatusFlag::Matched
             } else if is_null {
@@ -876,7 +871,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for LeftOuterSemiJoiner<C> {
         if inners.is_empty() {
             return Ok((false, false));
         }
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             self.on_match(outer, chk);
             inners.reach_end();
             return Ok((true, false));
@@ -886,11 +881,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for LeftOuterSemiJoiner<C> {
             // Go passes a literal `false` here, not `j.outerIsRight`: a
             // left-outer-semi join's outer side is always the left one.
             self.base.make_shallow_join_row(false, inner, outer);
-            let (matched, is_null) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (matched, is_null) = self.base.eval_shallow_conditions()?;
             if matched {
                 self.on_match(outer, chk);
                 inners.reach_end();
@@ -911,7 +902,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for LeftOuterSemiJoiner<C> {
     ) -> Result<(), ExecError> {
         outer_row_status.clear();
         let mut budget = num_to_append(chk);
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             while budget > 0 {
                 let Some(outer) = outers.current() else { break };
                 self.on_match(outer, chk);
@@ -924,11 +915,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for LeftOuterSemiJoiner<C> {
         while budget > 0 {
             let Some(outer) = outers.current() else { break };
             self.base.make_shallow_join_row(false, inner, outer);
-            let (matched, is_null) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (matched, is_null) = self.base.eval_shallow_conditions()?;
             if matched {
                 let outer = outers.current().expect("still positioned on a row");
                 self.on_match(outer, chk);
@@ -1013,7 +1000,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for NullAwareAntiLeftOuterSemiJ
         if inners.is_empty() {
             return Ok((false, false));
         }
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             // No inner filter means every inner row is a valid source.
             self.on_match(outer, chk, opt);
             inners.reach_end();
@@ -1021,11 +1008,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for NullAwareAntiLeftOuterSemiJ
         }
         while let Some(inner) = inners.current() {
             self.base.make_shallow_join_row(false, inner, outer);
-            let (valid, _) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (valid, _) = self.base.eval_shallow_conditions()?;
             if valid {
                 self.on_match(outer, chk, opt);
                 inners.reach_end();
@@ -1100,7 +1083,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for AntiLeftOuterSemiJoiner<C> 
         if inners.is_empty() {
             return Ok((false, false));
         }
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             self.on_match(outer, chk);
             inners.reach_end();
             return Ok((true, false));
@@ -1108,11 +1091,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for AntiLeftOuterSemiJoiner<C> 
         let mut has_null = false;
         while let Some(inner) = inners.current() {
             self.base.make_shallow_join_row(false, inner, outer);
-            let (matched, is_null) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (matched, is_null) = self.base.eval_shallow_conditions()?;
             if matched {
                 self.on_match(outer, chk);
                 inners.reach_end();
@@ -1133,7 +1112,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for AntiLeftOuterSemiJoiner<C> 
     ) -> Result<(), ExecError> {
         outer_row_status.clear();
         let mut budget = num_to_append(chk);
-        if self.base.conditions.is_empty() {
+        if self.base.conditions.predicates().is_empty() {
             while budget > 0 {
                 let Some(outer) = outers.current() else { break };
                 self.on_match(outer, chk);
@@ -1146,11 +1125,7 @@ impl<C: Columns + Clone + Send + 'static> Joiner for AntiLeftOuterSemiJoiner<C> 
         while budget > 0 {
             let Some(outer) = outers.current() else { break };
             self.base.make_shallow_join_row(false, inner, outer);
-            let (matched, is_null) = eval_bool(
-                &self.base.ctx,
-                &self.base.conditions,
-                self.base.shallow_row(),
-            )?;
+            let (matched, is_null) = self.base.eval_shallow_conditions()?;
             if matched {
                 let outer = outers.current().expect("still positioned on a row");
                 self.on_match(outer, chk);
@@ -1240,7 +1215,7 @@ impl<C: Columns + Clone> RowJoiner<C> {
             return Ok((false, false));
         }
         let outer_first = self.lhs_first();
-        let conditional = !self.base.conditions.is_empty();
+        let conditional = !self.base.conditions.predicates().is_empty();
         let mut budget = num_to_append(chk);
         let outer_len = outer.len();
 
@@ -1309,7 +1284,7 @@ impl<C: Columns + Clone> RowJoiner<C> {
         outer_row_status: &mut Vec<OuterRowStatusFlag>,
     ) -> Result<(), ExecError> {
         let outer_first = self.lhs_first();
-        let conditional = !self.base.conditions.is_empty();
+        let conditional = !self.base.conditions.predicates().is_empty();
         let budget = num_to_append(chk);
         let inner_len = inner.len();
         let mut cursor = 0;
@@ -1583,7 +1558,7 @@ pub fn new_joiner<C: Columns + Clone + Send + 'static>(
     let mut base = BaseJoiner {
         ctx,
         vectorized: sizes.vectorized,
-        conditions: filter,
+        conditions: FilterExecution::new(filter),
         default_inner: None,
         outer_is_right,
         chk: None,
@@ -1638,7 +1613,7 @@ pub fn new_joiner<C: Columns + Clone + Send + 'static>(
             }
         }
         JoinType::LeftOuter | JoinType::RightOuter | JoinType::Inner => {
-            if !base.conditions.is_empty() {
+            if !base.conditions.predicates().is_empty() {
                 base.chk = Some(Chunk::new(
                     &shallow_row_type,
                     sizes.init_chunk_size,

@@ -49,6 +49,61 @@ use tidb_datatype::{Datum, EvalType, FieldType, UNSPECIFIED_LENGTH};
 
 const MAX_ADVISORY_LOCK_TIMEOUT_SECS: i64 = 1_073_741_824;
 
+pub(crate) fn advisory_lock_spec(name: &str) -> Option<(&'static str, usize)> {
+    Some(match name {
+        "get_lock" => ("get_lock", 2),
+        "release_lock" => ("release_lock", 1),
+        "is_free_lock" => ("is_free_lock", 1),
+        "is_used_lock" => ("is_used_lock", 1),
+        "release_all_locks" => ("release_all_locks", 0),
+        _ => return None,
+    })
+}
+
+pub(crate) fn advisory_lock_name_value(
+    value: &Datum,
+    field: Option<&FieldType>,
+    ctx: &dyn Columns,
+) -> Result<String, EvalError> {
+    advisory_lock_name(crate::cast::cast_arg_as_string(value, field, ctx)?)
+}
+
+pub(crate) fn advisory_lock_value(
+    name: &'static str,
+    lock_name: &str,
+    timeout: Option<(&Datum, Option<&FieldType>)>,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    match name {
+        "get_lock" => {
+            let (value, field) = timeout.ok_or(EvalError::WrongParameterCount(name))?;
+            let value = crate::cast::cast_arg_as_int(value, field, ctx)?;
+            let mut timeout = crate::arg_eval_type::eval_int(&value)?.unwrap_or(0);
+            if !(0..=MAX_ADVISORY_LOCK_TIMEOUT_SECS).contains(&timeout) {
+                ctx.append_warning(
+                    1292,
+                    &format!("Truncated incorrect get_lock value: '{timeout}'"),
+                );
+                timeout = MAX_ADVISORY_LOCK_TIMEOUT_SECS;
+            }
+            let acquired = ctx
+                .acquire_advisory_lock(lock_name, std::time::Duration::from_secs(timeout as u64))?;
+            Ok(Datum::Int(i64::from(acquired)))
+        }
+        "release_lock" => Ok(Datum::Int(i64::from(ctx.release_advisory_lock(lock_name)?))),
+        "is_free_lock" => Ok(Datum::Int(i64::from(
+            ctx.advisory_lock_owner(lock_name)?.is_none(),
+        ))),
+        "is_used_lock" => Ok(ctx
+            .advisory_lock_owner(lock_name)?
+            .map_or(Datum::Null, |owner| Datum::Int(owner as i64))),
+        "release_all_locks" => Ok(Datum::Int(
+            i64::try_from(ctx.release_all_advisory_locks()?).unwrap_or(i64::MAX),
+        )),
+        _ => unreachable!("recognized advisory lock function"),
+    }
+}
+
 fn advisory_lock_name(value: Datum) -> Result<String, EvalError> {
     let bytes = crate::arg_eval_type::eval_string(&value)?;
     let Some(bytes) = bytes else {
@@ -78,18 +133,6 @@ fn advisory_lock_name(value: Datum) -> Result<String, EvalError> {
 /// go `ToBool`'s string path parses the leading float and warns
 /// `Truncated incorrect DOUBLE value` when the text is not fully numeric;
 /// the logical operators' truthiness is that float != 0.
-fn logic_truthy(value: &Datum, ctx: &dyn Columns) -> Result<Option<bool>, EvalError> {
-    if matches!(value, Datum::Null) {
-        return Ok(None);
-    }
-    match value {
-        Datum::String(_) | Datum::Bytes(_) => {
-            Ok(crate::math_fn::numeric_arg(value, ctx)?.map(|float| float != 0.0))
-        }
-        _ => crate::truthy_of(value),
-    }
-}
-
 fn binary_op_for_name(name: &str) -> Option<BinaryOp> {
     Some(match name {
         "plus" => BinaryOp::Plus,
@@ -178,18 +221,6 @@ fn same_eval_family(value: &Datum, ret_type: &tidb_datatype::FieldType) -> bool 
     datum_eval_type(value).is_some_and(|got| normalize(got) == normalize(ret_type.eval_type()))
 }
 
-/// Maps a Go unary-operator scalar-function name (`pkg/parser/ast`) to a
-/// [`UnaryOp`]. Returns `None` for any function that is not a unary operator.
-fn unary_op_for_name(name: &str) -> Option<UnaryOp> {
-    Some(match name {
-        "unaryplus" => UnaryOp::Plus,
-        "unaryminus" => UnaryOp::Minus,
-        "bitneg" => UnaryOp::BitNeg,
-        "not" => UnaryOp::Not,
-        _ => return None,
-    })
-}
-
 /// Go `unFoldableFunctions`: calls whose result cannot be frozen during
 /// constant folding even when every argument is a strict literal.
 #[must_use]
@@ -271,6 +302,15 @@ fn append_canonical_args_reversed(output: &mut Vec<u8>, args: &[Vec<u8>]) {
     }
 }
 
+#[derive(Debug, Default)]
+struct RandCallIdentity(std::sync::OnceLock<usize>);
+
+impl Clone for RandCallIdentity {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 /// Go `ScalarFunction`: the application of a built-in function to arguments.
 #[derive(Clone, Debug, Default)]
 pub struct ScalarFunction {
@@ -287,6 +327,8 @@ pub struct ScalarFunction {
     values_offset: Option<usize>,
     /// Go Function: a protobuf-selected builtin, independent of FuncName.
     pb_builtin: Option<PbBuiltin>,
+    rand_call_identity: RandCallIdentity,
+    pub(crate) rand_occurrence_group: Option<usize>,
     /// Lazily-filled `HashCode` cache (Go `hashcode`).
     hashcode: Vec<u8>,
     /// Go `BuiltinGroupingImplSig` metadata installed by `SetMetadata`.
@@ -298,22 +340,24 @@ pub struct ScalarFunction {
 
     /// Go embedded collation state (via the `Function`'s `collationInfo`).
     pub collation: CollationInfo,
-    /// Go `builtinInStringSig.hashSet`, prepared after collation derivation.
-    /// Only strict string/byte literals enter it; every other argument keeps
-    /// the ordinary evaluation path so casts, warnings and errors are not
-    /// skipped.
-    in_string_hash_set: Option<std::collections::HashSet<Vec<u8>>>,
-    in_string_non_const_args: Vec<usize>,
-    in_string_has_null: bool,
-    json_schema_cache: crate::builtin_ext::JsonSchemaCache,
-    json_modify_path_cache:
-        crate::builtin_ext::BuiltinFuncCache<Option<Vec<crate::builtin_ext::JsonPath>>>,
-    find_in_set_cache: crate::builtin_ext::BuiltinFuncCache<crate::builtin_ext::FindInSetLookup>,
-    regexp_cache: crate::builtin_ext::BuiltinFuncCache<crate::regexp::CachedRegexp>,
-    regexp_replace_instruction_cache:
-        crate::builtin_ext::BuiltinFuncCache<Vec<crate::builtin_ext::regexp::ReplacementPart>>,
-    like_pattern_cache: crate::builtin_ext::BuiltinFuncCache<crate::like::CompiledLikePattern>,
-    ilike_pattern_cache: crate::builtin_ext::BuiltinFuncCache<crate::like::CompiledIlikePattern>,
+}
+
+pub(crate) fn last_insert_id_with_value(
+    ctx: &dyn Columns,
+    value: &Datum,
+    field: Option<&FieldType>,
+) -> Result<Datum, EvalError> {
+    if value.is_null() {
+        return Ok(Datum::Null);
+    }
+    let cast = crate::cast::cast_arg_as_int(value, field, ctx)?;
+    let recorded = match cast {
+        Datum::Int(i) => i as u64,
+        Datum::UInt(u) => u,
+        _ => return Err(EvalError::Unsupported("LAST_INSERT_ID argument")),
+    };
+    ctx.set_last_insert_id(recorded);
+    Ok(Datum::Int(recorded as i64))
 }
 
 fn arithmetic_symbol(op: tidb_ast::BinaryOp) -> Option<&'static str> {
@@ -424,12 +468,27 @@ fn numeric_argument_text(
                 _ => value.to_string(),
             }
         }
+        Expression::ScalarFunction(child)
+            if child.func_name.lowercase() == "unaryminus"
+                && child.args.first().is_some_and(|value| {
+                    matches!(value, Expression::Constant(constant) if constant.literal_value().is_some())
+                })
+                && decimal.is_some() =>
+        {
+            decimal.unwrap().to_string()
+        }
         _ => numeric_expression_text(expression, float, ctx)?,
     };
     if function.func_name.lowercase() != "intdiv"
         || function.numeric_operand_domain() != Some(EvalType::Decimal)
         || field.eval_type() == EvalType::Decimal
         || matches!(expression, Expression::Constant(constant) if constant.literal_value().is_some())
+    {
+        return Some(text);
+    }
+    if matches!(expression, Expression::ScalarFunction(child) if child.func_name.lowercase() == "unaryminus")
+        && decimal.is_some()
+        && expression.const_level() == ConstLevel::STRICT
     {
         return Some(text);
     }
@@ -573,87 +632,27 @@ fn decimal_arithmetic_overflow_error(
 /// These signatures report their function name and source-shaped arguments,
 /// rather than the datum-only `FloatOverflow` carrier returned by the shared
 /// math implementation.
-fn math_overflow_expression(function: &ScalarFunction, ctx: &dyn Columns) -> Option<String> {
-    fn render(expression: &Expression, ctx: &dyn Columns) -> Option<String> {
-        match expression {
-            Expression::Constant(constant) => match constant.eval_in(ctx).ok()? {
-                Datum::Int(value) => Some(value.to_string()),
-                Datum::UInt(value) => Some(value.to_string()),
-                Datum::Float32(value) => Some(tidb_datatype::format_float_g_shortest(value)),
-                Datum::Real(value) => Some(tidb_datatype::format_float_g_shortest(value)),
-                Datum::Decimal(value) => Some(value.to_string()),
-                Datum::Null => Some("NULL".to_owned()),
-                _ => None,
-            },
-            Expression::Column(column) if !column.orig_name.is_empty() => {
-                Some(column.orig_name.clone())
-            }
-            Expression::CorrelatedColumn(column) if !column.column.orig_name.is_empty() => {
-                Some(column.column.orig_name.clone())
-            }
-            Expression::ScalarFunction(function) => {
-                if let Some(op) = binary_op_for_name(function.func_name.lowercase()) {
-                    let symbol = arithmetic_symbol(op)?;
-                    let [left, right] = function.args.as_slice() else {
-                        return None;
-                    };
-                    return Some(format!(
-                        "({} {symbol} {})",
-                        render(left, ctx)?,
-                        render(right, ctx)?
-                    ));
-                }
-                let args = function
-                    .args
-                    .iter()
-                    .map(|expression| render(expression, ctx))
-                    .collect::<Option<Vec<_>>>()?;
-                Some(format!(
-                    "{}({})",
-                    function.func_name.lowercase(),
-                    args.join(", ")
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    let args = function
-        .args
-        .iter()
-        .map(|expression| render(expression, ctx))
-        .collect::<Option<Vec<_>>>()?;
-    Some(format!(
-        "{}({})",
-        function.func_name.lowercase(),
-        args.join(", ")
-    ))
-}
-
-/// Converts the datum-only overflow carriers from math builtins into Go's
-/// function-specific 1690 diagnostics while the argument expressions remain
-/// available on the scalar-function node.
-fn math_overflow_error(
-    function: &ScalarFunction,
-    error: EvalError,
-    ctx: &dyn Columns,
-) -> EvalError {
-    let name = function.func_name.lowercase();
-    let value = match (name, &error) {
-        ("abs", EvalError::IntOverflow) => "BIGINT",
-        ("cot" | "exp" | "pow" | "power", EvalError::FloatOverflow) => "DOUBLE",
-        _ => return error,
-    };
-    let Some(expression) = math_overflow_expression(function, ctx) else {
-        return error;
-    };
-    EvalError::DataOutOfRange { value, expression }
-}
-
 impl ScalarFunction {
     /// Go `cap(sf.hashcode)`, for `MemoryUsage`.
     pub(crate) fn hashcode_capacity(&self) -> usize {
         self.hashcode.capacity()
+    }
+
+    pub(crate) fn rand_call_id(&self) -> usize {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        *self
+            .rand_call_identity
+            .0
+            .get_or_init(|| NEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub(crate) fn share_rand_call(&mut self, copy: &mut Self) {
+        let group = self
+            .rand_occurrence_group
+            .unwrap_or_else(|| self.rand_call_id());
+        self.rand_occurrence_group = Some(group);
+        copy.rand_occurrence_group = Some(group);
     }
 
     /// Builds a scalar-function node.
@@ -705,16 +704,7 @@ impl ScalarFunction {
     /// used by ranger or executor code.
     pub fn invalidate_cached_arguments(&mut self) {
         self.hashcode.clear();
-        self.in_string_hash_set = None;
-        self.in_string_non_const_args.clear();
-        self.in_string_has_null = false;
-        self.json_schema_cache = Default::default();
-        self.json_modify_path_cache = Default::default();
-        self.find_in_set_cache = Default::default();
-        self.regexp_cache = Default::default();
-        self.regexp_replace_instruction_cache = Default::default();
-        self.like_pattern_cache = Default::default();
-        self.ilike_pattern_cache = Default::default();
+        self.rand_call_identity = Default::default();
     }
 
     /// Go `BuiltinGroupingImplSig.SetMetadata`: install validated grouping
@@ -995,111 +985,6 @@ impl ScalarFunction {
             .unwrap_or(ConstLevel::STRICT)
     }
 
-    /// THE guarantee Go's `ScalarFunction.Eval` provides and this tier must
-    /// reproduce: a function's evaluated value is in the EVAL-TYPE FAMILY of
-    /// its own declared result type.
-    ///
-    /// Go gets this by construction. `ScalarFunction.Eval`
-    /// (`pkg/expression/scalar_function.go`) does not ask the signature for
-    /// "a value" -- it switches on `sf.GetType().EvalType()` and calls
-    /// `EvalInt`/`EvalReal`/`EvalDecimal`/`EvalString`/`EvalTime`/
-    /// `EvalDuration`/`EvalJSON` accordingly, so the returned datum's kind is
-    /// DERIVED from the result type and cannot disagree with it. Downstream,
-    /// `chunk.AppendDatum` dispatches on the datum kind while the column's
-    /// cell width came from the field type, and only that construction keeps
-    /// the two in step.
-    ///
-    /// This tier evaluates on Datums and dispatches on operand kinds, so the
-    /// guarantee is restored here instead, once, for every function -- rather
-    /// than at the handful of call sites whose mismatch had been noticed
-    /// (`IF`/`CASE`), which left the same defect reachable from every other
-    /// one. A value already in the right family is returned untouched, so the
-    /// result type's LENGTH constraints are applied only where Go's own
-    /// argument cast would have applied them.
-    fn coerce_to_ret_type(&self, value: Datum) -> Result<Datum, EvalError> {
-        if value.is_null() {
-            return Ok(value);
-        }
-        let Some(ret_type) = self.get_static_type() else {
-            return Ok(value);
-        };
-        // Go's `builtinCoalesceTimeSig`/`builtinCoalesceDurationSig` stamps
-        // every selected temporal value with the merged result FSP after
-        // evaluating it. `newBaseBuiltinFuncWithTp` does not wrap temporal
-        // arguments, so the selected value can still carry the first
-        // argument's original precision. Preserve the value's instant and
-        // update only that metadata here; a general `ConvertTo` would also
-        // round the instant, which is not what Coalesce's `SetFsp` does.
-        if self.func_name.lowercase() == "coalesce" {
-            let target_fsp = if ret_type.decimal() == tidb_datatype::UNSPECIFIED_LENGTH {
-                0
-            } else {
-                ret_type.decimal()
-            };
-            match (&value, ret_type.code()) {
-                (
-                    Datum::Time(time),
-                    tidb_datatype::FieldTypeCode::Date
-                    | tidb_datatype::FieldTypeCode::Datetime
-                    | tidb_datatype::FieldTypeCode::Timestamp,
-                ) => {
-                    let mut time = *time;
-                    let _ = time.set_fsp(target_fsp);
-                    return Ok(Datum::Time(time));
-                }
-                (Datum::Duration(duration), tidb_datatype::FieldTypeCode::Duration) => {
-                    return Ok(Datum::Duration(
-                        tidb_datatype::MySqlDuration::from_raw_parts(
-                            duration.nanoseconds(),
-                            target_fsp,
-                        ),
-                    ));
-                }
-                _ => {}
-            }
-        }
-        if same_eval_family(&value, ret_type) {
-            // `mysql.TypeBit`'s eval type is `ETInt`, so the family check
-            // would keep an integer here. A BIT value's canonical carrier is
-            // instead the zero-padded byte string (`Datum::Bit`), which is
-            // what Go's `chunk.AppendDatum` stores for `KindMysqlBit` and
-            // what a var-length BIT chunk column can hold. A cast to BIT is
-            // the scalar function that produces such an integer, so convert
-            // it here; a value already carrying the bytes is left alone.
-            if ret_type.code() == tidb_datatype::FieldTypeCode::Bit {
-                let width = (ret_type.flen() > 0)
-                    .then(|| u8::try_from((ret_type.flen() + 7) / 8).ok())
-                    .flatten()
-                    .and_then(|bytes| tidb_datatype::BinaryLiteralWidth::try_from(bytes).ok());
-                match value {
-                    Datum::Int(v) => {
-                        return Ok(Datum::Bit(tidb_datatype::BinaryLiteral::from_uint(
-                            v as u64, width,
-                        )));
-                    }
-                    Datum::UInt(v) => {
-                        return Ok(Datum::Bit(tidb_datatype::BinaryLiteral::from_uint(
-                            v, width,
-                        )));
-                    }
-                    _ => {}
-                }
-            }
-            return Ok(value);
-        }
-        // COALESCE is built with `newBaseBuiltinFuncWithTp`, so its ARGUMENTS
-        // are cast only to the merged eval family -- but `getFunction` then
-        // assigns `bf.tp = resultFieldType`, and that merged type is what the
-        // selected value is presented as. `select coalesce(1, 2.55, 3)`
-        // answers `1.00`, not `1`: the integer branch is widened to the
-        // merged scale, exactly as IF/IFNULL/CASE widen theirs. Handled by
-        // the shared conversion below rather than a COALESCE-only rule.
-        match value.convert_to(ret_type, tidb_datatype::DEFAULT_STATEMENT_FLAGS) {
-            Ok(converted) => Ok(converted.value),
-            Err(_) => Ok(value),
-        }
-    }
-
     /// The collation this function's own evaluation runs under: the one the
     /// expression rewriter's derivation stamped on its result type (Go's
     /// `baseBuiltinFunc.collator`, set from `ExprCollation.Collation`).
@@ -1114,97 +999,50 @@ impl ScalarFunction {
             .unwrap_or(crate::ops::DERIVATION_FREE_COLLATION)
     }
 
-    /// Builds Go `builtinInStringSig.buildHashMapForConstArgs` for the strict
-    /// string literals this expression model can evaluate without a statement
-    /// context. Other constant families remain in the row path because their
-    /// implicit casts can raise warnings or errors.
-    pub(crate) fn prepare_in_string_hash_set(&mut self) {
-        if self.func_name.lowercase() != "in"
-            || self.args.len() < 2
-            || self
-                .args
-                .first()
-                .and_then(Expression::static_type)
-                .is_none_or(|field_type| field_type.eval_type() != tidb_datatype::EvalType::String)
-        {
-            return;
-        }
-        let collator = tidb_datatype::get_collator(self.derived_collation().name());
-        // Go's `pkg/expression/builtin_other.go::builtinInStringSig` keeps
-        // these immutable literal keys in a per-function map and probes it
-        // for every row. Reserve the complete
-        // literal-list capacity up front, matching the source map's intended
-        // read-mostly shape without changing its collision-resistant hasher or
-        // any membership/collation semantics.
-        let mut hash_set =
-            std::collections::HashSet::with_capacity(self.args.len().saturating_sub(1));
-        let mut non_const_args = Vec::new();
-        let mut has_null = false;
-        for (index, argument) in self.args.iter().enumerate().skip(1) {
-            let Expression::Constant(constant) = argument else {
-                non_const_args.push(index);
-                continue;
-            };
-            if constant.const_level() != crate::expression::ConstLevel::STRICT {
-                non_const_args.push(index);
-                continue;
-            }
-            match &constant.value {
-                Datum::String(value) => {
-                    hash_set.insert(collator.key(value.bytes()));
-                }
-                Datum::Bytes(value) => {
-                    hash_set.insert(collator.key(value));
-                }
-                Datum::Null => has_null = true,
-                _ => non_const_args.push(index),
-            }
-        }
-        self.in_string_hash_set = Some(hash_set);
-        self.in_string_non_const_args = non_const_args;
-        self.in_string_has_null = has_null;
-    }
-
-    /// The user-variable name a `getvar`/`setvar` call carries in its first
-    /// argument, which the rewriter built as a constant because the name is a
-    /// build-time token rather than a value.
-    fn uservar_name(&self) -> Option<String> {
+    pub(crate) fn uservar_name(&self) -> Option<String> {
         let Expression::Constant(name) = self.args.first()? else {
             return None;
         };
         name.value.sql_string().ok()
     }
 
-    /// Go `ScalarFunction.Eval`: evaluate the function against one row, and
-    /// return a value in the eval-type family of the function's own result
-    /// type -- see [`Self::coerce_to_ret_type`] for why that is the whole
-    /// point of Go's `Eval` and not an afterthought.
-    pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
-        if let Some(builtin) = self.pb_builtin {
-            let value = builtin.eval(self, ctx, row)?;
-            // Go ScalarFunction.Eval interprets an evalInt carrier through
-            // the wire result type, independently of the argument flags.
-            let value = match (value, self.get_static_type()) {
-                (Datum::UInt(value), Some(field)) if !field.is_unsigned() => {
-                    Datum::Int(value as i64)
-                }
-                (Datum::Int(value), Some(field)) if field.is_unsigned() => {
-                    Datum::UInt(value as u64)
-                }
-                (value, _) => value,
+    pub(crate) fn shared_arithmetic_error(
+        &self,
+        domain: &'static str,
+        ctx: &dyn Columns,
+        scalar: bool,
+        decimals: [Option<&tidb_datatype::Decimal>; 2],
+    ) -> Option<EvalError> {
+        let operation = binary_op_for_name(self.func_name.lowercase())?;
+        if operation == BinaryOp::IntDiv {
+            if !scalar || self.numeric_operand_domain()? == EvalType::Int {
+                return None;
+            }
+            let [left, right] = self.args.as_slice() else {
+                return None;
             };
-            return self.coerce_to_ret_type(value);
+            let left = numeric_argument_text(self, left, false, ctx, decimals[0])?;
+            let right = numeric_argument_text(self, right, false, ctx, decimals[1])?;
+            return Some(EvalError::DataOutOfRange {
+                value: match domain {
+                    "BIGINT" => "BIGINT",
+                    "BIGINT UNSIGNED" => "BIGINT UNSIGNED",
+                    _ => return None,
+                },
+                expression: format!("({left} DIV {right})"),
+            });
         }
-        if let Some(value) = self.eval_fast_integer_binary(ctx, row)? {
-            return self.coerce_to_ret_type(value);
-        }
-        let value = self.eval_by_signature(ctx, row)?;
-        self.coerce_to_ret_type(value)
+        Some(match domain {
+            "DOUBLE" => real_arithmetic_overflow_error(self, operation, ctx),
+            "DECIMAL" => decimal_arithmetic_overflow_error(self, operation, ctx),
+            "BIGINT" | "BIGINT UNSIGNED" => arithmetic_overflow_error(self, operation, ctx),
+            _ => return None,
+        })
     }
 
     /// The argument evaluation domain selected by Go's arithmetic builder.
     /// DIV returns Int but consumes Decimal unless both arguments are Int.
-    fn numeric_operand_domain(&self) -> Option<EvalType> {
+    pub(crate) fn numeric_operand_domain(&self) -> Option<EvalType> {
         let op = binary_op_for_name(self.func_name.lowercase())?;
         if self.args.len() != 2
             || !matches!(
@@ -1349,1462 +1187,681 @@ impl ScalarFunction {
         }
     }
 
-    fn eval_binary_values(
-        &self,
-        op: BinaryOp,
-        lhs: Datum,
-        rhs: Datum,
-        ctx: &dyn Columns,
-    ) -> Result<Datum, EvalError> {
-        let signed = [0, 1].map(|index| {
-            self.args[index]
-                .static_type()
-                .is_some_and(|field| !field.is_unsigned())
-        });
-        let (lhs, rhs) = crate::binary_literal::cast_signed_literal_operands(op, lhs, rhs, signed);
-        if op == BinaryOp::IntDiv {
-            if let (Datum::Decimal(left), Datum::Decimal(right)) = (&lhs, &rhs) {
-                let unsigned = self
-                    .args
-                    .iter()
-                    .any(|arg| arg.static_type().is_some_and(FieldType::is_unsigned));
-                return crate::ops::decimal_integer_division(left, right, unsigned, ctx).map_err(
-                    |error| {
-                        if !matches!(error, EvalError::IntOverflow) {
-                            return error;
-                        }
-                        // Retained strict cast trees have value-refined precision
-                        // in Go. Use the already evaluated decimals so rendering
-                        // never repeats casts, warnings or side effects.
-                        let text =
-                            numeric_argument_text(self, &self.args[0], false, ctx, Some(left)).zip(
-                                numeric_argument_text(self, &self.args[1], false, ctx, Some(right)),
-                            );
-                        match text {
-                            Some((left, right)) => EvalError::DataOutOfRange {
-                                value: if unsigned {
-                                    "BIGINT UNSIGNED"
-                                } else {
-                                    "BIGINT"
-                                },
-                                expression: format!("({left} DIV {right})"),
-                            },
-                            None => error,
-                        }
-                    },
-                );
-            }
-        }
-        let integer_pair =
-            if op == BinaryOp::IntDiv && self.numeric_operand_domain() == Some(EvalType::Int) {
-                let integer = |value: &Datum, signed| match value {
-                    Datum::Int(value) if signed => Some(crate::coerce::Integer::Signed(*value)),
-                    Datum::Int(value) => Some(crate::coerce::Integer::Unsigned(*value as u64)),
-                    Datum::UInt(value) => Some(crate::coerce::Integer::Unsigned(*value)),
-                    _ => None,
-                };
-                integer(&lhs, signed[0]).zip(integer(&rhs, signed[1]))
-            } else {
-                None
-            };
-        crate::ops::eval_binary_full(
-            op,
-            lhs,
-            rhs,
-            ctx.div_precision_increment(),
-            self.derived_collation(),
-            crate::ops::Operands::of(&self.args[0], &self.args[1]),
-            ctx,
-        )
-        .map_err(|error| match error {
-            EvalError::IntOverflow => integer_pair.map_or_else(
-                || arithmetic_overflow_error(self, op, ctx),
-                |(left, right)| integer_division_overflow(left, right),
+    /// Whether declared padding can be read without evaluating an operand.
+    /// The numeric NULL signature never reads the value.
+    pub(crate) fn weight_string_input_required(&self) -> Option<bool> {
+        let padding = match self.args.as_slice() {
+            [_] => None,
+            [_, Expression::Constant(kind), Expression::Constant(length)] => Some(
+                weight_string_padding(kind.literal_value()?, length.literal_value()?),
             ),
-            EvalError::FloatOverflow => real_arithmetic_overflow_error(self, op, ctx),
-            EvalError::DecimalOverflow => decimal_arithmetic_overflow_error(self, op, ctx),
-            other => other,
-        })
+            _ => return None,
+        };
+        Some(self.weight_string_reads_value(padding))
     }
 
-    /// The typed fast path for an integer arithmetic/comparison operator.
-    ///
-    /// Go's `getFunction` compiles a scalar function whose arguments are all
-    /// `types.ETInt` to one integer signature BEFORE any row arrives; the
-    /// per-row cost is one typed call. The generic ladder this port otherwise
-    /// runs ([`Self::eval_by_signature`] plus `ops::eval_binary_full`)
-    /// re-derives that compile-time knowledge on every row of every hot loop.
-    /// When the operator name and both arguments' static field types already
-    /// pin the ETInt family, route straight to the same typed tail the ladder
-    /// ends at (`ops::integer_binary_typed`) -- identical semantics (NULL
-    /// propagation, unsigned reinterpretation from argument field types,
-    /// binary-literal operand casting, overflow errors,
-    /// NO_UNSIGNED_SUBTRACTION), none of the re-derivation.
-    ///
-    /// Returns `Ok(None)` for every shape the gate does not cover, including
-    /// runtime values no ETInt signature can produce; those keep the ordinary
-    /// ladder as their behavior contract.
-    fn eval_fast_integer_binary(
-        &self,
-        ctx: &dyn Columns,
-        row: Row<'_>,
-    ) -> Result<Option<Datum>, EvalError> {
-        if self.args.len() != 2 {
-            return Ok(None);
-        }
-        let op = match binary_op_for_name(self.func_name.lowercase()) {
-            Some(
-                op @ (BinaryOp::Plus
-                | BinaryOp::Minus
-                | BinaryOp::Mul
-                | BinaryOp::Eq
-                | BinaryOp::Ne
-                | BinaryOp::Lt
-                | BinaryOp::Le
-                | BinaryOp::Gt
-                | BinaryOp::Ge),
-            ) => op,
-            _ => return Ok(None),
-        };
-        // Go `mysql.HasUnsignedFlag(args[i].GetType(ctx).GetFlag())`: the
-        // unsigned fact lives on the ARGUMENT'S FIELD TYPE, and the ETInt
-        // families are exactly where both argument types are Int.
-        let signed = [0, 1].map(|index| {
-            self.args[index]
-                .static_type()
-                .filter(|field_type| field_type.eval_type() == EvalType::Int)
-                .map(|field_type| !field_type.is_unsigned())
-        });
-        let [Some(lhs_signed), Some(rhs_signed)] = signed else {
-            return Ok(None);
-        };
-        let arithmetic = matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul);
-        let lhs = if arithmetic {
-            eval_numeric_row(&self.args[0], ctx, row, EvalType::Int)?
-        } else {
-            self.args[0].eval(ctx, row)?
-        };
-        if arithmetic && lhs.is_null() {
-            return Ok(Some(Datum::Null));
-        }
-        let rhs = if arithmetic {
-            eval_numeric_row(&self.args[1], ctx, row, EvalType::Int)?
-        } else {
-            self.args[1].eval(ctx, row)?
-        };
-        crate::ops::integer_binary_typed(op, lhs, rhs, [lhs_signed, rhs_signed], ctx).map_err(
-            |error| match error {
-                // Go's arithmetic signatures raise
-                // `types.ErrOverflow.GenWithStackByArgs("BIGINT[ UNSIGNED]",
-                // "(arg OP arg)")` -- MySQL 1690 carries the OPERANDS, same as
-                // the generic entry below.
-                EvalError::IntOverflow => arithmetic_overflow_error(self, op, ctx),
-                other => other,
-            },
-        )
+    fn weight_string_reads_value(&self, padding: Option<(bool, i64)>) -> bool {
+        self.args[0]
+            .static_type()
+            .is_none_or(|field| !field.code().is_type_numeric())
+            || matches!(padding, Some((true, _)))
     }
 
-    fn eval_regexp_like(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
-        if !matches!(self.args.len(), 2 | 3) {
-            return Err(EvalError::WrongParameterCount("regexp_like"));
-        }
-        let string_arg = |index: usize| -> Result<Option<String>, EvalError> {
-            let value = self.args[index].eval(ctx, row)?;
-            let value =
-                crate::cast::cast_arg_as_string(&value, self.args[index].static_type(), ctx)?;
-            if value.is_null() {
-                return Ok(None);
-            }
-            value
-                .sql_string()
-                .map(Some)
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP_LIKE argument"))
-        };
-        let Some(text) = string_arg(0)? else {
-            return Ok(Datum::Null);
-        };
-        let Some(pattern) = string_arg(1)? else {
-            return Ok(Datum::Null);
-        };
-        let match_type = if self.args.len() == 3 {
-            let Some(match_type) = string_arg(2)? else {
-                return Ok(Datum::Null);
-            };
-            match_type
-        } else {
-            String::new()
-        };
-        let match_type =
-            crate::regexp::regexp_match_type_with_collation(&match_type, self.derived_collation());
-        let cache_pattern = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-        let cache_match_type =
-            self.args.len() < 3 || self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-        let regex = crate::regexp::get_cached_regexp(
-            &self.regexp_cache,
-            ctx.context_id(),
-            cache_pattern && cache_match_type,
-            &pattern,
-            &match_type,
-        )?;
-        let matched = regex.is_match(&text);
-        return Ok(Datum::Int(i64::from(matched)));
-    }
-
-    /// The per-signature evaluation itself.
-    ///
-    /// The binary operators, the lazy control forms (`CASE`/`IF`), `LIKE`,
-    /// the collation-aware string builtins, the casts, the session-state
-    /// functions and the date/time family are each handled by name below;
-    /// everything else evaluates its arguments eagerly and reuses the shared
-    /// Datum-level implementations. Each returns whatever its operand kinds
-    /// produced; reconciling that with the declared result type is
-    /// [`Self::eval`]'s job, done once for all of them.
-    fn eval_by_signature(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
+    pub(crate) fn requires_row_order(&self) -> bool {
         let name = self.func_name.lowercase();
-        // Go `builtinValues*Sig` reads the statement's current insert row,
-        // not its (zero) expression arguments. The offset is immutable build
-        // state from `NewValuesFunc`; an empty/no-session row is SQL NULL,
-        // while a non-empty row with no matching field is the source's
-        // session-current-values length error.
-        if name == "values" {
-            if !self.args.is_empty() {
-                return Err(EvalError::WrongParameterCount("values"));
-            }
-            let offset = self
-                .values_offset
-                .ok_or(EvalError::Unsupported("VALUES offset is not initialized"))?;
-            return ctx
-                .current_insert_value(offset)?
-                .map_or(Ok(Datum::Null), Ok);
+        crate::expr_util::is_mutable_effects_function(name)
+            || advisory_lock_spec(name).is_some()
+            || matches!(name, "nextval" | "lastval" | "setval")
+    }
+
+    pub(crate) fn rejects_vector_json_cast(&self) -> bool {
+        self.func_name.lowercase() == "cast_json"
+            && matches!(self.args.as_slice(), [value]
+                if value.static_type().is_some_and(|field| field.eval_type() == EvalType::VectorFloat32))
+    }
+
+    pub(crate) fn vector_json_cast_error() -> EvalError {
+        EvalError::Vector("cannot cast from vector to json".to_owned())
+    }
+
+    pub(crate) fn native_vector_extremum(&self) -> Option<std::cmp::Ordering> {
+        if self.args.len() < 2 || self.get_static_type()?.eval_type() != EvalType::VectorFloat32 {
+            return None;
         }
-        if name == "json_schema_valid" {
-            return self.json_schema_cache.eval(&self.args, ctx, row);
+        match self.func_name.lowercase() {
+            "greatest" => Some(std::cmp::Ordering::Greater),
+            "least" => Some(std::cmp::Ordering::Less),
+            _ => None,
         }
-        // Go `BuiltinGroupingImplSig.evalInt`: the planner installs grouping
-        // metadata before execution, the grouping-id argument is evaluated
-        // as an int64 carrier, and NULL propagates without invoking the
-        // grouping algorithm.
-        if name == "grouping" {
-            let [argument] = self.args.as_slice() else {
-                return Err(EvalError::WrongParameterCount("grouping"));
-            };
-            let grouping_id = crate::arg_eval_type::eval_int(&argument.eval(ctx, row)?)?;
-            let Some(grouping_id) = grouping_id else {
-                return Ok(Datum::Null);
-            };
-            let metadata = self
-                .grouping_metadata
-                .as_ref()
-                .ok_or(EvalError::Unsupported("Meta data is not initialized"))?;
-            let result = metadata.eval(grouping_id as u64);
-            return Ok(Datum::UInt(result));
+    }
+
+    pub(crate) fn native_vector_operator(&self) -> Option<BinaryOp> {
+        if self.args.len() == 2
+            && self
+                .get_static_type()
+                .is_some_and(|field| field.eval_type() == EvalType::VectorFloat32)
+        {
+            return binary_op_for_name(self.func_name.lowercase())
+                .filter(|op| matches!(op, BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul));
         }
-        if let Some(op) = binary_op_for_name(name) {
-            if self.args.len() == 2 {
-                let domain = self.numeric_operand_domain();
-                let lhs = match domain {
-                    Some(domain) => eval_numeric_operand_row(&self.args[0], ctx, row, domain)?,
-                    None => self.args[0].eval(ctx, row)?,
-                };
-                // Real addition and Int/Real MOD evaluate both operands even
-                // when the left is NULL. Other numeric signatures stop here.
-                if lhs.is_null()
-                    && domain.is_some()
-                    && !(domain == Some(EvalType::Real) && op == BinaryOp::Plus)
-                    && !(op == BinaryOp::Mod && domain != Some(EvalType::Decimal))
-                {
-                    return Ok(Datum::Null);
-                }
-                if matches!(op, BinaryOp::LogicAnd | BinaryOp::LogicOr) {
-                    let lhs = logic_truthy(&lhs, ctx)?;
-                    match (op, lhs) {
-                        (BinaryOp::LogicAnd, Some(false)) => return Ok(Datum::Int(0)),
-                        (BinaryOp::LogicOr, Some(true)) => return Ok(Datum::Int(1)),
-                        _ => {}
-                    }
-                    let rhs = logic_truthy(&self.args[1].eval(ctx, row)?, ctx)?;
-                    return Ok(match op {
-                        BinaryOp::LogicAnd if rhs == Some(false) => Datum::Int(0),
-                        BinaryOp::LogicOr if rhs == Some(true) => Datum::Int(1),
-                        _ if lhs.is_none() || rhs.is_none() => Datum::Null,
-                        BinaryOp::LogicAnd => Datum::Int(1),
-                        BinaryOp::LogicOr => Datum::Int(0),
-                        _ => unreachable!("logical operator was guarded"),
-                    });
-                }
-                let rhs = match domain {
-                    Some(domain) => eval_numeric_operand_row(&self.args[1], ctx, row, domain)?,
-                    None => self.args[1].eval(ctx, row)?,
-                };
-                // Keep expression metadata for signedness, signature
-                // selection and source-shaped overflow diagnostics.
-                return self.eval_binary_values(op, lhs, rhs, ctx);
+        None
+    }
+
+    pub(crate) fn accepts_eager_values(&self) -> bool {
+        let name = self.func_name.lowercase();
+        match (name, self.args.as_slice()) {
+            ("cast_vector", [_]) | ("ilike", [_, _, _]) => true,
+            ("ltrim_with" | "rtrim_with", [_, _]) => true,
+            ("convert_using", [_, Expression::Constant(target)]) => {
+                target.literal_value().is_some()
             }
+            ("char_func", args) => !args.is_empty(),
+            (_, args) => crate::builtin_ext::accepts_eager(name, args.len()),
         }
-        if let Some(op) = unary_op_for_name(name) {
-            if self.args.len() == 1 {
-                let v = self.args[0].eval(ctx, row)?;
-                return crate::ops::eval_unary(
-                    op,
-                    v,
-                    crate::ops::Operand::Expr(&self.args[0]),
-                    ctx,
-                );
+    }
+}
+
+fn coerce_value_to_ret_type(
+    name: &str,
+    field: Option<&FieldType>,
+    value: Datum,
+) -> Result<Datum, EvalError> {
+    if value.is_null() {
+        return Ok(value);
+    }
+    let Some(ret_type) = field else {
+        return Ok(value);
+    };
+    // Go's `builtinCoalesceTimeSig`/`builtinCoalesceDurationSig` stamps
+    // every selected temporal value with the merged result FSP after
+    // evaluating it. `newBaseBuiltinFuncWithTp` does not wrap temporal
+    // arguments, so the selected value can still carry the first
+    // argument's original precision. Preserve the value's instant and
+    // update only that metadata here; a general `ConvertTo` would also
+    // round the instant, which is not what Coalesce's `SetFsp` does.
+    if name.eq_ignore_ascii_case("coalesce") {
+        let target_fsp = if ret_type.decimal() == tidb_datatype::UNSPECIFIED_LENGTH {
+            0
+        } else {
+            ret_type.decimal()
+        };
+        match (&value, ret_type.code()) {
+            (
+                Datum::Time(time),
+                tidb_datatype::FieldTypeCode::Date
+                | tidb_datatype::FieldTypeCode::Datetime
+                | tidb_datatype::FieldTypeCode::Timestamp,
+            ) => {
+                let mut time = *time;
+                let _ = time.set_fsp(target_fsp);
+                return Ok(Datum::Time(time));
             }
-        }
-        // Go `builtinIsTrueOrFalseSig` (`builtin_op.go`): MySQL's IS TRUE /
-        // IS FALSE / IS UNKNOWN never answer NULL -- NULL tests FALSE for
-        // TRUE/FALSE and TRUE for UNKNOWN.
-        if matches!(
-            name,
-            "istrue"
-                | "istrue_with_null"
-                | "isnottrue"
-                | "isfalse"
-                | "isnotfalse"
-                | "isunknown"
-                | "isnotunknown"
-        ) {
-            if self.args.len() != 1 {
-                return Err(EvalError::WrongParameterCount("is true or false"));
-            }
-            let operand = self.args[0].eval(ctx, row)?;
-            let truthy = crate::truthy_of(&operand)?;
-            if name == "istrue_with_null" {
-                return Ok(match truthy {
-                    Some(value) => Datum::Int(i64::from(value)),
-                    None => Datum::Null,
-                });
-            }
-            let result = match name {
-                "istrue" => truthy == Some(true),
-                "isnottrue" => truthy != Some(true),
-                "isfalse" => truthy == Some(false),
-                "isnotfalse" => truthy != Some(false),
-                "isunknown" => truthy.is_none(),
-                _ => truthy.is_some(),
-            };
-            return Ok(Datum::Int(i64::from(result)));
-        }
-        if let [arg] = self.args.as_slice() {
-            if let Some(value) = crate::collation_derive::info_metadata_value(name, arg) {
-                return Ok(value);
-            }
-        }
-        if name == "benchmark" {
-            let [count, expression] = self.args.as_slice() else {
-                return Err(EvalError::Unsupported("BENCHMARK arguments"));
-            };
-            let Some(loop_count) =
-                crate::func::benchmark_loop_count(count.eval(ctx, row)?, count.static_type(), ctx)?
-            else {
-                return Ok(Datum::Null);
-            };
-            if loop_count < 0 {
-                return Ok(Datum::Null);
-            }
-            crate::func::ensure_benchmark_eval_type(expression.static_type())?;
-            for _ in 0..loop_count {
-                expression.eval(ctx, row)?;
-            }
-            return Ok(Datum::Int(0));
-        }
-        if name == "sleep" {
-            let [argument] = self.args.as_slice() else {
-                return Err(EvalError::WrongParameterCount("sleep"));
-            };
-            let value = argument.eval(ctx, row)?;
-            if value.is_null() {
-                ctx.handle_sleep_incorrect_argument()?;
-                return Ok(Datum::Int(0));
-            }
-            let seconds = crate::ops::to_f64_with_mysql_string(&value, ctx)?;
-            if seconds < 0.0 {
-                ctx.handle_sleep_incorrect_argument()?;
-                return Ok(Datum::Int(0));
-            }
-            if seconds > f64::MAX / 1_000_000_000.0 {
-                return Err(EvalError::IncorrectArguments(
-                    "Incorrect arguments to sleep".to_owned(),
+            (Datum::Duration(duration), tidb_datatype::FieldTypeCode::Duration) => {
+                return Ok(Datum::Duration(
+                    tidb_datatype::MySqlDuration::from_raw_parts(
+                        duration.nanoseconds(),
+                        target_fsp,
+                    ),
                 ));
             }
-            if seconds <= 0.0 {
-                return Ok(Datum::Int(0));
-            }
-            let duration = std::time::Duration::try_from_secs_f64(seconds).map_err(|_| {
-                EvalError::IncorrectArguments("Incorrect arguments to sleep".to_owned())
-            })?;
-            return Ok(Datum::Int(i64::from(ctx.sleep_for(duration))));
+            _ => {}
         }
-        if matches!(
-            name,
-            "get_lock" | "release_lock" | "is_free_lock" | "is_used_lock" | "release_all_locks"
-        ) {
-            if name == "release_all_locks" {
-                if !self.args.is_empty() {
-                    return Err(EvalError::WrongParameterCount("release_all_locks"));
+    }
+    if same_eval_family(&value, ret_type) {
+        // `mysql.TypeBit`'s eval type is `ETInt`, so the family check
+        // would keep an integer here. A BIT value's canonical carrier is
+        // instead the zero-padded byte string (`Datum::Bit`), which is
+        // what Go's `chunk.AppendDatum` stores for `KindMysqlBit` and
+        // what a var-length BIT chunk column can hold. A cast to BIT is
+        // the scalar function that produces such an integer, so convert
+        // it here; a value already carrying the bytes is left alone.
+        if ret_type.code() == tidb_datatype::FieldTypeCode::Bit {
+            let width = (ret_type.flen() > 0)
+                .then(|| u8::try_from((ret_type.flen() + 7) / 8).ok())
+                .flatten()
+                .and_then(|bytes| tidb_datatype::BinaryLiteralWidth::try_from(bytes).ok());
+            match value {
+                Datum::Int(v) => {
+                    return Ok(Datum::Bit(tidb_datatype::BinaryLiteral::from_uint(
+                        v as u64, width,
+                    )));
                 }
-                let count = ctx.release_all_advisory_locks()?;
-                return Ok(Datum::Int(i64::try_from(count).unwrap_or(i64::MAX)));
+                Datum::UInt(v) => {
+                    return Ok(Datum::Bit(tidb_datatype::BinaryLiteral::from_uint(
+                        v, width,
+                    )));
+                }
+                _ => {}
             }
+        }
+        return Ok(match value {
+            Datum::String(value) if !ret_type.is_binary_string() => {
+                Datum::new_collation_string(value.into_bytes(), ret_type.collation())
+            }
+            value => value,
+        });
+    }
+    // COALESCE is built with `newBaseBuiltinFuncWithTp`, so its ARGUMENTS
+    // are cast only to the merged eval family -- but `getFunction` then
+    // assigns `bf.tp = resultFieldType`, and that merged type is what the
+    // selected value is presented as. `select coalesce(1, 2.55, 3)`
+    // answers `1.00`, not `1`: the integer branch is widened to the
+    // merged scale, exactly as IF/IFNULL/CASE widen theirs. Handled by
+    // the shared conversion below rather than a COALESCE-only rule.
+    match value.convert_to(ret_type, tidb_datatype::DEFAULT_STATEMENT_FLAGS) {
+        Ok(converted) => Ok(converted.value),
+        Err(_) => Ok(value),
+    }
+}
 
-            let expected = if name == "get_lock" { 2 } else { 1 };
-            if self.args.len() != expected {
-                return Err(EvalError::WrongParameterCount(match name {
-                    "get_lock" => "get_lock",
-                    "release_lock" => "release_lock",
-                    "is_free_lock" => "is_free_lock",
-                    "is_used_lock" => "is_used_lock",
-                    _ => unreachable!("advisory lock name was matched above"),
-                }));
-            }
-            let raw_name = self.args[0].eval(ctx, row)?;
-            let string_name =
-                crate::cast::cast_arg_as_string(&raw_name, self.args[0].static_type(), ctx)?;
-            let lock_name = advisory_lock_name(string_name)?;
+/// A session input whose identity and literal operands are fixed at binding.
+pub(crate) struct PreparedContextInput {
+    name: String,
+    arity: usize,
+    values_offset: Option<usize>,
+    arguments: Option<Vec<Datum>>,
+    builtin: PreparedLocalBuiltin,
+}
 
-            return match name {
-                "get_lock" => {
-                    let raw_timeout = self.args[1].eval(ctx, row)?;
-                    let int_timeout = crate::cast::cast_arg_as_int(
-                        &raw_timeout,
-                        self.args[1].static_type(),
-                        ctx,
-                    )?;
-                    let mut timeout = crate::arg_eval_type::eval_int(&int_timeout)?.unwrap_or(0);
-                    if !(0..=MAX_ADVISORY_LOCK_TIMEOUT_SECS).contains(&timeout) {
-                        ctx.append_warning(
-                            1292,
-                            &format!("Truncated incorrect get_lock value: '{timeout}'"),
-                        );
-                        timeout = MAX_ADVISORY_LOCK_TIMEOUT_SECS;
-                    }
-                    let acquired = ctx.acquire_advisory_lock(
-                        &lock_name,
-                        std::time::Duration::from_secs(timeout as u64),
-                    )?;
-                    Ok(Datum::Int(i64::from(acquired)))
-                }
-                "release_lock" => Ok(Datum::Int(i64::from(
-                    ctx.release_advisory_lock(&lock_name)?,
-                ))),
-                "is_free_lock" => Ok(Datum::Int(i64::from(
-                    ctx.advisory_lock_owner(&lock_name)?.is_none(),
-                ))),
-                "is_used_lock" => Ok(ctx
-                    .advisory_lock_owner(&lock_name)?
-                    .map_or(Datum::Null, |owner| Datum::Int(owner as i64))),
-                _ => unreachable!("advisory lock name was matched above"),
-            };
+impl PreparedContextInput {
+    pub(crate) fn new(function: &ScalarFunction) -> Self {
+        Self {
+            name: function.func_name.lowercase().to_owned(),
+            arity: function.args.len(),
+            values_offset: function.values_offset,
+            arguments: function
+                .args
+                .iter()
+                .map(|expression| match expression {
+                    Expression::Constant(constant) => constant.literal_value().cloned(),
+                    _ => None,
+                })
+                .collect(),
+            builtin: PreparedLocalBuiltin::new(function),
         }
-        // Go `builtinCaseWhen*Sig`: the arguments are the flattened
-        // `cond, result, ..., else` list, and only the selected branch is
-        // evaluated -- so an error in an unreachable branch never surfaces.
-        if name == "case" {
-            let (pairs, remainder) = self.args.as_chunks::<2>();
-            for pair in pairs {
-                let condition = pair[0].eval(ctx, row)?;
-                // A NULL condition is not a match, the same as false.
-                if crate::truthy_of(&condition)? == Some(true) {
-                    return pair[1].eval(ctx, row);
-                }
-            }
-            // An odd argument count means a trailing ELSE.
-            return match remainder.first() {
-                Some(else_branch) => else_branch.eval(ctx, row),
-                None => Ok(Datum::Null),
-            };
+    }
+
+    pub(crate) fn read(&self, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+        if let Some(result) = self.context_value(ctx) {
+            return coerce_value_to_ret_type(&self.name, self.builtin.get_static_type(), result?);
         }
-        // Go `builtinIf*Sig` is lazy too: the condition decides which single
-        // branch is evaluated, so an error in the other never surfaces.
-        if name == "if" && self.args.len() == 3 {
-            let condition = self.args[0].eval(ctx, row)?;
-            let branch = if crate::truthy_of(&condition)? == Some(true) {
-                1
+        let arguments = self.arguments.as_ref().ok_or(EvalError::Unsupported(
+            "a bound context input needs literal operands",
+        ))?;
+        self.builtin.evaluate(arguments.clone(), ctx)
+    }
+
+    fn context_value(&self, ctx: &dyn Columns) -> Option<Result<Datum, EvalError>> {
+        let name = self.name.as_str();
+        if matches!(name, "values" | "tidb_is_ddl_owner") && self.arity != 0 {
+            return Some(Err(EvalError::WrongParameterCount(if name == "values" {
+                "values"
             } else {
-                2
-            };
-            return self.args[branch].eval(ctx, row);
+                "tidb_is_ddl_owner"
+            })));
         }
-        // Go's IFNULL and COALESCE signatures stop at the first non-NULL
-        // value. Evaluate only as far as that decision requires so an error
-        // in a skipped argument stays unreachable.
-        if name == "ifnull" && self.args.len() == 2 {
-            let first = self.args[0].eval(ctx, row)?;
-            return if first.is_null() {
-                self.args[1].eval(ctx, row)
-            } else {
-                Ok(first)
-            };
+        if self.arity != 0 {
+            return None;
         }
-        if name == "coalesce" {
-            for arg in &self.args {
-                let value = arg.eval(ctx, row)?;
-                if !value.is_null() {
-                    return Ok(value);
-                }
+        let value = match name {
+            "values" => {
+                return Some(
+                    self.values_offset
+                        .ok_or(EvalError::Unsupported("VALUES offset is not initialized"))
+                        .and_then(|offset| ctx.current_insert_value(offset))
+                        .map(|value| value.unwrap_or(Datum::Null)),
+                )
             }
-            return Ok(Datum::Null);
-        }
-        if name == "interval" && self.args.len() >= 2 {
-            let arg_types = self
+            "tidb_is_ddl_owner" => {
+                return Some(
+                    ctx.ddl_owner_info()
+                        .map(|owner| Datum::Int(i64::from(owner))),
+                )
+            }
+            "database" | "schema" => ctx
+                .current_database()
+                .map(|v| Datum::new_string(v.into_bytes())),
+            "version" => ctx.sysvar(None, "version"),
+            "tidb_version" => Some(Datum::new_string(ctx.tidb_info().into_bytes())),
+            "current_user" => ctx
+                .current_user()
+                .map(|v| Datum::new_string(v.into_bytes())),
+            "current_role" => ctx
+                .current_role()
+                .map(|v| Datum::new_string(v.into_bytes())),
+            "current_resource_group" => ctx
+                .current_resource_group()
+                .map(|v| Datum::new_string(v.into_bytes())),
+            "user" | "session_user" | "system_user" => {
+                ctx.login_user().map(|v| Datum::new_string(v.into_bytes()))
+            }
+            "connection_id" => ctx.connection_id().map(Datum::UInt),
+            "found_rows" => ctx.found_rows().map(Datum::UInt),
+            "row_count" => ctx.row_count().map(Datum::Int),
+            "last_insert_id" => ctx.last_insert_id().map(Datum::UInt),
+            _ => return None,
+        };
+        Some(Ok(value.unwrap_or(Datum::Null)))
+    }
+}
+
+/// The declaration and small caches a remaining native value callback needs.
+/// It owns no expression tree and receives operands from the shared program.
+pub(crate) struct PreparedLocalBuiltin {
+    pub(crate) name: String,
+    ret_type: Option<FieldType>,
+    argument_types: Box<[Option<FieldType>]>,
+    all_literal: bool,
+    explicit_first_collation: bool,
+    collation: tidb_datatype::Collation,
+    cache_pattern: bool,
+    like: crate::builtin_ext::BuiltinFuncCache<crate::like::CompiledLikePattern>,
+    ilike: crate::builtin_ext::BuiltinFuncCache<crate::like::CompiledIlikePattern>,
+    regexp: crate::builtin_ext::BuiltinFuncCache<crate::regexp::CachedRegexp>,
+    find_in_set: crate::builtin_ext::BuiltinFuncCache<crate::builtin_ext::FindInSetLookup>,
+    extremum_signature: Option<crate::builtin_ext::GlSignature>,
+}
+
+impl PreparedLocalBuiltin {
+    pub(crate) fn new(function: &ScalarFunction) -> Self {
+        Self {
+            collation: function.derived_collation(),
+            cache_pattern: function
+                .args
+                .iter()
+                .skip(1)
+                .all(|argument| argument.const_level() >= ConstLevel::ONLY_IN_CONTEXT),
+            like: Default::default(),
+            ilike: Default::default(),
+            regexp: Default::default(),
+            find_in_set: Default::default(),
+            extremum_signature: matches!(function.func_name.lowercase(), "greatest" | "least")
+                .then(|| crate::rewriter::result_type::gl_signature(&function.args))
+                .flatten(),
+            name: function.func_name.lowercase().to_ascii_uppercase(),
+            ret_type: function.ret_type.clone(),
+            argument_types: function
                 .args
                 .iter()
                 .map(|argument| argument.static_type().cloned())
-                .collect::<Vec<_>>();
-            return crate::builtin_ext::interval_lazy(
-                &arg_types,
-                |index| self.args[index].eval(ctx, row),
-                ctx,
-            );
-        }
-        // Go's CONCAT signatures capture max_allowed_packet at build time and
-        // evaluate left-to-right. Crossing the limit returns NULL immediately,
-        // so a later argument (including one that would error) is unreachable.
-        if name == "concat" && !self.args.is_empty() {
-            let mut output = Vec::new();
-            for arg in &self.args {
-                let value = arg.eval(ctx, row)?;
-                let Some(bytes) = crate::coerce::coerce_str_bytes(&value)? else {
-                    return Ok(Datum::Null);
-                };
-                let next_len = output.len().saturating_add(bytes.len()) as u64;
-                if next_len > ctx.max_allowed_packet() {
-                    ctx.handle_allowed_packet_overflowed("concat")?;
-                    return Ok(Datum::Null);
-                }
-                output.extend_from_slice(&bytes);
-            }
-            return Ok(Datum::new_string(output));
-        }
-        if name == "concat_ws" && self.args.len() >= 2 {
-            let separator = self.args[0].eval(ctx, row)?;
-            let Some(separator) = crate::coerce::coerce_str_bytes(&separator)? else {
-                return Ok(Datum::Null);
-            };
-            let mut parts = Vec::new();
-            let mut target_len = 0_u64;
-            for (index, arg) in self.args[1..].iter().enumerate() {
-                let value = arg.eval(ctx, row)?;
-                let Some(bytes) = crate::coerce::coerce_str_bytes(&value)? else {
-                    continue;
-                };
-                target_len = target_len.saturating_add(bytes.len() as u64);
-                if index > 0 {
-                    target_len = target_len.saturating_add(separator.len() as u64);
-                }
-                if target_len > ctx.max_allowed_packet() {
-                    ctx.handle_allowed_packet_overflowed("concat_ws")?;
-                    return Ok(Datum::Null);
-                }
-                parts.push(bytes);
-            }
-            let output_len = parts
+                .collect(),
+            all_literal: function
+                .args
                 .iter()
-                .fold(0_usize, |length, part| length.saturating_add(part.len()))
-                .saturating_add(
-                    separator
-                        .len()
-                        .saturating_mul(parts.len().saturating_sub(1)),
-                );
-            let mut output = Vec::with_capacity(output_len);
-            for (index, part) in parts.iter().enumerate() {
-                if index > 0 {
-                    output.extend_from_slice(&separator);
-                }
-                output.extend_from_slice(part);
-            }
-            return Ok(Datum::new_string(output));
+                .all(|argument| matches!(argument, Expression::Constant(_))),
+            explicit_first_collation: function.args.first().is_some_and(|argument| {
+                crate::collation_derive::coercibility_of(argument)
+                    == crate::expr_collation::Coercibility::EXPLICIT
+            }),
         }
-        // Go builtinLikeSig/builtinIlikeSig evaluate each argument in order
-        // and stop at NULL. The escape is EvalInt followed by byte(escape),
-        // not a range-checked conversion that substitutes a default.
-        if (name == "like" || name == "ilike") && self.args.len() == 3 {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
+    }
+
+    fn get_static_type(&self) -> Option<&FieldType> {
+        self.ret_type.as_ref()
+    }
+
+    pub(crate) fn evaluate(
+        &self,
+        values: Vec<Datum>,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        coerce_value_to_ret_type(
+            &self.name,
+            self.get_static_type(),
+            self.eval_eager_values(values, ctx)?,
+        )
+    }
+
+    fn weight_string_value(
+        &self,
+        value: &Datum,
+        padding: Option<(bool, i64)>,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        let field = self.argument_types[0].as_ref();
+        let value = crate::cast::cast_arg_as_string(value, field, ctx)?;
+        let fallback = FieldType::new(tidb_datatype::FieldTypeCode::VarString);
+        let string_type = crate::cast::cast_arg_as_string_type(
+            field.unwrap_or(&fallback),
+            self.explicit_first_collation,
+            ctx.connection_charset_info(),
+        );
+        let collation = tidb_datatype::Collation::from_name(string_type.collation_name())
+            .unwrap_or(crate::ops::DERIVATION_FREE_COLLATION);
+        crate::string_packet::weight_string(&value, padding, collation, ctx)
+    }
+
+    fn eval_eager_values(&self, vals: Vec<Datum>, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+        let upper = self.name.as_str();
+        let arg_types = self.argument_types.as_ref();
+        if let [left, right] = vals.as_slice() {
+            if self
+                .ret_type
+                .as_ref()
+                .is_some_and(|field| field.eval_type() == EvalType::VectorFloat32)
+            {
+                if let Some(operator) = binary_op_for_name(&upper.to_ascii_lowercase()) {
+                    return crate::ops::eval_binary_in(operator, left.clone(), right.clone(), ctx);
+                }
             }
-            let text = value
-                .sql_bytes()
-                .map_err(|_| EvalError::Unsupported("invalid LIKE operand scalar domain"))?;
-            let pattern = self.args[1].eval(ctx, row)?;
-            if pattern.is_null() {
-                return Ok(Datum::Null);
+        }
+        if let [date, amount] = vals.as_slice() {
+            let interval = upper
+                .strip_prefix("DATE_ADD_")
+                .map(|unit| (unit, 1))
+                .or_else(|| upper.strip_prefix("DATE_SUB_").map(|unit| (unit, -1)));
+            if let Some((unit, sign)) = interval {
+                let fsp = crate::time_fn::calendar::date_add_result_fsp(
+                    unit,
+                    arg_types[0].as_ref(),
+                    arg_types[1].as_ref(),
+                );
+                let target = self.ret_type.as_ref().map(FieldType::code);
+                if target == Some(tidb_datatype::FieldTypeCode::Duration) {
+                    return crate::time_fn::add_sub::date_add_duration(
+                        ctx,
+                        unit,
+                        date,
+                        amount,
+                        arg_types[1].as_ref(),
+                        sign,
+                        i64::from(fsp.unwrap_or(0)),
+                    );
+                }
+                let cast;
+                let date = if target == Some(tidb_datatype::FieldTypeCode::Datetime)
+                    && matches!(date, Datum::Duration(_))
+                {
+                    cast = crate::cast::cast_arg_as_datetime(date, arg_types[0].as_ref(), ctx)?;
+                    &cast
+                } else {
+                    date
+                };
+                let value = crate::time_fn::calendar::date_add_with_result_fsp(
+                    unit, date, amount, sign, fsp, ctx,
+                )?;
+                return match self.ret_type.as_ref().map(FieldType::eval_type) {
+                    _ if target == Some(tidb_datatype::FieldTypeCode::Date) => {
+                        crate::cast::parse_computed_time(
+                            &value,
+                            ctx,
+                            tidb_datatype::TimeType::Date,
+                            Some(0),
+                        )
+                    }
+                    Some(EvalType::Datetime | EvalType::Timestamp) => {
+                        crate::cast::parse_computed_time(
+                            &value,
+                            ctx,
+                            tidb_datatype::TimeType::DateTime,
+                            self.ret_type.as_ref().map(FieldType::decimal),
+                        )
+                    }
+                    Some(EvalType::Duration) => crate::cast::parse_computed_duration(&value, ctx),
+                    _ => Ok(value),
+                };
             }
-            let pattern = pattern
-                .sql_bytes()
-                .map_err(|_| EvalError::Unsupported("invalid LIKE pattern scalar domain"))?;
-            let raw_escape = self.args[2].eval(ctx, row)?;
-            let int_escape =
-                crate::cast::cast_arg_as_int(&raw_escape, self.args[2].static_type(), ctx)?;
-            let Some(escape) = crate::arg_eval_type::eval_int(&int_escape)? else {
-                return Ok(Datum::Null);
-            };
-            let escape = escape as u8;
-            let cache_pattern = self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-            let cache_escape = self.args[2].const_level() >= ConstLevel::ONLY_IN_CONTEXT;
-            let matched = if name == "ilike" {
-                if cache_pattern && cache_escape {
-                    let cached =
-                        self.ilike_pattern_cache
+        }
+        match (upper, vals.as_slice()) {
+            ("MINUS", [left, right]) => {
+                return crate::ops::eval_binary_in(
+                    BinaryOp::Minus,
+                    left.clone(),
+                    right.clone(),
+                    ctx,
+                )
+                .map_err(|error| match error {
+                    EvalError::IntOverflow => EvalError::DataOutOfRange {
+                        value: "BIGINT",
+                        expression: format!(
+                            "({} - {})",
+                            left.sql_string().unwrap_or_default(),
+                            right.sql_string().unwrap_or_default()
+                        ),
+                    },
+                    error => error,
+                });
+            }
+            ("INSTR", [haystack, needle]) => {
+                return crate::string_fn::locate(needle, haystack, self.collation);
+            }
+            ("FIND_IN_SET", [needle, list]) => {
+                if self.cache_pattern {
+                    let lookup = self.find_in_set.get_or_init_cache(ctx.context_id(), || {
+                        crate::builtin_ext::build_find_in_set_lookup(list, self.collation)
+                    })?;
+                    return crate::builtin_ext::find_in_set_lookup(needle, &lookup, self.collation);
+                }
+                return crate::builtin_ext::find_in_set_with_collation(&vals, self.collation);
+            }
+            ("GREATEST" | "LEAST", values) => {
+                let want = if upper == "GREATEST" {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                };
+                let decimals = arg_types
+                    .iter()
+                    .map(|field| field.as_ref().map_or(-1, FieldType::decimal))
+                    .collect::<Vec<_>>();
+                return crate::builtin_ext::extremum_with_signature(
+                    values,
+                    want,
+                    self.extremum_signature,
+                    &decimals,
+                    self.all_literal,
+                    self.collation,
+                    ctx,
+                );
+            }
+            ("DATE", [value]) => {
+                let mut date =
+                    crate::cast::cast_arg_as_datetime(value, arg_types[0].as_ref(), ctx)?;
+                if matches!(value, Datum::String(_) | Datum::Bytes(_)) {
+                    if let Datum::Time(time) = &mut date {
+                        if time.invalid_zero() && !time.is_zero() {
+                            let _ = time.set_fsp(6);
+                        }
+                    }
+                }
+                return crate::time_fn::date(&[date], ctx);
+            }
+            ("FROM_DAYS", [_]) => {
+                let date = crate::time_fn::calendar::from_days(&vals)?;
+                if date.as_raw_bytes() == Some(b"0000-00-00") {
+                    return Ok(Datum::Time(
+                        tidb_datatype::Time::from_go_raw(0xf)
+                            .map_err(|_| EvalError::Unsupported("zero DATE carrier"))?,
+                    ));
+                }
+                return crate::cast::parse_computed_time(
+                    &date,
+                    ctx,
+                    tidb_datatype::TimeType::Date,
+                    Some(0),
+                );
+            }
+            ("MAKEDATE", [_, _]) => {
+                let date = crate::time_fn::makedate(&vals)?;
+                return crate::cast::parse_computed_time(
+                    &date,
+                    ctx,
+                    tidb_datatype::TimeType::Date,
+                    Some(0),
+                );
+            }
+            ("MAKETIME", [_, _, _]) => {
+                let duration = crate::time_fn::maketime(&vals, ctx)?;
+                return crate::cast::parse_computed_duration(&duration, ctx);
+            }
+            ("POW" | "POWER" | "COT", _) => {
+                if let Some(result) = crate::math_fn::dispatch_values(upper, &vals, ctx) {
+                    return result.map_err(|error| {
+                        if !matches!(error, EvalError::FloatOverflow) {
+                            return error;
+                        }
+                        let numbers = vals
+                            .iter()
+                            .map(|value| match value {
+                                Datum::Float32(value) | Datum::Real(value) => {
+                                    tidb_datatype::format_float_g_shortest(*value)
+                                }
+                                _ => value.sql_string().unwrap_or_else(|_| "NULL".to_owned()),
+                            })
+                            .collect::<Vec<_>>();
+                        let name = upper.to_ascii_lowercase();
+                        EvalError::DataOutOfRange {
+                            value: "DOUBLE",
+                            expression: format!("{name}({})", numbers.join(", ")),
+                        }
+                    });
+                }
+            }
+            ("EXTRACT", [unit, value]) => {
+                let unit = match unit {
+                    Datum::Bit(unit) => String::from_utf8_lossy(unit.as_bytes()).into_owned(),
+                    value => {
+                        let Some(unit) = crate::coerce::coerce_str(value)? else {
+                            return Ok(Datum::Null);
+                        };
+                        unit
+                    }
+                };
+                return crate::time_fn::extract::extract(
+                    &unit.to_ascii_uppercase(),
+                    value,
+                    arg_types[1].as_ref(),
+                    ctx,
+                );
+            }
+            ("TO_BINARY" | "FROM_BINARY", [value]) => {
+                let field = if upper == "TO_BINARY" {
+                    arg_types[0].as_ref()
+                } else {
+                    self.ret_type.as_ref()
+                };
+                let charset = field.map_or("binary", FieldType::charset_name);
+                return if upper == "TO_BINARY" {
+                    crate::convert_charset::to_binary(value, charset)
+                } else {
+                    crate::convert_charset::from_binary(value, charset)
+                };
+            }
+            ("CONVERT_USING", [value, charset]) => {
+                if value.is_null() {
+                    return Ok(Datum::Null);
+                }
+                let charset = charset
+                    .sql_string()
+                    .map_err(|_| EvalError::Unsupported("invalid CONVERT charset"))?;
+                let source = arg_types[0]
+                    .as_ref()
+                    .ok_or(EvalError::Unsupported("CONVERT source type"))?;
+                let value = crate::cast::cast_arg_as_string(value, Some(source), ctx)?;
+                let string = crate::cast::cast_arg_as_string_type(
+                    source,
+                    self.explicit_first_collation,
+                    ctx.connection_charset_info(),
+                );
+                return crate::convert_charset::convert_using(&value, &string, &charset);
+            }
+            ("LIKE" | "ILIKE", [text, pattern, escape]) => {
+                if text.is_null() || pattern.is_null() || escape.is_null() {
+                    return Ok(Datum::Null);
+                }
+                let text = text
+                    .sql_bytes()
+                    .map_err(|_| EvalError::Unsupported("invalid LIKE operand scalar domain"))?;
+                let pattern = pattern
+                    .sql_bytes()
+                    .map_err(|_| EvalError::Unsupported("invalid LIKE pattern scalar domain"))?;
+                let escape = crate::cast::cast_arg_as_int(escape, arg_types[2].as_ref(), ctx)?;
+                let Some(escape) = crate::arg_eval_type::eval_int(&escape)? else {
+                    return Ok(Datum::Null);
+                };
+                let escape = escape as u8;
+                let matched = if upper == "ILIKE" {
+                    if self.cache_pattern {
+                        self.ilike
                             .get_or_init_cache(ctx.context_id(), || {
                                 Ok::<_, EvalError>(crate::like::CompiledIlikePattern::new(
                                     &pattern,
                                     escape,
-                                    self.derived_collation(),
+                                    self.collation,
                                 ))
-                            })?;
-                    cached.is_match(&text)
-                } else {
-                    crate::like::ilike_match_with_collation(
-                        text,
-                        pattern,
-                        escape,
-                        self.derived_collation(),
-                    )
-                }
-            } else {
-                if cache_pattern && cache_escape {
-                    let cached =
-                        self.like_pattern_cache
-                            .get_or_init_cache(ctx.context_id(), || {
-                                Ok::<_, EvalError>(crate::like::CompiledLikePattern::new(
-                                    &pattern,
-                                    escape,
-                                    self.derived_collation(),
-                                ))
-                            })?;
-                    cached.is_match(&text)
-                } else {
-                    crate::like_match_with_collation(
-                        text,
-                        pattern,
-                        Some(escape),
-                        self.derived_collation(),
-                    )
-                }
-            };
-            return Ok(Datum::Int(i64::from(matched)));
-        }
-        // Go's `GETVAR`/`SETVAR` families (`pkg/expression/builtin_other.go`):
-        // the variable NAME is a build-time constant, so the rewriter passes
-        // it as the first argument, and the session state both reach lives
-        // behind `Columns::get_uservar`/`set_uservar`.
-        //
-        // `SETVAR` is the inline `@x := expr` assignment expression, whose
-        // whole point is the SIDE EFFECT: it is evaluated once per row, and a
-        // LATER select-list item of the same row (or the next row) sees what
-        // it wrote, which is what makes the MySQL running-total idiom work.
-        // Go's `builtinSet*VarSig` returns NULL WITHOUT touching the existing
-        // variable when the value is NULL -- unlike top-level `SET @x = NULL`,
-        // which clears it.
-        if let Some(var) = self.uservar_name() {
-            if let Some(kind) = name.strip_prefix("getvar_") {
-                if self.args.len() == 1 {
-                    let value = ctx.get_uservar(&var).unwrap_or(Datum::Null);
-                    // The name fixed the DECLARED type from what the session
-                    // held when the statement was built; an assignment earlier
-                    // in the same statement may since have stored another kind
-                    // (Go has the same build-time/run-time seam), so the value
-                    // is converted onto the declared type rather than trusted
-                    // to match it.
-                    return uservar_as_kind(kind, value, ctx);
-                }
-            }
-            if name == "setvar" && self.args.len() == 2 {
-                let value = self.args[1].eval(ctx, row)?;
-                if !value.is_null() {
-                    ctx.set_uservar(&var, value.clone());
-                }
-                return Ok(value);
-            }
-        }
-        // Go `builtinRegexpLikeSig`: both operands are stringified, NULL in
-        // either propagates, and `NOT REGEXP` is a separate unary NOT wrapped
-        // around this call by the rewriter -- see `Expr::Regexp`'s own doc.
-        if name == "regexp" && self.args.len() == 2 {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            let pattern = self.args[1].eval(ctx, row)?;
-            if pattern.is_null() {
-                return Ok(Datum::Null);
-            }
-            let text = value
-                .sql_string()
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
-            let pattern = pattern
-                .sql_string()
-                .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
-            let match_type =
-                crate::regexp::regexp_match_type_with_collation("", self.derived_collation());
-            let regex = crate::regexp::get_cached_regexp(
-                &self.regexp_cache,
-                ctx.context_id(),
-                self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT,
-                &pattern,
-                &match_type,
-            )?;
-            let matched = regex.is_match(&text);
-            return Ok(Datum::Int(i64::from(matched)));
-        }
-        if name == "regexp_like" && matches!(self.args.len(), 2 | 3) {
-            return self.eval_regexp_like(ctx, row);
-        }
-        // The charset boundary: `to_binary`/`from_binary` are the implicit
-        // calls the rewriter wraps a non-UTF-8 argument in (Go
-        // `HandleBinaryLiteral`), and `convert_using` is `CONVERT(x USING
-        // cs)`. See `crate::convert_charset` for why these are the only
-        // places a string's bytes ever change.
-        if (name == "to_binary" || name == "from_binary") && self.args.len() == 1 {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            // `to_binary` encodes INTO the argument's charset; `from_binary`
-            // decodes OUT of the result's.
-            let typed = if name == "to_binary" {
-                self.args[0].static_type()
-            } else {
-                self.get_static_type()
-            };
-            let charset = typed
-                .map_or("binary", tidb_datatype::FieldType::charset_name)
-                .to_owned();
-            return if name == "to_binary" {
-                crate::convert_charset::to_binary(&value, &charset)
-            } else {
-                crate::convert_charset::from_binary(&value, &charset)
-            };
-        }
-        if name == "convert_using" && self.args.len() == 2 {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            let target = self.args[1].eval(ctx, row)?;
-            let target = crate::coerce::coerce_str_bytes(&target)?.unwrap_or_default();
-            let target = String::from_utf8_lossy(&target).into_owned();
-            let arg_type = self.args[0].static_type().cloned().unwrap_or_else(|| {
-                tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString)
-            });
-            let value = crate::cast::cast_arg_as_string(&value, Some(&arg_type), ctx)?;
-            let explicit_collation = crate::collation_derive::coercibility_of(&self.args[0])
-                == crate::expr_collation::Coercibility::EXPLICIT;
-            let string_type = crate::cast::cast_arg_as_string_type(
-                &arg_type,
-                explicit_collation,
-                ctx.connection_charset_info(),
-            );
-            return crate::convert_charset::convert_using(&value, &string_type, &target);
-        }
-        // Go picks one cast signature per target type; the rewriter records
-        // that choice in the name, and the width/scale arguments the CHAR,
-        // BINARY and DECIMAL casts need come from the result type.
-        // Go `BuildCastFunction4Union`'s in-union cast-to-unsigned CLAMPS a
-        // negative result to 0 instead of the unsigned wrap
-        // (`builtin_cast.go:998`).
-        if name == "cast_unsigned_in_union" {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            let res = crate::cast::to_i64_signed_with_warnings(&value, ctx)?;
-            return Ok(Datum::UInt(if res < 0 { 0 } else { res as u64 }));
-        }
-        // Source-specific UNION cast signatures carry behavior that cannot be
-        // recovered from the target type alone (notably negative
-        // string/REAL/DECIMAL-to-DECIMAL conversions).  Route their names
-        // through the shared values dispatcher before the generic `cast_*`
-        // target parser, which intentionally knows only ordinary AST casts.
-        if name.ends_with("_in_union") && self.args.len() == 1 {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            if let Some(result) = crate::func::eval_func_values_in(name, &[value], ctx) {
-                let result = result?;
-                // The values dispatcher models only the source-specific
-                // inUnion decision.  Apply the merged target's DECIMAL
-                // precision/scale afterward, exactly as Go's signature calls
-                // `ProduceDecWithSpecifiedTp` after choosing its source
-                // branch.
-                if self.get_static_type().is_some_and(|field_type| {
-                    field_type.code() == tidb_datatype::FieldTypeCode::NewDecimal
-                }) {
-                    let ret_type = self
-                        .get_static_type()
-                        .ok_or(EvalError::Unsupported("a cast with no result type"))?;
-                    return crate::cast::eval_cast(
-                        &cast_type_of("decimal", ret_type)?,
-                        result,
-                        self.args[0].static_type(),
-                        ctx,
-                    );
-                }
-                return Ok(result);
-            }
-        }
-        if let Some(target) = name.strip_prefix("cast_") {
-            if self.args.len() == 1 {
-                if target == "json" {
-                    let source = self.args[0]
-                        .static_type()
-                        .ok_or(EvalError::Unsupported("a JSON cast with no source type"))?
-                        .eval_type();
-                    // Go's unsupported vector signature fails before reading
-                    // its argument, even when that row would have been NULL.
-                    if source == EvalType::VectorFloat32 {
-                        return Err(EvalError::Vector(
-                            "cannot cast from vector to json".to_owned(),
-                        ));
+                            })?
+                            .is_match(&text)
+                    } else {
+                        crate::like::ilike_match_with_collation(
+                            text,
+                            pattern,
+                            escape,
+                            self.collation,
+                        )
                     }
-                    let value = eval_numeric_row(&self.args[0], ctx, row, source)?;
-                    return cast_json_argument_value(self, value);
-                }
-                let value = self.args[0].eval(ctx, row)?;
-                if value.is_null() {
+                } else if self.cache_pattern {
+                    self.like
+                        .get_or_init_cache(ctx.context_id(), || {
+                            Ok::<_, EvalError>(crate::like::CompiledLikePattern::new(
+                                &pattern,
+                                escape,
+                                self.collation,
+                            ))
+                        })?
+                        .is_match(&text)
+                } else {
+                    crate::like_match_with_collation(text, pattern, Some(escape), self.collation)
+                };
+                return Ok(Datum::Int(i64::from(matched)));
+            }
+            ("REGEXP" | "REGEXP_LIKE", [text, pattern] | [text, pattern, _]) => {
+                if vals.iter().any(Datum::is_null) {
                     return Ok(Datum::Null);
                 }
-                let ret_type = self
-                    .get_static_type()
-                    .ok_or(EvalError::Unsupported("a cast with no result type"))?;
-                return crate::cast::eval_cast(
-                    &cast_type_of(target, ret_type)?,
-                    value,
-                    self.args[0].static_type(),
-                    ctx,
-                );
+                let text = text
+                    .sql_string()
+                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
+                let pattern = pattern
+                    .sql_string()
+                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
+                let option = vals
+                    .get(2)
+                    .map(Datum::sql_string)
+                    .transpose()
+                    .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP match type"))?
+                    .unwrap_or_default();
+                let option =
+                    crate::regexp::regexp_match_type_with_collation(&option, self.collation);
+                let regex = crate::regexp::get_cached_regexp(
+                    &self.regexp,
+                    ctx.context_id(),
+                    self.cache_pattern,
+                    &pattern,
+                    &option,
+                )
+                .map_err(|error| {
+                    if upper == "REGEXP" {
+                        EvalError::SharedEvaluation {
+                            code: 1139,
+                            message: match error {
+                                EvalError::Unsupported(message) => message.to_owned(),
+                                error => format!("{error:?}"),
+                            },
+                        }
+                    } else {
+                        error
+                    }
+                })?;
+                return Ok(Datum::Int(i64::from(regex.is_match(&text))));
             }
+            _ => {}
         }
-        // The `DATE_ADD`/`DATE_SUB` family: the rewriter recorded the INTERVAL
-        // unit in the name (it is a build-time keyword, not a value), so the
-        // two remaining children are ordinary expressions and the shared
-        // `time_fn::calendar::date_add` — the very implementation the AST
-        // evaluator uses — runs them. `ADDDATE`/`SUBDATE` were normalized onto
-        // these same names by the rewriter.
-        if self.args.len() == 2 {
-            let subtract = name.starts_with("date_sub_");
-            if subtract || name.starts_with("date_add_") {
-                let unit = &name["date_add_".len()..];
-                let result_fsp = crate::time_fn::calendar::date_add_result_fsp(
-                    unit,
-                    self.args[0].static_type(),
-                    self.args[1].static_type(),
-                );
-                let mut date = self.args[0].eval(ctx, row)?;
-                let amount = self.args[1].eval(ctx, row)?;
-                let result_type = self.get_static_type();
-                if result_type.is_some_and(|field_type| {
-                    field_type.code() == tidb_datatype::FieldTypeCode::Duration
-                }) {
-                    return crate::time_fn::add_sub::date_add_duration(
-                        ctx,
-                        unit,
-                        &date,
-                        &amount,
-                        self.args[1].static_type(),
-                        if subtract { -1 } else { 1 },
-                        i64::from(result_fsp.unwrap_or(0)),
-                    );
-                }
-                if result_type.is_some_and(|field_type| {
-                    field_type.code() == tidb_datatype::FieldTypeCode::Datetime
-                }) && self.args[0].static_type().is_some_and(|field_type| {
-                    field_type.code() == tidb_datatype::FieldTypeCode::Duration
-                }) {
-                    date =
-                        crate::cast::cast_arg_as_datetime(&date, self.args[0].static_type(), ctx)?;
-                }
-                let result = crate::time_fn::calendar::date_add_with_result_fsp(
-                    unit,
-                    &date,
-                    &amount,
-                    if subtract { -1 } else { 1 },
-                    result_fsp,
-                    ctx,
-                )?;
-                let Some(result_type) = result_type else {
-                    return Ok(result);
-                };
-                return match result_type.code() {
-                    tidb_datatype::FieldTypeCode::Date => crate::cast::parse_computed_time(
-                        &result,
-                        ctx,
-                        tidb_datatype::TimeType::Date,
-                        Some(0),
-                    ),
-                    tidb_datatype::FieldTypeCode::Datetime => crate::cast::parse_computed_time(
-                        &result,
-                        ctx,
-                        tidb_datatype::TimeType::DateTime,
-                        Some(result_type.decimal()),
-                    ),
-                    _ => Ok(result),
-                };
-            }
-        }
-        // Go `builtinDatabaseSig`/`builtinVersionSig` read session state
-        // rather than arguments: the current database (NULL when none is
-        // selected) and the same string `@@version` reports.
-        if self.args.is_empty() {
-            match name {
-                "database" | "schema" => {
-                    return Ok(match ctx.current_database() {
-                        Some(name) => Datum::new_string(name.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                "version" => {
-                    return Ok(ctx.sysvar(None, "version").unwrap_or(Datum::Null));
-                }
-                "tidb_version" => {
-                    return Ok(Datum::new_string(ctx.tidb_info().into_bytes()));
-                }
-                // Go `builtinCurrentUserSig` reports the MATCHED grant
-                // identity (`UserIdentity.String()`, which prefers
-                // AuthUsername@AuthHostname). CURRENT_USER is the only name
-                // bound to it: `pkg/expression/builtin.go:823` registers
-                // `currentUserFunctionClass` for CURRENT_USER alone, while
-                // USER, SESSION_USER and SYSTEM_USER (`:833`, `:840`, `:841`)
-                // all share `userFunctionClass`, whose sig returns
-                // `UserIdentity.LoginString()` -- the authenticated identity.
-                "current_user" => {
-                    return Ok(match ctx.current_user() {
-                        Some(user) => Datum::new_string(user.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                // Go `builtinCurrentRoleSig` reports the session's ACTIVE
-                // roles -- not the roles the account holds, which only
-                // `SHOW GRANTS` prints.
-                "current_role" => {
-                    return Ok(match ctx.current_role() {
-                        Some(roles) => Datum::new_string(roles.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                // Go `builtinCurrentResourceGroupSig` reports the effective
-                // statement resource group (the hint-selected name when a
-                // resource-group hint is active, otherwise
-                // `StmtCtx.ResourceGroupName`).
-                "current_resource_group" => {
-                    return Ok(match ctx.current_resource_group() {
-                        Some(group) => Datum::new_string(group.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                "user" | "session_user" | "system_user" => {
-                    return Ok(match ctx.login_user() {
-                        Some(user) => Datum::new_string(user.into_bytes()),
-                        None => Datum::Null,
-                    })
-                }
-                "connection_id" => {
-                    return Ok(match ctx.connection_id() {
-                        Some(id) => Datum::UInt(id),
-                        None => Datum::Null,
-                    })
-                }
-                "found_rows" => {
-                    return Ok(match ctx.found_rows() {
-                        Some(rows) => Datum::UInt(rows),
-                        None => Datum::Null,
-                    })
-                }
-                "row_count" => {
-                    return Ok(match ctx.row_count() {
-                        Some(rows) => Datum::Int(rows),
-                        None => Datum::Null,
-                    })
-                }
-                "last_insert_id" => {
-                    // LAST_INSERT_ID is an unsigned domain (Go
-                    // `builtinLastInsertIDSig.evalInt` returns the
-                    // PrevLastInsertID through an ETInt result the vectorized
-                    // source pins as UInt).
-                    return Ok(match ctx.last_insert_id() {
-                        Some(id) => Datum::UInt(id),
-                        None => Datum::Null,
-                    });
-                }
-                _ => {}
-            }
-        }
-        // Go `builtinLastInsertIDWithIDSig.evalInt`: LAST_INSERT_ID(expr)
-        // evaluates the integer expression, records it as the session's
-        // last insert id, and returns the same value (NULL for a NULL
-        // argument).
-        if name == "last_insert_id" && self.args.len() == 1 {
-            let value = self.args[0].eval(ctx, row)?;
-            if value.is_null() {
-                return Ok(Datum::Null);
-            }
-            let cast = crate::cast::cast_arg_as_int(&value, self.args[0].static_type(), ctx)?;
-            let recorded = match cast {
-                crate::Datum::Int(i) => i as u64,
-                crate::Datum::UInt(u) => u,
-                _ => return Err(EvalError::Unsupported("LAST_INSERT_ID argument")),
-            };
-            ctx.set_last_insert_id(recorded);
-            return Ok(Datum::Int(recorded as i64));
-        }
-        // Go `builtinTrim*Sig`: the name carries the direction and the second
-        // argument is the string to remove.
-        if let Some(direction) = match name {
-            "trim" if self.args.len() == 2 => Some(tidb_ast::TrimDirection::Both),
-            "ltrim_with" => Some(tidb_ast::TrimDirection::Leading),
-            "rtrim_with" => Some(tidb_ast::TrimDirection::Trailing),
-            _ => None,
-        } {
-            let value = self.args[0].eval(ctx, row)?;
-            let remstr = self.args[1].eval(ctx, row)?;
-            let binary = matches!(value, Datum::Bytes(_));
-            let text = crate::coerce::coerce_str_bytes(&value)?;
-            let remove = crate::coerce::coerce_str_bytes(&remstr)?;
-            return Ok(crate::string_fn::trim_value(
-                text, remove, direction, binary,
-            ));
-        }
-        // Go picks a string-length signature from the ARGUMENT's type before
-        // any value exists, which is what `build_string_length` models.
-        if self.args.len() == 1 {
-            let length = match name {
-                "length" | "octet_length" => Some(crate::StringLengthFunction::Length),
-                "char_length" | "character_length" => Some(crate::StringLengthFunction::CharLength),
+        if upper == "WEIGHT_STRING" {
+            let padding = match vals.as_slice() {
+                [_, kind, length] => Some(weight_string_padding(kind, length)),
                 _ => None,
             };
-            if let Some(function) = length {
-                let argument_type = self.args[0].static_type().cloned().unwrap_or_else(|| {
-                    tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::Null)
-                });
-                let built =
-                    crate::BuildContext::default().build_string_length(function, argument_type);
-                return built.eval(&self.args[0].eval(ctx, row)?);
-            }
-        }
-        // Go `randFunctionClass`: a constant `RAND(N)` owns one
-        // statement-scoped generator per AST occurrence, a nonconstant
-        // argument starts a fresh generator every row. The AST evaluator
-        // (`crate::func::eval_func`) gets that per-call identity from the
-        // `Expr` node's own address (`expr as *const Expr as usize`, stable
-        // for the query's lifetime because the tree is evaluated by
-        // reference, never rebuilt per row); this node is evaluated the same
-        // way, so its own address serves identically. A literal argument is
-        // classified by matching `Expression::Constant` directly -- unlike
-        // the AST classifier this does not recurse through a folded
-        // arithmetic tree of literals (e.g. `RAND(1+2)`), because constant
-        // folding is not yet wired for scalar functions here (`const_level`
-        // above is conservatively `ConstNone`); every case this port targets
-        // passes RAND a bare literal.
-        if name == "rand" {
-            let vals: Vec<Datum> = self
-                .args
-                .iter()
-                .map(|a| a.eval(ctx, row))
-                .collect::<Result<_, _>>()?;
-            let arg_is_constant = matches!(self.args.first(), Some(Expression::Constant(_)));
-            let function_key = Some(std::ptr::from_ref(self) as usize);
-            return crate::math_fn::eval_rand_values(&vals, ctx, function_key, arg_is_constant);
-        }
-        // Go `builtinInStringSig` compares the tested value with each list
-        // item through the function's own collator, which the derivation
-        // aggregated over ALL of them -- so `ci_col IN ('A')` folds case just
-        // like `ci_col = 'A'`. Three-valued: a match is 1, no match with a
-        // NULL anywhere is NULL, otherwise 0.
-        //
-        // EVERY list item is compared, even once a match has settled the
-        // answer. The comparison is where this tier's string-versus-number
-        // coercion happens, so a skipped comparison is a skipped
-        // `1292 Truncated incorrect DOUBLE value` -- and a skipped error.
-        // Go's vectorized `in`, which is the one real execution runs
-        // (`pkg/expression/builtin_other_vec_generated.go`,
-        // `builtinInRealSig.vecEvalInt`), evaluates `args[j]` -- the
-        // build-time `cast(... as double)` wrapper that IS its coercion --
-        // for every `j` unconditionally, propagates its error with
-        // `return err`, and skips only the comparison of an already-matched
-        // row (`if r64s[i] != 0 { continue }`). The scalar
-        // `builtinInRealSig.evalInt` does `return 1, false, nil` from inside
-        // its loop, but that is the non-vectorized fallback; the warnings a
-        // client sees are the vectorized path's.
-        if name == "in" && self.args.len() >= 2 {
-            let first_eval_type = self.args[0].static_type().map(FieldType::eval_type);
-            // Go's inFunctionClass gives EVERY argument the first argument's
-            // eval type before selecting a signature. The temporal and JSON
-            // signatures compare their typed values directly; sending two
-            // duration values through the generic comparison ladder would
-            // instead reinterpret them in numeric context. Keep these typed
-            // families on their own path and preserve Go's three-valued
-            // membership result.
-            if matches!(
-                first_eval_type,
-                Some(
-                    EvalType::Datetime | EvalType::Timestamp | EvalType::Duration | EvalType::Json
-                )
-            ) {
-                let mut values: Vec<Datum> = self
-                    .args
-                    .iter()
-                    .map(|argument| argument.eval(ctx, row))
-                    .collect::<Result<_, _>>()?;
-                for (index, value) in values.iter_mut().enumerate() {
-                    let source = self.args[index].static_type();
-                    *value = match first_eval_type.expect("matched above") {
-                        EvalType::Datetime | EvalType::Timestamp => {
-                            crate::cast::cast_arg_as_datetime(value, source, ctx)?
-                        }
-                        EvalType::Duration => {
-                            crate::cast::cast_arg_as_duration(value, source, ctx)?
-                        }
-                        // Go leaves the first JSON argument's parse flag
-                        // intact, but calls DisableParseJSONFlag4Expr on
-                        // every list member. Keep those two cast modes
-                        // distinct: the first is a JSON document, while a
-                        // string list member is a JSON string value (`'1'`
-                        // becomes `"1"`, not the number 1).
-                        EvalType::Json if index == 0 => {
-                            crate::builtin_ext::cast_as_json_typed(value, source)?
-                        }
-                        EvalType::Json => {
-                            crate::builtin_ext::cast_as_json_value_typed(value, source)?
-                        }
-                        _ => unreachable!("typed IN family was matched above"),
-                    };
-                }
-                let first = &values[0];
-                if first.is_null() {
-                    return Ok(Datum::Null);
-                }
-                let mut found_null = false;
-                for candidate in &values[1..] {
-                    if candidate.is_null() {
-                        found_null = true;
-                        continue;
-                    }
-                    let equal = match first_eval_type.expect("matched above") {
-                        EvalType::Datetime | EvalType::Timestamp => matches!(
-                            (first, candidate),
-                            (Datum::Time(left), Datum::Time(right))
-                                if left.compare(*right).is_eq()
-                        ),
-                        EvalType::Duration => matches!(
-                            (first, candidate),
-                            (Datum::Duration(left), Datum::Duration(right))
-                                if left.compare(*right).is_eq()
-                        ),
-                        EvalType::Json => matches!(
-                            (first, candidate),
-                            (Datum::Json(left), Datum::Json(right))
-                                if tidb_datatype::compare_binary_json(left, right).is_eq()
-                        ),
-                        _ => unreachable!("typed IN family was matched above"),
-                    };
-                    if equal {
-                        return Ok(Datum::Int(1));
-                    }
-                }
-                return Ok(if found_null {
-                    Datum::Null
-                } else {
-                    Datum::Int(0)
-                });
-            }
-            let collation = self.derived_collation();
-            let cast_candidate =
-                |value: Datum, expression: &Expression| -> Result<Datum, EvalError> {
-                    match first_eval_type {
-                        Some(tidb_datatype::EvalType::Duration) => {
-                            crate::cast::cast_arg_as_duration(&value, expression.static_type(), ctx)
-                        }
-                        _ => Ok(value),
-                    }
-                };
-            let value = cast_candidate(self.args[0].eval(ctx, row)?, &self.args[0])?;
-            let mut found_null = value.is_null() || self.in_string_has_null;
-            let mut found_match = false;
-            if let Some(hash_set) = &self.in_string_hash_set {
-                if let Some(bytes) = crate::coerce::coerce_str_bytes(&value)? {
-                    let collator = tidb_datatype::get_collator(collation.name());
-                    // Go's `builtinInStringSig.evalInt` uses the raw input
-                    // for binary/derived collators (`collate.Key` returns
-                    // the same bytes). Borrow it directly so the hot row
-                    // path does not allocate a temporary Vec for each probe;
-                    // PAD SPACE collations still take the allocating key path
-                    // and therefore retain their trailing-space semantics.
-                    found_match = if collator.can_use_raw_mem_as_key() {
-                        hash_set.contains::<[u8]>(bytes.as_slice())
-                    } else {
-                        let key = collator.key(bytes.as_ref());
-                        hash_set.contains(&key)
-                    };
-                }
-                if found_match && self.in_string_non_const_args.is_empty() {
-                    return Ok(Datum::Int(1));
-                }
-            }
-            let mut visit = |item_expr: &Expression| -> Result<(), EvalError> {
-                let item = cast_candidate(item_expr.eval(ctx, row)?, item_expr)?;
-                match crate::ops::eval_binary_full(
-                    tidb_ast::BinaryOp::Eq,
-                    value.clone(),
-                    item,
-                    ctx.div_precision_increment(),
-                    collation,
-                    // Go's `inFunctionClass` gives EVERY argument `args[0]`'s
-                    // own eval type rather than running `GetAccurateCmpType`
-                    // per pair, so the item's constant-ness does not steer it
-                    // there. The duration signature's unconditional cast is
-                    // applied above; handing the real argument expressions
-                    // over remains strictly more information than claiming
-                    // both are literals for the other signatures.
-                    crate::ops::Operands::of(&self.args[0], item_expr),
-                    ctx,
-                )? {
-                    Datum::Int(0) => {}
-                    Datum::Null => found_null = true,
-                    _ => found_match = true,
-                }
-                Ok(())
-            };
-            if self.in_string_hash_set.is_some() {
-                for index in &self.in_string_non_const_args {
-                    visit(&self.args[*index])?;
-                }
-            } else {
-                for item_expr in &self.args[1..] {
-                    visit(item_expr)?;
-                }
-            }
-            return Ok(if found_match {
-                Datum::Int(1)
-            } else if found_null {
-                Datum::Null
-            } else {
-                Datum::Int(0)
-            });
-        }
-        // Go `builtinTiDBIsDDLOwnerSig.evalInt` (`builtin_info.go:627`):
-        // reads the `DDLOwnerInfo` optional eval prop and answers 1/0, never
-        // NULL. A context without the provider fails exactly as Go's
-        // `getPropProvider` does.
-        if name == "tidb_is_ddl_owner" {
-            if !self.args.is_empty() {
-                return Err(EvalError::WrongParameterCount("tidb_is_ddl_owner"));
-            }
-            let is_owner = ctx.ddl_owner_info()?;
-            return Ok(Datum::Int(i64::from(is_owner)));
-        }
-        // The collation-aware string builtins. Go gives each of these a
-        // `baseBuiltinFunc.collator` taken from the derived result collation
-        // (`builtinLocate2ArgsUTF8Sig`, `builtinInstrUTF8Sig`,
-        // `builtinStrcmpSig`), so `INSTR('ABC' COLLATE utf8mb4_general_ci, 'b')`
-        // is 2 while the `utf8mb4_bin` form is 0. They are intercepted here,
-        // ahead of the values-only dispatch, because that dispatch sees values
-        // alone and cannot know which collation was derived.
-        {
-            let collation = self.derived_collation();
-            match name {
-                // `LOCATE(substr, str[, pos])` / `INSTR(str, substr)`: the
-                // same 1-indexed position; INSTR swaps its arguments
-                // internally. The three-argument form is LOCATE-only (Go has
-                // no position signature for INSTR) and takes its arguments
-                // UNSWAPPED, starting the search at `pos`
-                // (`builtinLocate3Args{,UTF8}Sig`).
-                "locate" if matches!(self.args.len(), 2 | 3) => {
-                    let substr = self.args[0].eval(ctx, row)?;
-                    let str = self.args[1].eval(ctx, row)?;
-                    if self.args.len() == 3 {
-                        // Go declares the position `types.ETInt`, so
-                        // `newBaseBuiltinFuncWithTp` wraps it in
-                        // `WrapWithCastAsInt` — the same boundary the wrap
-                        // layer applies (`cast_arg_as_int`), applied here
-                        // because this arm returns before that pass.
-                        let position = self.args[2].eval(ctx, row)?;
-                        let position = crate::cast::cast_arg_as_int(
-                            &position,
-                            self.args[2].static_type(),
-                            ctx,
-                        )?;
-                        return crate::string_fn::locate_with_position(
-                            &[substr, str, position],
-                            collation,
-                        );
-                    }
-                    return crate::string_fn::locate(&substr, &str, collation);
-                }
-                "instr" if self.args.len() == 2 => {
-                    let a = self.args[0].eval(ctx, row)?;
-                    let b = self.args[1].eval(ctx, row)?;
-                    return crate::string_fn::locate(&b, &a, collation);
-                }
-                "strcmp" if self.args.len() == 2 => {
-                    let vals = [self.args[0].eval(ctx, row)?, self.args[1].eval(ctx, row)?];
-                    return crate::string_fn::strcmp_with_collation(&vals, collation);
-                }
-                "find_in_set" if self.args.len() == 2 => {
-                    let needle = self.args[0].eval(ctx, row)?;
-                    if self.args[1].const_level() >= ConstLevel::ONLY_IN_CONTEXT {
-                        let lookup =
-                            self.find_in_set_cache
-                                .get_or_init_cache(ctx.context_id(), || {
-                                    let list = self.args[1].eval(ctx, Row::empty())?;
-                                    crate::builtin_ext::build_find_in_set_lookup(&list, collation)
-                                })?;
-                        return crate::builtin_ext::find_in_set_lookup(&needle, &lookup, collation);
-                    }
-                    let list = self.args[1].eval(ctx, row)?;
-                    return crate::builtin_ext::find_in_set_with_collation(
-                        &[needle, list],
-                        collation,
-                    );
-                }
-                // Go `greatestFunctionClass`/`leastFunctionClass`: the
-                // ETString signature compares under `b.collation`, and
-                // `resolveType4Extremum` may instead have selected the
-                // compare-as-time signature from the argument FieldTypes.
-                // Neither is visible to the values-only dispatch below.
-                "greatest" | "least" if !self.args.is_empty() => {
-                    let vals: Vec<Datum> = self
-                        .args
-                        .iter()
-                        .map(|a| a.eval(ctx, row))
-                        .collect::<Result<_, _>>()?;
-                    let want = if name == "greatest" {
-                        std::cmp::Ordering::Greater
-                    } else {
-                        std::cmp::Ordering::Less
-                    };
-                    // Go casts every argument to DECIMAL at that argument's
-                    // OWN decimal (integers at 0), returns the winner raw,
-                    // and folds a fully-constant call to the return type's
-                    // max-argument scale. The per-argument decimals and the
-                    // constness are what the chunk evaluator knows that the
-                    // values alone cannot say.
-                    let arg_decimals: Vec<i64> = self
-                        .args
-                        .iter()
-                        .map(|a| {
-                            a.static_type()
-                                .map_or(tidb_datatype::UNSPECIFIED_LENGTH, |ft| {
-                                    // Go `WrapWithCastAsDecimal` pins integer
-                                    // arguments to scale 0 regardless of the
-                                    // field type's own (often unspecified) value.
-                                    if ft.eval_type() == tidb_datatype::EvalType::Int {
-                                        0
-                                    } else {
-                                        ft.decimal()
-                                    }
-                                })
-                        })
-                        .collect();
-                    let all_constant = self
-                        .args
-                        .iter()
-                        .all(|a| a.const_level() == crate::expression::ConstLevel::STRICT);
-                    return crate::builtin_ext::extremum_with_signature(
-                        &vals,
-                        want,
-                        crate::rewriter::result_type::gl_signature(&self.args),
-                        &arg_decimals,
-                        all_constant,
-                        collation,
-                        ctx,
-                    );
-                }
-                // Go `weightStringFunctionClass`: a NUMERIC argument builds
-                // `builtinWeightStringNullSig` (always NULL) from the
-                // argument's FieldType, and the sort key is taken under the
-                // ARGUMENT's collation -- the function's own is forced to
-                // `binary`, so `derived_collation` is the wrong one here.
-                "weight_string" if !self.args.is_empty() => {
-                    // The `AS` clause travels as the constant second and
-                    // third arguments the rewriter built.
-                    let padding = match self.args.len() {
-                        3 => {
-                            let kind = self.args[1].eval(ctx, row)?;
-                            let length = self.args[2].eval(ctx, row)?;
-                            let binary = kind.sql_string().is_ok_and(|k| k == "BINARY");
-                            Some((binary, crate::cast::to_i64_signed(&length)))
-                        }
-                        _ => None,
-                    };
-                    let arg_type = self.args[0].static_type().cloned().unwrap_or_else(|| {
-                        tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString)
-                    });
-                    // Go starts numeric inputs on the NULL signature, then
-                    // lets AS BINARY replace it with the binary-padding
-                    // signature. AS CHAR deliberately does not replace it.
-                    if arg_type.code().is_type_numeric() && !matches!(padding, Some((true, _))) {
-                        return Ok(Datum::Null);
-                    }
-                    let value = self.args[0].eval(ctx, row)?;
-                    let value = crate::cast::cast_arg_as_string(&value, Some(&arg_type), ctx)?;
-                    let explicit_collation =
-                        crate::collation_derive::coercibility_of(&self.args[0])
-                            == crate::expr_collation::Coercibility::EXPLICIT;
-                    let string_type = crate::cast::cast_arg_as_string_type(
-                        &arg_type,
-                        explicit_collation,
-                        ctx.connection_charset_info(),
-                    );
-                    let arg_collation =
-                        tidb_datatype::Collation::from_name(string_type.collation_name())
-                            .unwrap_or(crate::ops::DERIVATION_FREE_COLLATION);
-                    return crate::string_packet::weight_string(
-                        &value,
-                        padding,
-                        arg_collation,
-                        ctx,
-                    );
-                }
-                "field" if self.args.len() >= 2 => {
-                    let vals: Vec<Datum> = self
-                        .args
-                        .iter()
-                        .map(|a| a.eval(ctx, row))
-                        .collect::<Result<_, _>>()?;
-                    return crate::string_fn::field_with_collation(&vals, collation, ctx);
-                }
-                _ => {}
-            }
-        }
-        if let Some(result) = crate::builtin_ext::eval_aes_lazy(
-            name,
-            self.args.len(),
-            |index| self.args[index].eval(ctx, row),
-            ctx,
-        ) {
-            return result;
-        }
-        // Values-only builtins (ABS/CONCAT/...): evaluate every
-        // argument, then reuse the single Datum-level implementation shared
-        // with the AST evaluator (`crate::func::eval_func_values`). Lazy
-        // control forms (IF/CASE), session-state functions, and the
-        // AST-typed LENGTH family are not in that entry and stay unsupported
-        // here until their chunk-row builtins are ported.
-        let vals: Vec<Datum> = self
-            .args
-            .iter()
-            .map(|a| a.eval(ctx, row))
-            .collect::<Result<_, _>>()?;
-        let upper = name.to_ascii_uppercase();
-        // Go `builtinExtractDatetimeSig`/`builtinExtractDurationSig`: the
-        // first argument is the unit keyword the parser stored as a VARCHAR
-        // constant. Keep the value's static type when selecting the datetime,
-        // duration or mixed DAY_* string signature.
-        if upper == "EXTRACT" && vals.len() == 2 {
-            let unit = crate::coerce::coerce_str_bytes(&vals[0])?
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_ascii_uppercase());
-            let Some(unit) = unit else {
-                return Ok(Datum::Null);
-            };
-            return crate::time_fn::extract::extract(
-                &unit,
-                &vals[1],
-                self.args[1].static_type(),
-                ctx,
-            );
+            return self.weight_string_value(&vals[0], padding, ctx);
         }
         // `JSON_ARRAY`/`JSON_OBJECT`/`JSON_{SET,INSERT,REPLACE}`/
         // `JSON_ARRAY_{APPEND,INSERT}`: Go builds each value argument through
@@ -2815,8 +1872,6 @@ impl ScalarFunction {
         // (`Expression::static_type`); the row/AST evaluator
         // (`crate::func::eval_func`) still falls through to the untyped
         // `dispatch` below and stays the documented partial boundary.
-        let arg_types: Vec<Option<FieldType>> =
-            self.args.iter().map(|a| a.static_type().cloned()).collect();
         if upper == "HEX" {
             return crate::string_fn::hex_with_type(
                 &vals,
@@ -2829,73 +1884,16 @@ impl ScalarFunction {
         // argument eval types are imposed. Only this tier has the static
         // types Go's `WrapWithCastAsTime` reads, so only here can a `YEAR`
         // argument take Go's `ParseTimeFromYear`.
-        let vals = crate::arg_eval_type::wrap_datetime_args(&upper, vals, &arg_types, ctx)?;
-        let vals = crate::arg_eval_type::wrap_int_args(&upper, vals, &arg_types, ctx)?;
-        let vals = crate::arg_eval_type::wrap_string_args(&upper, vals, &arg_types, ctx)?;
-        if matches!(
-            upper.as_str(),
-            "REGEXP_SUBSTR" | "REGEXP_INSTR" | "REGEXP_REPLACE"
-        ) {
-            let cache_pattern = self
-                .args
-                .get(1)
-                .is_some_and(|argument| argument.const_level() >= ConstLevel::ONLY_IN_CONTEXT);
-            let match_type_index = match upper.as_str() {
-                "REGEXP_SUBSTR" if self.args.len() == 5 => Some(4),
-                "REGEXP_INSTR" if self.args.len() == 6 => Some(5),
-                "REGEXP_REPLACE" if self.args.len() == 6 => Some(5),
-                _ => None,
-            };
-            let cache_match_type = match_type_index
-                .is_none_or(|index| self.args[index].const_level() >= ConstLevel::ONLY_IN_CONTEXT);
-            let cache_replacement = upper == "REGEXP_REPLACE"
-                && self
-                    .args
-                    .get(2)
-                    .is_some_and(|argument| argument.const_level() >= ConstLevel::ONLY_IN_CONTEXT);
-            return crate::builtin_ext::regexp::dispatch_with_cache(
-                &upper,
-                &vals,
-                ctx.context_id(),
-                cache_pattern && cache_match_type,
-                cache_replacement,
-                &self.regexp_cache,
-                &self.regexp_replace_instruction_cache,
-            )
-            .expect("the native regexp family is registered");
-        }
+        let vals = crate::arg_eval_type::wrap_datetime_args(upper, vals, arg_types, ctx)?;
+        let vals = crate::arg_eval_type::wrap_int_args(upper, vals, arg_types, ctx)?;
+        let vals = crate::arg_eval_type::wrap_string_args(upper, vals, arg_types, ctx)?;
         if upper == "ORD" {
             return crate::string_fn::ord_with_type(
                 &vals,
                 arg_types.first().and_then(Option::as_ref),
             );
         }
-        if matches!(upper.as_str(), "JSON_SET" | "JSON_INSERT" | "JSON_REPLACE")
-            && self.args.get(1..).is_some_and(|arguments| {
-                !arguments.is_empty()
-                    && arguments
-                        .iter()
-                        .step_by(2)
-                        .all(|argument| argument.const_level() >= ConstLevel::ONLY_IN_CONTEXT)
-            })
-        {
-            let Some(document) = crate::builtin_ext::parse_json_document_argument(&vals[0])? else {
-                return Ok(Datum::Null);
-            };
-            let paths = self
-                .json_modify_path_cache
-                .get_or_init_cache(ctx.context_id(), || {
-                    crate::builtin_ext::parse_json_modify_paths(&vals)
-                })?;
-            let Some(paths) = paths.as_ref() else {
-                return Ok(Datum::Null);
-            };
-            return crate::builtin_ext::json_dispatch_typed_with_paths_and_document(
-                &upper, &vals, &arg_types, paths, document,
-            )
-            .expect("the native JSON modification family is registered");
-        }
-        if let Some(result) = crate::builtin_ext::json_dispatch_typed(&upper, &vals, &arg_types) {
+        if let Some(result) = crate::builtin_ext::json_dispatch_typed(upper, &vals, arg_types) {
             return result;
         }
         // `ADDTIME`/`SUBTIME` are the other family Go types from the
@@ -2904,7 +1902,7 @@ impl ScalarFunction {
         // in the result fsp and in whether the answer is NULL at all. Only
         // this tier has those types; `time_fn::dispatch` below still serves
         // the AST tier on Go's `default` branch.
-        if matches!(upper.as_str(), "ADDTIME" | "SUBTIME") && vals.len() == 2 {
+        if matches!(upper, "ADDTIME" | "SUBTIME") && vals.len() == 2 {
             use crate::time_fn::add_sub::{add_sub_time, kind_of, TemporalKind};
             let kinds: [TemporalKind; 2] = [
                 kind_of(arg_types[0].as_ref(), &vals[0]),
@@ -2913,12 +1911,8 @@ impl ScalarFunction {
             // A call whose arguments are all CONSTANT is what Go folds, and
             // folding runs the ROW body. Anything reading a column runs the
             // vectorized one.
-            let row_path = self
-                .args
-                .iter()
-                .all(|arg| matches!(arg, Expression::Constant(_)));
             let sign = if upper == "SUBTIME" { -1 } else { 1 };
-            let result = add_sub_time(&vals, kinds, sign, row_path, ctx)?;
+            let result = add_sub_time(&vals, kinds, sign, self.all_literal, ctx)?;
             return match self.get_static_type().map(FieldType::code) {
                 Some(tidb_datatype::FieldTypeCode::Datetime) => crate::cast::parse_computed_time(
                     &result,
@@ -2951,7 +1945,7 @@ impl ScalarFunction {
             );
         }
         if matches!(
-            upper.as_str(),
+            upper,
             "NOW"
                 | "CURRENT_TIMESTAMP"
                 | "LOCALTIME"
@@ -2964,16 +1958,14 @@ impl ScalarFunction {
                 | "CURRENT_TIME"
                 | "UTC_TIME"
                 | "LAST_DAY"
-                | "MAKEDATE"
                 | "FROM_DAYS"
                 | "SEC_TO_TIME"
-                | "MAKETIME"
                 | "STR_TO_DATE"
                 | "TIMEDIFF"
                 | "CONVERT_TZ"
                 | "FROM_UNIXTIME"
         ) {
-            let mut result = crate::time_fn::dispatch(&upper, &vals, ctx)
+            let mut result = crate::time_fn::dispatch(upper, &vals, ctx)
                 .expect("the native temporal family is registered")?;
             if upper == "STR_TO_DATE"
                 && self.get_static_type().map(FieldType::code)
@@ -3007,8 +1999,7 @@ impl ScalarFunction {
                 _ => Ok(result),
             };
         }
-        if matches!(upper.as_str(), "ROUND" | "TRUNCATE")
-            && matches!(vals.first(), Some(Datum::Decimal(_)))
+        if matches!(upper, "ROUND" | "TRUNCATE") && matches!(vals.first(), Some(Datum::Decimal(_)))
         {
             return crate::math_fn::round_or_truncate_with_result_decimal(
                 &vals,
@@ -3017,7 +2008,7 @@ impl ScalarFunction {
                 ctx,
             );
         }
-        if matches!(upper.as_str(), "CEIL" | "CEILING" | "FLOOR")
+        if matches!(upper, "CEIL" | "CEILING" | "FLOOR")
             && matches!(vals.first(), Some(Datum::Decimal(_)))
         {
             return crate::math_fn::ceil_floor_with_result_domain(
@@ -3029,21 +2020,57 @@ impl ScalarFunction {
                 ctx,
             );
         }
-        if let Some(result) = crate::math_fn::dispatch_values(&upper, &vals, ctx) {
-            return result.map_err(|error| math_overflow_error(self, error, ctx));
+        if let Some(result) = crate::math_fn::dispatch_values(upper, &vals, ctx) {
+            return result;
         }
-        if let Some(result) = crate::func::eval_func_values_in(&upper, &vals, ctx) {
+        if let Some(result) = crate::func::eval_func_values_in(upper, &vals, ctx) {
             return result;
         }
         // The date/time family reads the statement clock and the session
         // zone, so it takes the context rather than values alone.
-        if let Some(result) = crate::time_fn::dispatch(&upper, &vals, ctx) {
+        if let Some(result) = crate::time_fn::dispatch(upper, &vals, ctx) {
             return result;
         }
         Err(EvalError::Unsupported(
             "this scalar function is not yet ported",
         ))
     }
+}
+
+pub(crate) fn grouping_value(
+    metadata: Option<&GroupingMetadata>,
+    value: &Datum,
+) -> Result<Datum, EvalError> {
+    let grouping_id = crate::arg_eval_type::eval_int(value)?;
+    let Some(grouping_id) = grouping_id else {
+        return Ok(Datum::Null);
+    };
+    let metadata = metadata.ok_or(EvalError::Unsupported("Meta data is not initialized"))?;
+    let result = metadata.eval(grouping_id as u64);
+    Ok(Datum::UInt(result))
+}
+
+pub(crate) fn sleep_value(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    if value.is_null() {
+        ctx.handle_sleep_incorrect_argument()?;
+        return Ok(Datum::Int(0));
+    }
+    let seconds = crate::ops::to_f64_with_mysql_string(value, ctx)?;
+    if seconds < 0.0 {
+        ctx.handle_sleep_incorrect_argument()?;
+        return Ok(Datum::Int(0));
+    }
+    if seconds > f64::MAX / 1_000_000_000.0 {
+        return Err(EvalError::IncorrectArguments(
+            "Incorrect arguments to sleep".to_owned(),
+        ));
+    }
+    if seconds <= 0.0 {
+        return Ok(Datum::Int(0));
+    }
+    let duration = std::time::Duration::try_from_secs_f64(seconds)
+        .map_err(|_| EvalError::IncorrectArguments("Incorrect arguments to sleep".to_owned()))?;
+    Ok(Datum::Int(i64::from(ctx.sleep_for(duration))))
 }
 
 /// The cast a `cast_*` function name describes, with the width and scale its
@@ -3053,7 +2080,11 @@ impl ScalarFunction {
 /// call declared. NULL stays NULL, and a value already of that kind passes
 /// through untouched -- the conversion only matters when an assignment made
 /// during this same statement changed the kind out from under the plan.
-fn uservar_as_kind(kind: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+pub(crate) fn uservar_as_kind(
+    kind: &str,
+    value: Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
     use tidb_ast::CastType;
     if value.is_null() {
         return Ok(Datum::Null);
@@ -3083,424 +2114,15 @@ fn uservar_as_kind(kind: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum,
     crate::cast::eval_cast(&target, value, None, ctx)
 }
 
-fn cast_type_of(target: &str, ret_type: &FieldType) -> Result<tidb_ast::CastType, EvalError> {
-    use tidb_ast::CastType;
-    let len = || u32::try_from(ret_type.flen()).ok();
-    Ok(match target {
-        "signed" => CastType::Signed,
-        "unsigned" => CastType::Unsigned,
-        "unsigned_in_union" => CastType::UnsignedInUnion,
-        "char" => CastType::Char {
-            len: len(),
-            // A binary-charset CHAR target truncates in BYTES
-            // (`ProduceStrWithSpecifiedTp`'s `chs == CharsetBin` branch);
-            // carry that through the reconstructed cast type.
-            // For character targets retain the resolved target charset too:
-            // a BINARY source must pass through Go's `from_binary` decoder
-            // before `CAST AS CHAR`, and an explicit `CHARACTER SET` target
-            // must not silently fall back to the session default.
-            charset: Some(if ret_type.is_binary_string() {
-                "BINARY".to_owned()
-            } else {
-                ret_type.charset_name().to_owned()
-            }),
-        },
-        "binary" => {
-            // Go pads NUL bytes only the FIXED TypeString target
-            // (`padZeroForBinaryType`'s `TypeString` gate,
-            // `builtin_cast.go:2251`): a lengthless `BINARY` keeps
-            // TypeVarString, so its adjusted result flen (e.g. 20 for an
-            // integer source) must not turn into BINARY(N) padding here.
-            if ret_type.code() == tidb_datatype::FieldTypeCode::String {
-                CastType::Binary { len: len() }
-            } else {
-                CastType::Binary { len: None }
-            }
-        }
-        "decimal" => CastType::Decimal {
-            flen: u32::try_from(ret_type.flen()).unwrap_or(0),
-            // `WrapWithCastAsDecimal` preserves Go's `UnspecifiedLength`
-            // scale on non-decimal sources.  The AST cast fields are unsigned,
-            // so carry that state through the internal dispatch with the
-            // sentinel understood by `cast::eval_cast` instead of silently
-            // turning it into scale 0 (which rounds REAL 123.555 to 124).
-            scale: if ret_type.decimal() == UNSPECIFIED_LENGTH {
-                crate::cast::UNSPECIFIED_CAST_SCALE
-            } else {
-                u32::try_from(ret_type.decimal()).unwrap_or(0)
-            },
-        },
-        "date" => CastType::Date,
-        "datetime" => CastType::DateTime {
-            fsp: u32::try_from(ret_type.decimal()).ok(),
-        },
-        "time" => CastType::Time {
-            fsp: u32::try_from(ret_type.decimal()).ok(),
-        },
-        "year" => CastType::Year,
-        "double" => CastType::Double,
-        "float" => CastType::Float,
-        "json" => CastType::Json,
-        "vector" => CastType::Vector { dimensions: len() },
-        _ => return Err(EvalError::Unsupported("this cast target is not ported")),
-    })
-}
-
-/// One numeric value of a column-wise comparison, in the comparison's
-/// evaluation family (Go `getBaseCmpType`: `ETInt` when both sides are
-/// integers, `ETDecimal` when a decimal meets an integer or a decimal).
-#[derive(Clone, Copy)]
-enum CompareValue {
-    Int(crate::coerce::Integer),
-    Decimal(tidb_datatype::MyDecimal),
-}
-
-impl CompareValue {
-    fn cmp(self, other: Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (Self::Int(a), Self::Int(b)) => crate::coerce::integer_cmp(a, b),
-            (a, b) => a.to_my_decimal().compare(&b.to_my_decimal()),
-        }
-    }
-
-    fn to_my_decimal(self) -> tidb_datatype::MyDecimal {
-        match self {
-            Self::Int(crate::coerce::Integer::Signed(value)) => {
-                tidb_datatype::MyDecimal::from_int(value)
-            }
-            Self::Int(crate::coerce::Integer::Unsigned(value)) => {
-                tidb_datatype::MyDecimal::from_uint(value)
-            }
-            Self::Decimal(value) => value,
-        }
-    }
-}
-
-/// One argument of a numeric comparison as Go's `VecEvalInt`/`VecEvalDecimal`
-/// reads it: a chunk column's 8-byte integer or 40-byte decimal cells, or
-/// one strict constant.
-enum CompareOperand<'a> {
-    IntColumn {
-        column: tidb_chunk::ColumnRead<'a>,
-        signed: bool,
-    },
-    DecimalColumn(tidb_chunk::ColumnRead<'a>),
-    Constant(Option<CompareValue>),
-}
-
-impl<'a> CompareOperand<'a> {
-    /// Returns the operand and whether it is in the decimal family.
-    fn of(expression: &Expression, input: &'a Chunk) -> Option<(Self, bool)> {
-        use tidb_datatype::FieldTypeCode;
-        let field_type = expression.static_type()?;
-        // Only the integer codes store the value as the 8-byte cell
-        // `GetInt64` reads; BIT and the ENUM/SET-as-int forms (Go's hybrid
-        // types) keep the row path.
-        let is_int = matches!(
-            field_type.code(),
-            FieldTypeCode::Tiny
-                | FieldTypeCode::Short
-                | FieldTypeCode::Int24
-                | FieldTypeCode::Long
-                | FieldTypeCode::LongLong
-                | FieldTypeCode::Year
-        );
-        let is_decimal = field_type.code() == FieldTypeCode::NewDecimal;
-        if !is_int && !is_decimal {
-            return None;
-        }
-        // Go `mysql.HasUnsignedFlag(args[i].GetType(ctx).GetFlag())`: the
-        // argument's field type decides how its int64 bits are read.
-        let signed = !field_type.is_unsigned();
-        match expression {
-            Expression::Column(column) => {
-                let index = usize::try_from(column.index).ok()?;
-                if index >= input.num_cols() {
-                    return None;
-                }
-                let column = input.column(index);
-                if is_int && column.type_size() == 8 {
-                    Some((Self::IntColumn { column, signed }, false))
-                } else if is_decimal
-                    && column.type_size() == tidb_chunk::column::MY_DECIMAL_STRUCT_SIZE
-                {
-                    Some((Self::DecimalColumn(column), true))
-                } else {
-                    None
-                }
-            }
-            Expression::Constant(constant) => {
-                let value = match constant.literal_value()? {
-                    Datum::Null => None,
-                    Datum::Int(value) if is_int => Some(CompareValue::Int(if signed {
-                        crate::coerce::Integer::Signed(*value)
-                    } else {
-                        crate::coerce::Integer::Unsigned(*value as u64)
-                    })),
-                    Datum::UInt(value) if is_int => {
-                        Some(CompareValue::Int(crate::coerce::Integer::Unsigned(*value)))
-                    }
-                    Datum::Decimal(value) if is_decimal => {
-                        Some(CompareValue::Decimal(value.to_my_decimal().ok()?))
-                    }
-                    _ => return None,
-                };
-                Some((Self::Constant(value), is_decimal))
-            }
-            _ => None,
-        }
-    }
-
-    fn get(&self, physical: usize) -> Option<CompareValue> {
-        match self {
-            Self::IntColumn { column, signed } => {
-                if column.is_null(physical) {
-                    return None;
-                }
-                let bits = column.get_int64(physical);
-                Some(CompareValue::Int(if *signed {
-                    crate::coerce::Integer::Signed(bits)
-                } else {
-                    crate::coerce::Integer::Unsigned(bits as u64)
-                }))
-            }
-            Self::DecimalColumn(column) => {
-                if column.is_null(physical) {
-                    return None;
-                }
-                Some(CompareValue::Decimal(column.get_my_decimal(physical)))
-            }
-            Self::Constant(value) => *value,
-        }
-    }
-}
-
-impl ScalarFunction {
-    /// Go `builtin{EQ,NE,LT,LE,GT,GE}{Int,Decimal}Sig.vecEvalInt`: a numeric
-    /// comparison over the live physical rows `sel` of `input`, column-wise.
-    ///
-    /// `is_zero` receives one entry per row of `sel` in Go's `VecEvalBool`
-    /// encoding (`-1` NULL, `0` false, `1` true). Returns `Ok(false)`, with
-    /// `is_zero` untouched, for every shape this kernel does not cover -- an
-    /// argument that is neither an integer/decimal column nor a strict
-    /// integer/decimal constant, or a result type the row evaluator would
-    /// still convert -- so the caller keeps the row evaluator as the
-    /// behavior contract there. The covered shapes produce exactly what
-    /// [`Self::eval`] produces row by row: NULL when either side is NULL,
-    /// the signedness of each integer side read from its argument's field
-    /// type (`ops::integer_binary_typed`), and an integer meeting a decimal
-    /// compared exactly in the decimal domain (`ops::decimal_binary`).
-    pub(crate) fn vec_eval_numeric_compare(
-        &self,
-        input: &Chunk,
-        sel: &[usize],
-        is_zero: &mut Vec<i8>,
-    ) -> Result<bool, EvalError> {
-        if self.args.len() != 2 {
-            return Ok(false);
-        }
-        let op = match binary_op_for_name(self.func_name.lowercase()) {
-            Some(
-                op @ (BinaryOp::Eq
-                | BinaryOp::Ne
-                | BinaryOp::Lt
-                | BinaryOp::Le
-                | BinaryOp::Gt
-                | BinaryOp::Ge),
-            ) => op,
-            _ => return Ok(false),
-        };
-        // `coerce_to_ret_type` leaves an integer alone only for an integer
-        // result type that is not BIT.
-        let Some(ret_type) = self.get_static_type() else {
-            return Ok(false);
-        };
-        if ret_type.eval_type() != EvalType::Int
-            || ret_type.code() == tidb_datatype::FieldTypeCode::Bit
-        {
-            return Ok(false);
-        }
-        let (Some((lhs, _)), Some((rhs, _))) = (
-            CompareOperand::of(&self.args[0], input),
-            CompareOperand::of(&self.args[1], input),
-        ) else {
-            return Ok(false);
-        };
-        is_zero.clear();
-        is_zero.reserve(sel.len());
-        for &physical in sel {
-            let (Some(a), Some(b)) = (lhs.get(physical), rhs.get(physical)) else {
-                is_zero.push(-1);
-                continue;
-            };
-            let ordering = a.cmp(b);
-            let truth = match op {
-                BinaryOp::Eq => ordering.is_eq(),
-                BinaryOp::Ne => !ordering.is_eq(),
-                BinaryOp::Lt => ordering.is_lt(),
-                BinaryOp::Le => ordering.is_le(),
-                BinaryOp::Gt => ordering.is_gt(),
-                _ => ordering.is_ge(),
-            };
-            is_zero.push(i8::from(truth));
-        }
-        Ok(true)
-    }
-
-    /// Go `VecEvalBool`'s column-wise leg over one filter node: the numeric
-    /// comparisons of [`Self::vec_eval_numeric_compare`], `NOT` over a node
-    /// this kernel covers (`builtinUnaryNotIntSig.vecEvalInt`: NULL stays
-    /// NULL, zero becomes one, anything else zero) and `IS NULL` over a
-    /// chunk column (`builtin*IsNullSig.vecEvalInt`: the column's null
-    /// bitmap, never NULL itself). `is_zero` and the `Ok(false)` contract are
-    /// those of the comparison kernel; the covered shapes produce what
-    /// [`Self::eval`] produces row by row (`ops::eval_unary`'s three-valued
-    /// NOT and the `ISNULL` value dispatch).
-    pub(crate) fn vec_eval_bool(
-        &self,
-        input: &Chunk,
-        sel: &[usize],
-        is_zero: &mut Vec<i8>,
-    ) -> Result<bool, EvalError> {
-        let name = self.func_name.lowercase();
-        if name != "not" && name != "isnull" {
-            return self.vec_eval_numeric_compare(input, sel, is_zero);
-        }
-        // `coerce_to_ret_type` leaves an integer alone only for an integer
-        // result type that is not BIT.
-        let Some(ret_type) = self.get_static_type() else {
-            return Ok(false);
-        };
-        if ret_type.eval_type() != EvalType::Int
-            || ret_type.code() == tidb_datatype::FieldTypeCode::Bit
-        {
-            return Ok(false);
-        }
-        match (name, self.args.as_slice()) {
-            ("not", [Expression::ScalarFunction(argument)]) => {
-                if !argument.vec_eval_bool(input, sel, is_zero)? {
-                    return Ok(false);
-                }
-                for code in is_zero.iter_mut() {
-                    if *code >= 0 {
-                        *code = i8::from(*code == 0);
-                    }
-                }
-                Ok(true)
-            }
-            ("isnull", [Expression::Column(column)]) => {
-                let Some(index) = usize::try_from(column.index)
-                    .ok()
-                    .filter(|&index| index < input.num_cols())
-                else {
-                    return Ok(false);
-                };
-                let column = input.column(index);
-                is_zero.clear();
-                is_zero.extend(
-                    sel.iter()
-                        .map(|&physical| i8::from(column.is_null(physical))),
-                );
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-}
-
-/// One decimal value of a column-wise arithmetic evaluation, in the shape
-/// the value-layer `Decimal` fast paths compute in: a signed `i128`
-/// coefficient at `storage_scale` fraction digits, of which `scale` are the
-/// SQL-visible result scale.
-#[derive(Clone, Copy)]
-struct DecimalValue {
-    coefficient: i128,
-    storage_scale: u32,
-    scale: u32,
-}
-
-impl DecimalValue {
-    fn from_my_decimal(value: &tidb_datatype::MyDecimal) -> Option<Self> {
-        // `Decimal::from_my_decimal`: the stored fraction digits are padded
-        // up to the result scale when the cell declares more of them.
-        let (coefficient, digits_frac) = value.to_i128_scaled()?;
-        let result_frac = u32::try_from(value.result_frac()).ok()?;
-        let storage_scale = digits_frac.max(result_frac);
-        let coefficient = if storage_scale > digits_frac {
-            coefficient.checked_mul(10i128.checked_pow(storage_scale - digits_frac)?)?
-        } else {
-            coefficient
-        };
-        Some(Self {
-            coefficient,
-            storage_scale,
-            scale: result_frac,
-        })
-    }
-
-    fn from_integer(value: crate::coerce::Integer) -> Self {
-        let coefficient = match value {
-            crate::coerce::Integer::Signed(value) => i128::from(value),
-            crate::coerce::Integer::Unsigned(value) => i128::from(value),
-        };
-        Self {
-            coefficient,
-            storage_scale: 0,
-            scale: 0,
-        }
-    }
-
-    /// `Decimal::add` (`try_add_fast`): operands aligned to the wider storage
-    /// scale, the visible scale the wider of the two.
-    fn add(self, other: Self) -> Option<Self> {
-        let storage_scale = self.storage_scale.max(other.storage_scale);
-        let left = self.aligned(storage_scale)?;
-        let right = other.aligned(storage_scale)?;
-        Some(Self {
-            coefficient: left.checked_add(right)?,
-            storage_scale,
-            scale: self.scale.max(other.scale),
-        })
-    }
-
-    fn sub(self, other: Self) -> Option<Self> {
-        self.add(Self {
-            coefficient: other.coefficient.checked_neg()?,
-            ..other
-        })
-    }
-
-    /// `Decimal::mul_mysql` (`try_mul_mysql_fast`): scales add; a result
-    /// scale past MySQL's 30 takes the general path.
-    fn mul(self, other: Self) -> Option<Self> {
-        let scale = self.scale.checked_add(other.scale)?;
-        if scale > 30 {
-            return None;
-        }
-        Some(Self {
-            coefficient: self.coefficient.checked_mul(other.coefficient)?,
-            storage_scale: self.storage_scale.checked_add(other.storage_scale)?,
-            scale,
-        })
-    }
-
-    fn aligned(self, storage_scale: u32) -> Option<i128> {
-        if storage_scale == self.storage_scale {
-            Some(self.coefficient)
-        } else {
-            self.coefficient
-                .checked_mul(10i128.checked_pow(storage_scale - self.storage_scale)?)
-        }
-    }
-
-    /// `Decimal::to_chunk_my_decimal`: the cell the row path appends.
-    fn to_my_decimal(self) -> Option<tidb_datatype::MyDecimal> {
-        tidb_datatype::MyDecimal::from_scaled_i128(self.coefficient, self.storage_scale, self.scale)
-    }
+fn weight_string_padding(kind: &Datum, length: &Datum) -> (bool, i64) {
+    (
+        kind.sql_string().is_ok_and(|kind| kind == "BINARY"),
+        crate::cast::to_i64_signed(length),
+    )
 }
 
 /// Evaluates the Go numeric typed entrypoint without changing generic Eval.
-fn eval_numeric_row(
+pub(crate) fn eval_numeric_row(
     expression: &Expression,
     ctx: &dyn Columns,
     row: Row<'_>,
@@ -3561,7 +2183,7 @@ fn numeric_argument_source(expression: &Expression, target: EvalType) -> Option<
 }
 
 fn is_numeric_binary_literal(expression: &Expression) -> bool {
-    matches!(expression, Expression::Constant(c) if matches!(c.value, Datum::BinaryLiteral(_)))
+    expression.binary_literal_source().is_some()
 }
 
 fn numeric_argument_domain(source: EvalType, target: EvalType) -> bool {
@@ -3584,21 +2206,29 @@ pub(crate) fn cast_numeric_argument(
     target: EvalType,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    cast_numeric_argument_in_mode(expression, value, target, ctx, false)
+    let field = expression
+        .static_type()
+        .expect("numeric argument has a type");
+    cast_numeric_value(field, value, target, ctx, false, || {
+        numeric_expression_text(expression, true, ctx)
+    })
 }
 
-fn cast_numeric_argument_in_mode(
-    expression: &Expression,
+pub(crate) fn cast_numeric_value(
+    field: &FieldType,
     value: Datum,
     target: EvalType,
     ctx: &dyn Columns,
     vectorized: bool,
+    source_text: impl FnOnce() -> Option<String>,
 ) -> Result<Datum, EvalError> {
-    let field = expression
-        .static_type()
-        .expect("numeric argument has a type");
     if value.is_null() || field.eval_type() == target {
         return Ok(value);
+    }
+    if target == EvalType::Int {
+        if let Datum::Decimal(value) = &value {
+            return Ok(Datum::Int(value.round_to_i64_saturating()));
+        }
     }
     let value = match value {
         Datum::Int(bits) if field.is_unsigned() => Datum::UInt(bits as u64),
@@ -3692,8 +2322,7 @@ fn cast_numeric_argument_in_mode(
                 }
                 ctx.handle_truncate(&format!(
                     "Truncated incorrect DECIMAL value: '{}'",
-                    numeric_expression_text(expression, true, ctx)
-                        .unwrap_or_else(|| tidb_datatype::format_float_g_shortest(*real))
+                    source_text().unwrap_or_else(|| tidb_datatype::format_float_g_shortest(*real))
                 ))?;
             }
             Some(tidb_datatype::DecimalError::Truncated) | None => {}
@@ -3735,8 +2364,6 @@ fn cast_string_numeric_argument(
     let (decimal, error) = tidb_datatype::MyDecimal::from_string(text.as_bytes());
     if let Some(error) = error {
         use tidb_datatype::DecimalError;
-        // Go's scalar string cast names the truncated value; its vector
-        // cast passes FromString's raw ErrTruncated through HandleTruncate.
         if error == DecimalError::TruncatedWrongValue
             || (error == DecimalError::Truncated && !vectorized)
         {
@@ -3805,672 +2432,6 @@ fn eval_numeric_operand_row(
     )
 }
 
-fn eval_numeric_operand_batch(
-    expression: &Expression,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    target: EvalType,
-) -> Result<Vec<Datum>, EvalError> {
-    let field = expression
-        .static_type()
-        .expect("numeric argument has a type");
-    let source = numeric_argument_source(expression, target).expect("numeric argument has a type");
-    // Go casts its borrowed string column buffer directly. Preserve the full
-    // operand pass while avoiding a String/Datum allocation for every cell.
-    if source == EvalType::String {
-        if let Expression::Column(column) = expression {
-            let index = usize::try_from(column.index)
-                .map_err(|_| EvalError::Unsupported("column index is negative"))?;
-            if index >= input.num_cols() {
-                return Err(EvalError::Unsupported(
-                    "column index is outside the input row",
-                ));
-            }
-            let column = input.column(index);
-            return (0..input.num_rows())
-                .map(|row| {
-                    let row = input.get_row(row).idx();
-                    if column.is_null(row) {
-                        Ok(Datum::Null)
-                    } else {
-                        cast_string_numeric_argument(
-                            field,
-                            column.get_bytes(row).as_ref(),
-                            target,
-                            ctx,
-                            true,
-                        )
-                    }
-                })
-                .collect();
-        }
-    }
-    let values = eval_numeric_batch_values(expression, ctx, input, source)?;
-    if source == target {
-        return Ok(values);
-    }
-    values
-        .into_iter()
-        .map(|value| cast_numeric_argument_in_mode(expression, value, target, ctx, true))
-        .collect()
-}
-
-/// Go JSON cast signatures consume their source EvalType, including hybrid
-/// string names and signed integer carriers, before constructing binary JSON.
-fn cast_json_argument_value(function: &ScalarFunction, value: Datum) -> Result<Datum, EvalError> {
-    let field = function.args[0]
-        .static_type()
-        .ok_or(EvalError::Unsupported("a JSON cast with no source type"))?;
-    let value = match value {
-        Datum::Int(value)
-            if field.is_unsigned() || field.code() == tidb_datatype::FieldTypeCode::Year =>
-        {
-            Datum::UInt(value as u64)
-        }
-        value @ (Datum::Enum(..) | Datum::Set(..)) if field.eval_type() == EvalType::String => {
-            Datum::new_bytes(
-                value
-                    .sql_bytes()
-                    .map_err(|_| EvalError::Unsupported("hybrid JSON string conversion"))?,
-            )
-        }
-        value => value,
-    };
-    if function
-        .get_static_type()
-        .is_some_and(|field| field.has_flag(tidb_datatype::FieldTypeFlags::PARSE_TO_JSON))
-    {
-        crate::builtin_ext::cast_as_json_typed(&value, Some(field))
-    } else {
-        crate::builtin_ext::cast_as_json_value_typed(&value, Some(field))
-    }
-}
-
-fn numeric_batch_supported(expression: &Expression, target: EvalType) -> bool {
-    match expression {
-        Expression::Constant(constant) => constant
-            .deferred_expr
-            .as_deref()
-            .is_none_or(|child| numeric_batch_supported(child, target)),
-        Expression::CorrelatedColumn(_) => true,
-        Expression::Column(column) => column.get_static_type().is_some_and(|field| {
-            if field.is_hybrid() {
-                target == EvalType::Int
-                    || (target == EvalType::String && field.eval_type() == target)
-            } else {
-                field.eval_type() == target
-            }
-        }),
-        Expression::ScalarFunction(function) => {
-            if function.func_name.lowercase() == "cast_json" && target == EvalType::Json {
-                return function
-                    .get_static_type()
-                    .is_some_and(|field| field.eval_type() == target)
-                    && function.args.len() == 1
-                    && function.args[0].static_type().is_some_and(|field| {
-                        field.eval_type() != EvalType::VectorFloat32
-                            && numeric_batch_supported(&function.args[0], field.eval_type())
-                    });
-            }
-            function
-                .get_static_type()
-                .is_some_and(|field| field.eval_type() == target)
-                && (function.numeric_operand_domain().is_some()
-                    || (function.func_name.lowercase() == "cast_decimal"
-                        && target == EvalType::Decimal
-                        && function.args.len() == 1
-                        && function.args[0]
-                            .static_type()
-                            .is_some_and(|field| field.eval_type() == EvalType::Int)))
-                && function.args.iter().all(|arg| {
-                    numeric_batch_supported(
-                        arg,
-                        numeric_argument_source(
-                            arg,
-                            function.numeric_operand_domain().unwrap_or(EvalType::Int),
-                        )
-                        .expect("numeric argument has a type"),
-                    )
-                })
-        }
-    }
-}
-
-// Integer batches carry the same i64 bit patterns as Go chunk.Int64s. This
-// avoids cloning large Datum enums for every intermediate arithmetic node.
-fn eval_integer_batch(
-    expression: &Expression,
-    ctx: &dyn Columns,
-    input: &Chunk,
-) -> Result<Vec<Option<i64>>, EvalError> {
-    let bits = |value: Datum| -> Result<Option<i64>, EvalError> {
-        match value {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(value)),
-            Datum::UInt(value) => Ok(Some(value as i64)),
-            _ => Err(EvalError::Unsupported(
-                "integer batch value is outside its typed domain",
-            )),
-        }
-    };
-    match expression {
-        Expression::Constant(constant) => {
-            if let Some(child) = constant.deferred_expr.as_deref() {
-                return eval_integer_batch(child, ctx, input);
-            }
-            Ok(vec![
-                bits(constant.eval_typed_as_on_row(
-                    ctx,
-                    input.get_row(0),
-                    EvalType::Int
-                )?)?;
-                input.num_rows()
-            ])
-        }
-        Expression::CorrelatedColumn(column) => {
-            Ok(vec![
-                bits(column.eval_typed(ctx, EvalType::Int)?)?;
-                input.num_rows()
-            ])
-        }
-        Expression::Column(column) => {
-            if column.get_static_type().is_some_and(FieldType::is_hybrid) {
-                return (0..input.num_rows())
-                    .map(|row| {
-                        bits(eval_numeric_row(
-                            expression,
-                            ctx,
-                            input.get_row(row),
-                            EvalType::Int,
-                        )?)
-                    })
-                    .collect();
-            }
-            let index = usize::try_from(column.index)
-                .map_err(|_| EvalError::Unsupported("invalid integer column index"))?;
-            if index >= input.num_cols() {
-                return Err(EvalError::Unsupported("invalid integer column index"));
-            }
-            let column = input.column(index);
-            Ok((0..input.num_rows())
-                .map(|row| {
-                    let row = input.get_row(row).idx();
-                    (!column.is_null(row)).then(|| column.get_int64(row))
-                })
-                .collect())
-        }
-        Expression::ScalarFunction(function) => {
-            if function.numeric_operand_domain() != Some(EvalType::Int)
-                || function
-                    .args
-                    .iter()
-                    .any(|arg| numeric_argument_source(arg, EvalType::Int) != Some(EvalType::Int))
-            {
-                return eval_arithmetic_batch(function, ctx, input)?
-                    .into_iter()
-                    .map(bits)
-                    .collect();
-            }
-            let mut left = eval_integer_batch(&function.args[0], ctx, input)?;
-            let right = eval_integer_batch(&function.args[1], ctx, input)?;
-            let op = binary_op_for_name(function.func_name.lowercase())
-                .expect("preflight checked arithmetic");
-            let unsigned = [0, 1].map(|i| {
-                function.args[i]
-                    .static_type()
-                    .expect("typed argument")
-                    .is_unsigned()
-            });
-            let integer = |bits: i64, unsigned: bool| {
-                if unsigned {
-                    crate::coerce::Integer::Unsigned(bits as u64)
-                } else {
-                    crate::coerce::Integer::Signed(bits)
-                }
-            };
-            for (left, right) in left.iter_mut().zip(right) {
-                *left = match (*left, right) {
-                    (Some(a), Some(b)) => bits(
-                        crate::ops::integer_binary(
-                            op,
-                            integer(a, unsigned[0]),
-                            integer(b, unsigned[1]),
-                            ctx,
-                        )
-                        .map_err(|error| match error {
-                            EvalError::IntOverflow if op == BinaryOp::IntDiv => {
-                                integer_division_overflow(
-                                    integer(a, unsigned[0]),
-                                    integer(b, unsigned[1]),
-                                )
-                            }
-                            EvalError::IntOverflow => arithmetic_overflow_error(function, op, ctx),
-                            other => other,
-                        })?,
-                    )?,
-                    _ => None,
-                };
-            }
-            Ok(left)
-        }
-    }
-}
-
-fn eval_numeric_batch_values(
-    expression: &Expression,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    target: EvalType,
-) -> Result<Vec<Datum>, EvalError> {
-    if target == EvalType::Int {
-        let unsigned = expression
-            .static_type()
-            .is_some_and(|field| field.is_unsigned());
-        return Ok(eval_integer_batch(expression, ctx, input)?
-            .into_iter()
-            .map(|value| match value {
-                None => Datum::Null,
-                Some(value) if unsigned => Datum::UInt(value as u64),
-                Some(value) => Datum::Int(value),
-            })
-            .collect());
-    }
-    match expression {
-        Expression::Constant(constant) => {
-            if let Some(child) = constant.deferred_expr.as_deref() {
-                return eval_numeric_batch_values(child, ctx, input, target);
-            }
-            let value = constant.eval_typed_as_on_row(ctx, input.get_row(0), target)?;
-            Ok(vec![value; input.num_rows()])
-        }
-        Expression::CorrelatedColumn(column) => {
-            Ok(vec![column.eval_typed(ctx, target)?; input.num_rows()])
-        }
-        Expression::Column(_) => (0..input.num_rows())
-            .map(|index| eval_numeric_row(expression, ctx, input.get_row(index), target))
-            .collect(),
-        Expression::ScalarFunction(function) if function.func_name.lowercase() == "cast_json" => {
-            // Go completes the source-typed batch before JSON conversion.
-            let source = function.args[0]
-                .static_type()
-                .expect("preflight checked JSON source")
-                .eval_type();
-            let values = eval_numeric_batch_values(&function.args[0], ctx, input, source)?;
-            values
-                .into_iter()
-                .map(|value| cast_json_argument_value(function, value))
-                .collect()
-        }
-        Expression::ScalarFunction(function)
-            if function.func_name.lowercase() == "cast_decimal" =>
-        {
-            let values = eval_integer_batch(&function.args[0], ctx, input)?;
-            let target = function
-                .get_static_type()
-                .expect("preflight checked decimal cast");
-            let unsigned = target.is_unsigned()
-                || function.args[0]
-                    .static_type()
-                    .is_some_and(|field| field.is_unsigned());
-            values
-                .into_iter()
-                .map(|value| {
-                    let Some(value) = value else {
-                        return Ok(Datum::Null);
-                    };
-                    let decimal = if unsigned {
-                        tidb_datatype::Decimal::from_uint(value as u64)
-                    } else {
-                        tidb_datatype::Decimal::from_int(value)
-                    };
-                    convert_numeric_datum(Datum::Decimal(decimal), target, ctx)
-                })
-                .collect()
-        }
-        Expression::ScalarFunction(function) => eval_arithmetic_batch(function, ctx, input),
-    }
-}
-
-fn eval_arithmetic_batch(
-    function: &ScalarFunction,
-    ctx: &dyn Columns,
-    input: &Chunk,
-) -> Result<Vec<Datum>, EvalError> {
-    // Go evaluates the entire left batch, then the entire right batch, then
-    // arithmetic. A NULL left row does not suppress right operand errors.
-    let domain = function
-        .numeric_operand_domain()
-        .expect("preflight checked arithmetic");
-    let mut left = eval_numeric_operand_batch(&function.args[0], ctx, input, domain)?;
-    let right = eval_numeric_operand_batch(&function.args[1], ctx, input, domain)?;
-    let op =
-        binary_op_for_name(function.func_name.lowercase()).expect("preflight checked arithmetic");
-    for (left, right) in left.iter_mut().zip(right) {
-        let value = std::mem::replace(left, Datum::Null);
-        let result = if op == BinaryOp::IntDiv
-            && domain == EvalType::Decimal
-            && !value.is_null()
-            && !right.is_null()
-        {
-            let (Datum::Decimal(a), Datum::Decimal(b)) = (&value, &right) else {
-                return Err(EvalError::Unsupported("decimal DIV argument domain"));
-            };
-            let unsigned = function
-                .args
-                .iter()
-                .any(|arg| arg.static_type().is_some_and(|field| field.is_unsigned()));
-            crate::ops::decimal_integer_division(a, b, unsigned, ctx).map_err(
-                |error| match error {
-                    EvalError::IntOverflow => EvalError::DataOutOfRange {
-                        value: if unsigned {
-                            "BIGINT UNSIGNED"
-                        } else {
-                            "BIGINT"
-                        },
-                        expression: format!("({a} DIV {b})"),
-                    },
-                    other => other,
-                },
-            )?
-        } else {
-            function.eval_binary_values(op, value, right, ctx)?
-        };
-        *left = function.coerce_to_ret_type(result)?;
-    }
-    Ok(left)
-}
-
-/// Go numeric arithmetic batch evaluation for typed expression trees. A full
-/// eligibility pass precedes evaluation, so declining a shape never emits a
-/// warning or evaluates an operand. Other signatures retain their existing path.
-/// Deferred wrappers forward the requested domain and use child metadata.
-pub fn try_eval_numeric_batch(
-    expression: &Expression,
-    ctx: &dyn Columns,
-    input: &Chunk,
-) -> Result<Option<Vec<Datum>>, EvalError> {
-    let mut source = expression;
-    while let Expression::Constant(constant) = source {
-        let Some(child) = constant.deferred_expr.as_deref() else {
-            return Ok(None);
-        };
-        source = child;
-    }
-    if !matches!(source, Expression::ScalarFunction(_)) {
-        return Ok(None);
-    }
-    let target = match expression {
-        Expression::Constant(constant) => constant.get_type(ctx)?.eval_type(),
-        _ => match expression.static_type() {
-            Some(field) => field.eval_type(),
-            None => return Ok(None),
-        },
-    };
-    if !numeric_batch_supported(expression, target) {
-        return Ok(None);
-    }
-    if input.num_rows() == 0 {
-        return Ok(Some(Vec::new()));
-    }
-    eval_numeric_batch_values(expression, ctx, input, target).map(Some)
-}
-
-/// Go `VecEvalDecimal` over one expression node, restricted to the shapes
-/// whose row evaluation is `ops::decimal_binary`'s exact fast arithmetic:
-/// integer and decimal columns, strict integer and decimal constants, and
-/// `+`/`-`/`*` nodes with a decimal result type over them where at least
-/// one argument is a decimal (an integer-only node is integer arithmetic).
-/// `None` means the shape is not covered or a value left the `i128` fast
-/// path; the caller then evaluates the whole column row by row.
-fn vec_eval_decimal(
-    expression: &Expression,
-    input: &Chunk,
-    physical: &[usize],
-) -> Option<Vec<Option<DecimalValue>>> {
-    use tidb_datatype::FieldTypeCode;
-    let field_type = expression.static_type()?;
-    let is_int = matches!(
-        field_type.code(),
-        FieldTypeCode::Tiny
-            | FieldTypeCode::Short
-            | FieldTypeCode::Int24
-            | FieldTypeCode::Long
-            | FieldTypeCode::LongLong
-            | FieldTypeCode::Year
-    );
-    let is_decimal = field_type.code() == FieldTypeCode::NewDecimal;
-    if !is_int && !is_decimal {
-        return None;
-    }
-    let signed = !field_type.is_unsigned();
-    match expression {
-        Expression::Column(column) => {
-            let index = usize::try_from(column.index).ok()?;
-            if index >= input.num_cols() {
-                return None;
-            }
-            let column = input.column(index);
-            if is_int && column.type_size() == 8 {
-                Some(
-                    physical
-                        .iter()
-                        .map(|&row| {
-                            (!column.is_null(row)).then(|| {
-                                let bits = column.get_int64(row);
-                                DecimalValue::from_integer(if signed {
-                                    crate::coerce::Integer::Signed(bits)
-                                } else {
-                                    crate::coerce::Integer::Unsigned(bits as u64)
-                                })
-                            })
-                        })
-                        .collect(),
-                )
-            } else if is_decimal && column.type_size() == tidb_chunk::column::MY_DECIMAL_STRUCT_SIZE
-            {
-                physical
-                    .iter()
-                    .map(|&row| {
-                        if column.is_null(row) {
-                            Some(None)
-                        } else {
-                            DecimalValue::from_my_decimal(&column.get_my_decimal(row)).map(Some)
-                        }
-                    })
-                    .collect()
-            } else {
-                None
-            }
-        }
-        Expression::Constant(constant) => {
-            let value = match constant.literal_value()? {
-                Datum::Null => None,
-                Datum::Int(value) if is_int => Some(DecimalValue::from_integer(if signed {
-                    crate::coerce::Integer::Signed(*value)
-                } else {
-                    crate::coerce::Integer::Unsigned(*value as u64)
-                })),
-                Datum::UInt(value) if is_int => Some(DecimalValue::from_integer(
-                    crate::coerce::Integer::Unsigned(*value),
-                )),
-                Datum::Decimal(value) if is_decimal => {
-                    Some(DecimalValue::from_my_decimal(&value.to_my_decimal().ok()?)?)
-                }
-                _ => return None,
-            };
-            Some(vec![value; physical.len()])
-        }
-        Expression::ScalarFunction(function) => {
-            if !is_decimal {
-                return None;
-            }
-            vec_eval_decimal_function(function, input, physical)
-        }
-        Expression::CorrelatedColumn(_) => None,
-    }
-}
-
-/// The `+`/`-`/`*` node of [`vec_eval_decimal`].
-fn vec_eval_decimal_function(
-    function: &ScalarFunction,
-    input: &Chunk,
-    physical: &[usize],
-) -> Option<Vec<Option<DecimalValue>>> {
-    use tidb_datatype::FieldTypeCode;
-    if function.func_name.lowercase() == "cast_decimal" {
-        return vec_eval_cast_int_as_decimal(function, input, physical);
-    }
-    {
-        {
-            if function.args.len() != 2 {
-                return None;
-            }
-            let op = match binary_op_for_name(function.func_name.lowercase()) {
-                Some(op @ (BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Mul)) => op,
-                _ => return None,
-            };
-            // `eval_binary_full` reaches `decimal_binary` only when an
-            // operand is a decimal; two integers are integer arithmetic.
-            let decimal_argument = function.args.iter().any(|argument| {
-                argument
-                    .static_type()
-                    .is_some_and(|ty| ty.code() == FieldTypeCode::NewDecimal)
-            });
-            if !decimal_argument {
-                return None;
-            }
-            let lhs = vec_eval_decimal(&function.args[0], input, physical)?;
-            let rhs = vec_eval_decimal(&function.args[1], input, physical)?;
-            lhs.into_iter()
-                .zip(rhs)
-                .map(|(left, right)| match (left, right) {
-                    (Some(left), Some(right)) => match op {
-                        BinaryOp::Plus => left.add(right),
-                        BinaryOp::Minus => left.sub(right),
-                        _ => left.mul(right),
-                    }
-                    .map(Some),
-                    _ => Some(None),
-                })
-                .collect()
-        }
-    }
-}
-
-/// Go `builtinCastIntAsDecimalSig.vecEvalDecimal`, restricted to the shape
-/// whose row evaluation (`cast::eval_cast`'s DECIMAL arm over an integer,
-/// `Decimal::from_int` then `cast_to_precision`) is the integer itself: an
-/// integer column cast to a `DECIMAL(flen, scale)` whose integer digits hold
-/// every value the column's signedness can take (19 signed, 20 unsigned), so
-/// `ProduceDecWithSpecifiedTp` neither clamps nor warns and the cell is the
-/// integer padded to `scale` fraction digits. An unspecified target shape
-/// keeps the row path (it returns the source unchanged), as does a value
-/// whose padding leaves `i128`.
-fn vec_eval_cast_int_as_decimal(
-    function: &ScalarFunction,
-    input: &Chunk,
-    physical: &[usize],
-) -> Option<Vec<Option<DecimalValue>>> {
-    use tidb_datatype::FieldTypeCode;
-    let [Expression::Column(column)] = function.args.as_slice() else {
-        return None;
-    };
-    let source = column.get_static_type()?;
-    if !matches!(
-        source.code(),
-        FieldTypeCode::Tiny
-            | FieldTypeCode::Short
-            | FieldTypeCode::Int24
-            | FieldTypeCode::Long
-            | FieldTypeCode::LongLong
-            | FieldTypeCode::Year
-    ) {
-        return None;
-    }
-    let signed = !source.is_unsigned();
-    let target = function.get_static_type()?;
-    if target.decimal() == UNSPECIFIED_LENGTH {
-        return None;
-    }
-    let flen = u32::try_from(target.flen()).ok()?;
-    let scale = u32::try_from(target.decimal()).ok()?;
-    if flen == 0 || flen < scale.checked_add(if signed { 19 } else { 20 })? {
-        return None;
-    }
-    let factor = 10i128.checked_pow(scale)?;
-    let index = usize::try_from(column.index).ok()?;
-    if index >= input.num_cols() {
-        return None;
-    }
-    let column = input.column(index);
-    if column.type_size() != 8 {
-        return None;
-    }
-    physical
-        .iter()
-        .map(|&row| {
-            if column.is_null(row) {
-                return Some(None);
-            }
-            let bits = column.get_int64(row);
-            let value = if signed {
-                i128::from(bits)
-            } else {
-                i128::from(bits as u64)
-            };
-            Some(Some(DecimalValue {
-                coefficient: value.checked_mul(factor)?,
-                storage_scale: scale,
-                scale,
-            }))
-        })
-        .collect()
-}
-
-impl ScalarFunction {
-    /// Go `builtinArithmetic{Plus,Minus,Multiply}DecimalSig.vecEvalDecimal`:
-    /// appends this expression's value for every row of `input` to column
-    /// `output_index` of `output`, column-wise. Returns `Ok(false)` with
-    /// nothing appended when the shape is not covered (see
-    /// [`vec_eval_decimal`]); the appended cells are the ones the row
-    /// evaluator would append through `Chunk::append_datum`.
-    pub(crate) fn vec_eval_decimal_arithmetic(
-        &self,
-        input: &Chunk,
-        output: &mut Chunk,
-        output_index: usize,
-    ) -> Result<bool, EvalError> {
-        if !self
-            .get_static_type()
-            .is_some_and(|ty| ty.code() == tidb_datatype::FieldTypeCode::NewDecimal)
-        {
-            return Ok(false);
-        }
-        let rows = input.num_rows();
-        let physical: Vec<usize> = (0..rows).map(|row| input.get_row(row).idx()).collect();
-        let Some(values) = vec_eval_decimal_function(self, input, &physical) else {
-            return Ok(false);
-        };
-        let mut cells = Vec::with_capacity(rows);
-        for value in values {
-            match value {
-                Some(value) => match value.to_my_decimal() {
-                    Some(cell) => cells.push(Some(cell)),
-                    None => return Ok(false),
-                },
-                None => cells.push(None),
-            }
-        }
-        for cell in &cells {
-            match cell {
-                Some(cell) => output.append_my_decimal(output_index, cell),
-                None => output.append_null(output_index),
-            }
-        }
-        Ok(true)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -4534,7 +2495,7 @@ mod tests {
                     chunk.append_datum(0, &Datum::new_string(text));
                     chunk.append_datum(1, &Datum::new_string("1"));
                     let result = if vectorized {
-                        super::try_eval_numeric_batch(&expression, &ctx, &chunk)
+                        crate::try_evaluate_batch(&expression, &ctx, &chunk)
                             .map(|batch| batch.unwrap().remove(0))
                     } else {
                         expression.eval(&ctx, chunk.get_row(0))
@@ -4662,7 +2623,7 @@ mod tests {
                             .collect::<Result<Vec<_>, _>>()
                     };
                     let actual = if vectorized {
-                        super::try_eval_numeric_batch(&expression, &ctx, &chunk)
+                        crate::try_evaluate_batch(&expression, &ctx, &chunk)
                             .and_then(|batch| batch.map(Ok).unwrap_or_else(scalar))
                     } else {
                         scalar()
@@ -4848,9 +2809,13 @@ mod tests {
     }
 
     fn eval_info(name: &str, result_type: FieldType, ctx: &InfoColumns) -> Datum {
-        ScalarFunction::new(CiString::new(name), result_type, vec![])
-            .eval(ctx, tidb_chunk::row::Row::empty())
-            .expect("session information builtin must evaluate")
+        crate::expression::Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new(name),
+            result_type,
+            vec![],
+        ))
+        .eval(ctx, tidb_chunk::row::Row::empty())
+        .expect("session information builtin must evaluate")
     }
 
     struct PacketColumns {
@@ -4900,7 +2865,9 @@ mod tests {
             let function =
                 ScalarFunction::new(CiString::new(name), ft(), vec![integer(first), division()]);
             assert_eq!(
-                function.eval(&ctx, tidb_chunk::row::Row::empty()).unwrap(),
+                crate::expression::Expression::ScalarFunction(function)
+                    .eval(&ctx, tidb_chunk::row::Row::empty())
+                    .unwrap(),
                 Datum::Int(expected)
             );
             assert!(ctx.warnings.borrow().is_empty());
@@ -4912,7 +2879,9 @@ mod tests {
             vec![integer(1), integer(0), integer(1), integer(2), division()],
         );
         assert_eq!(
-            interval.eval(&ctx, tidb_chunk::row::Row::empty()).unwrap(),
+            crate::expression::Expression::ScalarFunction(interval)
+                .eval(&ctx, tidb_chunk::row::Row::empty())
+                .unwrap(),
             Datum::Int(2)
         );
         assert!(ctx.warnings.borrow().is_empty());
@@ -4932,7 +2901,9 @@ mod tests {
             vec![integer(1), integer(0), integer(1), integer(2), unreachable],
         );
         assert_eq!(
-            interval.eval(&ctx, tidb_chunk::row::Row::empty()).unwrap(),
+            crate::expression::Expression::ScalarFunction(interval)
+                .eval(&ctx, tidb_chunk::row::Row::empty())
+                .unwrap(),
             Datum::Int(2)
         );
     }
@@ -4959,18 +2930,20 @@ mod tests {
         };
         let string =
             |value: &[u8]| Expression::Constant(Constant::new(Datum::new_string(value), text_ft()));
-        let unsupported = Expression::ScalarFunction(ScalarFunction::new(
-            CiString::new("not_a_function"),
-            text_ft(),
+        let missing_provider = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("tidb_is_ddl_owner"),
+            ft(),
             vec![],
         ));
         let concat = ScalarFunction::new(
             CiString::new("concat"),
             text_ft(),
-            vec![string(b"abcd"), unsupported],
+            vec![string(b"abcd"), missing_provider],
         );
         assert_eq!(
-            concat.eval(&ctx, tidb_chunk::row::Row::empty()).unwrap(),
+            crate::expression::Expression::ScalarFunction(concat)
+                .eval(&ctx, tidb_chunk::row::Row::empty())
+                .unwrap(),
             Datum::Null
         );
         assert_eq!(ctx.warnings.borrow()[0].0, 1301);
@@ -4983,7 +2956,9 @@ mod tests {
             vec![string(b"--"), string(b"a"), string(b"b")],
         );
         assert_eq!(
-            concat_ws.eval(&ctx, tidb_chunk::row::Row::empty()).unwrap(),
+            crate::expression::Expression::ScalarFunction(concat_ws)
+                .eval(&ctx, tidb_chunk::row::Row::empty())
+                .unwrap(),
             Datum::Null
         );
         assert_eq!(ctx.warnings.borrow()[0].0, 1301);
@@ -5022,7 +2997,7 @@ mod tests {
                 decimal_type.clone(),
                 vec![decimal(), scale()],
             );
-            let value = function
+            let value = crate::expression::Expression::ScalarFunction(function)
                 .eval(&crate::context::NoColumns, tidb_chunk::row::Row::empty())
                 .expect("decimal ROUND/TRUNCATE must evaluate");
             let Datum::Decimal(value) = value else {
@@ -5214,11 +3189,22 @@ mod tests {
         let mut chk = chk;
         chk.append_int64(0, 0);
         let row = chk.get_row(0);
-        let konst = |d: Datum| Expression::Constant(Constant::new(d, ft()));
+        let konst = |value: Datum| {
+            let field = match value {
+                Datum::String(_) => text_ft(),
+                _ => ft(),
+            };
+            Expression::Constant(Constant::new(value, field))
+        };
 
         // ABS(-5) = 5 via math_fn's shared values-only dispatch.
         let abs = ScalarFunction::new(CiString::new("abs"), ft(), vec![konst(Datum::Int(-5))]);
-        assert_eq!(abs.eval(&NoColumns, row).unwrap(), Datum::Int(5));
+        assert_eq!(
+            crate::expression::Expression::ScalarFunction(abs)
+                .eval(&NoColumns, row)
+                .unwrap(),
+            Datum::Int(5)
+        );
 
         // CONCAT('a', 'b') = 'ab' via the shared string arm.
         let concat = ScalarFunction::new(
@@ -5227,7 +3213,9 @@ mod tests {
             vec![konst(Datum::new_string("a")), konst(Datum::new_string("b"))],
         );
         assert_eq!(
-            concat.eval(&NoColumns, row).unwrap(),
+            crate::expression::Expression::ScalarFunction(concat)
+                .eval(&NoColumns, row)
+                .unwrap(),
             Datum::new_string("ab")
         );
 
@@ -5238,7 +3226,12 @@ mod tests {
             ft(),
             vec![konst(Datum::Null), konst(Datum::Int(7))],
         );
-        assert_eq!(coalesce.eval(&NoColumns, row).unwrap(), Datum::Int(7));
+        assert_eq!(
+            crate::expression::Expression::ScalarFunction(coalesce)
+                .eval(&NoColumns, row)
+                .unwrap(),
+            Datum::Int(7)
+        );
 
         // `InferType4ControlFuncs` widens the result metadata to the widest
         // branch scale, and `bf.tp = resultFieldType` makes that merged type
@@ -5253,7 +3246,9 @@ mod tests {
             vec![konst(Datum::Int(1)), konst(Datum::Null)],
         );
         assert_eq!(
-            decimal_coalesce.eval(&NoColumns, row).unwrap(),
+            crate::expression::Expression::ScalarFunction(decimal_coalesce)
+                .eval(&NoColumns, row)
+                .unwrap(),
             Datum::Decimal(tidb_datatype::Decimal::from_literal("1.0000"))
         );
 
@@ -5265,7 +3260,9 @@ mod tests {
         let abs_col =
             ScalarFunction::new(CiString::new("abs"), ft(), vec![Expression::Column(col)]);
         assert_eq!(
-            abs_col.eval(&NoColumns, chk2.get_row(0)).unwrap(),
+            crate::expression::Expression::ScalarFunction(abs_col)
+                .eval(&NoColumns, chk2.get_row(0))
+                .unwrap(),
             Datum::Int(9)
         );
 
@@ -5281,7 +3278,12 @@ mod tests {
                 konst(Datum::Int(3)),
             ],
         );
-        assert_eq!(iff.eval(&NoColumns, row).unwrap(), Datum::Int(2));
+        assert_eq!(
+            crate::expression::Expression::ScalarFunction(iff)
+                .eval(&NoColumns, row)
+                .unwrap(),
+            Datum::Int(2)
+        );
 
         // A function with no ported builtin at all still is unsupported.
         let unknown = ScalarFunction::new(
@@ -5290,7 +3292,7 @@ mod tests {
             vec![konst(Datum::Int(1))],
         );
         assert!(matches!(
-            unknown.eval(&NoColumns, row),
+            crate::expression::Expression::ScalarFunction(unknown).eval(&NoColumns, row),
             Err(EvalError::Unsupported(_))
         ));
     }
@@ -5310,7 +3312,6 @@ mod tests {
 
         let varbinary_type =
             FieldType::new(FieldTypeCode::Varchar).with_collation(Collation::Binary);
-        let json_text_type = text_ft();
         let mut chk = Chunk::new_with_capacity(std::slice::from_ref(&varbinary_type), 1);
         chk.append_bytes(0, b"ab");
         let row = chk.get_row(0);
@@ -5320,12 +3321,16 @@ mod tests {
 
         let json_array = ScalarFunction::new(
             CiString::new("json_array"),
-            json_text_type,
+            FieldType::new(FieldTypeCode::Json),
             vec![Expression::Column(col.clone())],
         );
         assert_eq!(
-            json_array.eval(&NoColumns, row).unwrap(),
-            Datum::new_string(r#"["base64:type15:YWI="]"#.to_string())
+            crate::expression::Expression::ScalarFunction(json_array)
+                .eval(&NoColumns, row)
+                .unwrap()
+                .sql_string()
+                .unwrap(),
+            r#"["base64:type15:YWI="]"#
         );
 
         let cast_json = ScalarFunction::new(
@@ -5333,7 +3338,10 @@ mod tests {
             FieldType::new(FieldTypeCode::Json),
             vec![Expression::Column(col)],
         );
-        let Datum::Json(got) = cast_json.eval(&NoColumns, row).unwrap() else {
+        let Datum::Json(got) = crate::expression::Expression::ScalarFunction(cast_json)
+            .eval(&NoColumns, row)
+            .unwrap()
+        else {
             panic!("CAST AS JSON did not retain the JSON domain")
         };
         let opaque = got.opaque().expect("opaque binary JSON");
@@ -5374,6 +3382,7 @@ mod tests {
         let columns = RandColumns {
             keys: Cell::new(Vec::new()),
         };
+        let rand_five = Expression::ScalarFunction(rand_five);
 
         assert_eq!(rand_five.eval(&columns, row).unwrap(), Datum::Real(0.5));
         assert_eq!(rand_five.eval(&columns, row).unwrap(), Datum::Real(0.5));
@@ -5389,7 +3398,9 @@ mod tests {
         let columns2 = RandColumns {
             keys: Cell::new(Vec::new()),
         };
-        rand_five_again.eval(&columns2, row).unwrap();
+        crate::expression::Expression::ScalarFunction(rand_five_again)
+            .eval(&columns2, row)
+            .unwrap();
         assert_ne!(columns2.keys.into_inner()[0], keys[0]);
     }
 
@@ -5415,7 +3426,12 @@ mod tests {
         let columns = SeqColumns {
             next: std::cell::Cell::new(0.75),
         };
-        assert_eq!(rand.eval(&columns, row).unwrap(), Datum::Real(0.75));
+        assert_eq!(
+            crate::expression::Expression::ScalarFunction(rand)
+                .eval(&columns, row)
+                .unwrap(),
+            Datum::Real(0.75)
+        );
     }
 
     #[test]
@@ -5430,7 +3446,7 @@ mod tests {
     }
 
     #[test]
-    fn string_in_prepares_collation_keys_for_strict_literals() {
+    fn string_in_matches_collated_strict_literals() {
         use tidb_chunk::chunk::Chunk;
 
         let mut result_type = ft();
@@ -5439,18 +3455,17 @@ mod tests {
         let string = |value: &str| {
             Expression::Constant(Constant::new(Datum::new_string(value), string_type.clone()))
         };
-        let mut function = ScalarFunction::new(
+        let function = ScalarFunction::new(
             CiString::new("in"),
             result_type,
             vec![string("a"), string("A"), string("b")],
         );
-        function.prepare_in_string_hash_set();
 
-        assert_eq!(function.in_string_hash_set.as_ref().unwrap().len(), 2);
-        assert!(function.in_string_non_const_args.is_empty());
         let chunk = Chunk::new_with_capacity(&[], 1);
         assert_eq!(
-            function.eval(&crate::NoColumns, chunk.get_row(0)).unwrap(),
+            crate::expression::Expression::ScalarFunction(function)
+                .eval(&crate::NoColumns, chunk.get_row(0))
+                .unwrap(),
             Datum::Int(1)
         );
     }
@@ -5469,50 +3484,52 @@ mod tests {
         // derived-binary collators return the source bytes directly, so the
         // Rust probe may borrow them without changing membership behavior.
         let binary_type = text_ft().with_collation(Collation::Binary);
-        let mut binary = ScalarFunction::new(
+        let binary = ScalarFunction::new(
             CiString::new("in"),
-            binary_type,
+            ft().with_collation(binary_type.collation()),
             vec![string("a"), string("a")],
         );
-        binary.prepare_in_string_hash_set();
         assert_eq!(
-            binary.eval(&crate::NoColumns, chunk.get_row(0)).unwrap(),
-            Datum::Bytes(b"1".to_vec())
+            crate::expression::Expression::ScalarFunction(binary)
+                .eval(&crate::NoColumns, chunk.get_row(0))
+                .unwrap(),
+            Datum::Int(1)
         );
 
         // PAD SPACE collations still allocate a trimmed sort key. This is
         // the source behavior for `utf8mb4_bin`: `a` and `a ` compare equal.
         let pad_type = text_ft().with_collation(Collation::Utf8Mb4Bin);
-        let mut pad = ScalarFunction::new(
+        let pad = ScalarFunction::new(
             CiString::new("in"),
-            pad_type,
+            ft().with_collation(pad_type.collation()),
             vec![string("a "), string("a")],
         );
-        pad.prepare_in_string_hash_set();
         assert_eq!(
-            pad.eval(&crate::NoColumns, chunk.get_row(0)).unwrap(),
-            Datum::new_string("1")
+            crate::expression::Expression::ScalarFunction(pad)
+                .eval(&crate::NoColumns, chunk.get_row(0))
+                .unwrap(),
+            Datum::Int(1)
         );
 
-        // The Go map is built once for the immutable literal list. Reserving
-        // that list's complete size avoids growth/rehash when a query has a
-        // large `IN (...)` predicate (the hbx swap query has 1000 literals).
+        // A large fixed literal list still uses the same typed IN operation.
         let mut many = Vec::with_capacity(1001);
         many.push(string("probe"));
         for value in 0..1000 {
             many.push(string(&format!("maker-{value}")));
         }
-        let mut large = ScalarFunction::new(CiString::new("in"), text_ft(), many);
-        large.prepare_in_string_hash_set();
-        assert!(large.in_string_hash_set.as_ref().unwrap().capacity() >= 1000);
+        let large =
+            Expression::ScalarFunction(ScalarFunction::new(CiString::new("in"), ft(), many));
+        assert_eq!(
+            large.eval(&crate::NoColumns, chunk.get_row(0)).unwrap(),
+            Datum::Int(0)
+        );
     }
     /// The stock-level shape: `ge(ol_o_id, minus(d_next_o_id, 20))` over a
     /// joined chunk row -- the exact residual predicate class jTPCC's
     /// stock-level statement evaluates once per hash-join candidate, mixing
-    /// PROBE-side and BUILD-side columns. Pins that the typed fast path
-    /// answers the composed tree.
+    /// PROBE-side and BUILD-side columns. The shared dispatch evaluates the composed tree.
     #[test]
-    fn fast_integer_path_answers_the_join_residual_shape() {
+    fn typed_join_residual_composes_comparison_and_integer_arithmetic() {
         use crate::context::NoColumns;
         use tidb_chunk::chunk::Chunk;
 
@@ -5536,11 +3553,11 @@ mod tests {
             ft(),
             vec![build_col(), konst(Datum::Int(20))],
         );
-        let ge = ScalarFunction::new(
+        let ge = Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("ge"),
             ft(),
             vec![probe_col(), Expression::ScalarFunction(inner)],
-        );
+        ));
 
         let mut above = Chunk::new_with_capacity(&[ft(), ft()], 1);
         above.append_int64(0, 100);
@@ -5559,11 +3576,9 @@ mod tests {
         );
     }
 
-    /// NULL propagation on the fast path matches the ladder's answer for
-    /// every covered operator family: arithmetic stays NULL, comparisons
-    /// stay NULL (never false).
+    /// Arithmetic and comparison both propagate NULL.
     #[test]
-    fn fast_integer_path_propagates_null_like_the_ladder() {
+    fn typed_integer_operators_propagate_null() {
         use crate::context::NoColumns;
         use tidb_chunk::chunk::Chunk;
 
@@ -5574,21 +3589,21 @@ mod tests {
         let konst = |d: Datum, t: &FieldType| Expression::Constant(Constant::new(d, t.clone()));
 
         for name in ["plus", "minus", "mul", "eq", "ne", "lt", "le", "gt", "ge"] {
-            let function = ScalarFunction::new(
+            let function = Expression::ScalarFunction(ScalarFunction::new(
                 CiString::new(name),
                 ft(),
                 vec![konst(Datum::Null, &ft()), konst(Datum::Int(3), &ft())],
-            );
+            ));
             assert_eq!(
                 function.eval(&NoColumns, row).unwrap(),
                 Datum::Null,
                 "{name} NULL lhs"
             );
-            let function = ScalarFunction::new(
+            let function = Expression::ScalarFunction(ScalarFunction::new(
                 CiString::new(name),
                 ft(),
                 vec![konst(Datum::Int(3), &ft()), konst(Datum::Null, &ft())],
-            );
+            ));
             assert_eq!(
                 function.eval(&NoColumns, row).unwrap(),
                 Datum::Null,
@@ -5599,25 +3614,15 @@ mod tests {
 
     /// A mixed signed/unsigned comparison orders by VALUE, not by bit
     /// pattern: `-1 < 1u` because Go's compare treats the signed side as
-    /// negative against an unsigned partner. The fast path reinterprets each
-    /// operand through its own argument field type before comparing.
+    /// negative against an unsigned partner. Each column carries its own type.
     #[test]
-    fn fast_integer_path_orders_mixed_signedness_by_value() {
+    fn typed_integer_comparison_orders_mixed_signedness_by_value() {
         use crate::context::NoColumns;
         use tidb_chunk::chunk::Chunk;
 
         let signed_type = ft();
         let unsigned_type = FieldType::new(FieldTypeCode::LongLong).with_unsigned(true);
         assert!(unsigned_type.is_unsigned());
-
-        let mut signed_chk = Chunk::new_with_capacity(std::slice::from_ref(&signed_type), 1);
-        signed_chk.append_int64(0, -1);
-        let signed_row = signed_chk.get_row(0);
-
-        let unsigned_chk = Chunk::new_with_capacity(std::slice::from_ref(&unsigned_type), 1);
-        let mut unsigned_chk = unsigned_chk;
-        unsigned_chk.append_uint64(0, 1);
-        let unsigned_row = unsigned_chk.get_row(0);
 
         let signed_col = {
             let mut col = Column::new(1, signed_type.clone());
@@ -5626,7 +3631,7 @@ mod tests {
         };
         let unsigned_col = {
             let mut col = Column::new(2, unsigned_type.clone());
-            col.index = 0;
+            col.index = 1;
             move || Expression::Column(col.clone())
         };
 
@@ -5637,7 +3642,6 @@ mod tests {
         joined.append_int64(0, -1);
         joined.append_uint64(1, 1);
         let joined_row = joined.get_row(0);
-        let _ = (signed_row, unsigned_row);
 
         for (name, op_name, want) in [
             ("lt", "lt", 1u8),
@@ -5647,11 +3651,11 @@ mod tests {
             ("eq", "eq", 0),
             ("ne", "ne", 1),
         ] {
-            let function = ScalarFunction::new(
+            let function = Expression::ScalarFunction(ScalarFunction::new(
                 CiString::new(op_name),
                 ft(),
                 vec![signed_col(), unsigned_col()],
-            );
+            ));
             assert_eq!(
                 function.eval(&NoColumns, joined_row).unwrap(),
                 Datum::Int(want as i64),
@@ -5663,7 +3667,7 @@ mod tests {
     /// Unsigned subtraction past zero is `ErrOverflow` with Go's BIGINT
     /// UNSIGNED wording (1690), not a wrapped value: `1u - 2` overflows.
     #[test]
-    fn fast_integer_path_reports_unsigned_subtraction_overflow() {
+    fn typed_unsigned_subtraction_reports_overflow() {
         use crate::context::NoColumns;
         use tidb_chunk::chunk::Chunk;
 
@@ -5676,14 +3680,14 @@ mod tests {
         col.index = 0;
         let konst = |d: Datum, t: &FieldType| Expression::Constant(Constant::new(d, t.clone()));
 
-        let function = ScalarFunction::new(
+        let function = Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("minus"),
             unsigned_type.clone(),
             vec![
                 Expression::Column(col),
                 konst(Datum::Int(2), &unsigned_type),
             ],
-        );
+        ));
         let error = function
             .eval(&NoColumns, row)
             .expect_err("1u - 2 must overflow");
@@ -5696,10 +3700,9 @@ mod tests {
         );
     }
 
-    /// A non-ETInt argument keeps the generic ladder: string comparison
-    /// semantics are untouched by the gate.
+    /// A typed string comparison uses the declared string domain.
     #[test]
-    fn fast_integer_gate_leaves_string_operands_on_the_ladder() {
+    fn typed_string_comparison_preserves_lexicographic_order() {
         use crate::context::NoColumns;
         use tidb_chunk::chunk::Chunk;
 
@@ -5710,11 +3713,11 @@ mod tests {
         let row = chk.get_row(0);
         let konst = |d: Datum| Expression::Constant(Constant::new(d, string_type.clone()));
 
-        let function = ScalarFunction::new(
+        let function = Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("ge"),
             ft(),
             vec![konst(Datum::new_string("a")), konst(Datum::new_string("b"))],
-        );
+        ));
         assert_eq!(function.eval(&NoColumns, row).unwrap(), Datum::Int(0));
     }
 

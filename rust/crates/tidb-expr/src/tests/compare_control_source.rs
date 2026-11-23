@@ -476,9 +476,8 @@ fn test_if_typed_conditions() {
         assert_eq!(chunk_e(expr), want, "{expr}");
     }
 
-    // Arity error: getFunction over MakeDatums(1, 2) must fail. The AST
-    // evaluator surfaces Go's build-time arity error as Unsupported.
-    assert_eq!(e("if(1, 2)"), "Unsupported(\"bad IF arguments\")");
+    // The common builder exposes the ordinary function-arity error.
+    assert_eq!(e("if(1, 2)"), "WrongParameterCount(\"if\")");
 
     // The `{errors.New("must error"), 1, 2}` condition row again needs a
     // non-SQL error datum; see TestCaseWhen's note above.

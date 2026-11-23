@@ -55,6 +55,11 @@ use result_type::{
 /// schema/name resolution Go's `expression_rewriter` performs against the
 /// plan's schema (`resolveColumn`).
 pub trait ColumnResolver {
+    /// Statement-owned identity for a RAND call rebuilt from syntax.
+    fn rand_call_occurrence(&self, _syntax: &Expr) -> Option<usize> {
+        None
+    }
+
     /// Builds GROUPING using the current query block's Expand metadata.
     fn rewrite_grouping(&self, _args: &[Expression]) -> Result<Expression, EvalError> {
         Err(EvalError::InvalidGroupFuncUse)
@@ -1031,18 +1036,7 @@ fn rewrite_expr_resolved_inner(
         _ => resolver.fold_mode(),
     };
     resolver.fold_constant(&mut built, fold_mode);
-    prepare_in_string_hash_sets(&mut built);
     Ok(built)
-}
-
-fn prepare_in_string_hash_sets(expr: &mut Expression) {
-    let Expression::ScalarFunction(function) = expr else {
-        return;
-    };
-    for argument in &mut function.args {
-        prepare_in_string_hash_sets(argument);
-    }
-    function.prepare_in_string_hash_set();
 }
 
 /// Runs Go's collation derivation over a freshly built expression tree,
@@ -2289,6 +2283,27 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                 .iter()
                 .map(|arg| rewrite_expr_resolved(arg, &child_resolver))
                 .collect::<Result<_, _>>()?;
+            if lowered == "nullif" {
+                let [mut first, second]: [Expression; 2] = rewritten
+                    .try_into()
+                    .map_err(|_| EvalError::WrongParameterCount("nullif"))?;
+                let mut result_type = first
+                    .static_type()
+                    .cloned()
+                    .ok_or(EvalError::Unsupported("NULLIF argument has no type"))?;
+                result_type.del_flags(tidb_datatype::FieldTypeFlags::NOT_NULL);
+                if !result_type.eval_type().is_string_kind() {
+                    result_type.set_charset_name("binary");
+                    result_type.set_collation_name("binary");
+                }
+                let result = first.clone_with_rand_streams();
+                let equal = binary_expression(BinaryOp::Eq, first, second, resolver)?;
+                return Ok(Expression::ScalarFunction(ScalarFunction::new(
+                    CiString::new("if"),
+                    result_type,
+                    vec![equal, Expression::Constant(Constant::new_null()), result],
+                )));
+            }
             let rewritten = wrap_power_arguments(&lowered, rewritten, resolver)?;
             let mut ret_type = builtin_return_type(&lowered, &rewritten).ok_or_else(|| {
                 crate::builtin_registry::unresolved_error(&lowered, resolver.current_database())
@@ -2316,11 +2331,11 @@ fn rewrite_leaf_call(expr: &Expr, resolver: &impl ColumnResolver) -> Result<Expr
                 wrap_binary_literals(&lowered, ret_type.charset_name(), rewritten, |expression| {
                     resolver.fold_constant(expression, ConstantFoldMode::Normal)
                 });
-            Ok(Expression::ScalarFunction(ScalarFunction::new(
-                CiString::new(&lowered),
-                ret_type,
-                rewritten,
-            )))
+            let mut function = ScalarFunction::new(CiString::new(&lowered), ret_type, rewritten);
+            if lowered == "rand" {
+                function.rand_occurrence_group = resolver.rand_call_occurrence(expr);
+            }
+            Ok(Expression::ScalarFunction(function))
         }
         // Go builds one `builtinCast*As*Sig` per target type, so the cast
         // node becomes a one-argument function whose RESULT type carries the

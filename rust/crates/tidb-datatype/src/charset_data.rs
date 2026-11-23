@@ -3,7 +3,5 @@
 
 include!("charset_data/known_charsets.rs");
 include!("charset_data/collations.rs");
-include!("charset_data/gb18030_by_rune.rs");
-include!("charset_data/gb18030_by_bytes.rs");
 include!("charset_data/gbk_cases.rs");
 include!("charset_data/gb18030_cases.rs");

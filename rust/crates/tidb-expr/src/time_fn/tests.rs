@@ -452,16 +452,8 @@ fn go_time_vectors_cover_duration_scale_and_clamp() {
         Datum::new_string("24:00:01.543210".to_string())
     );
     assert_eq!(
-        maketime(
-            &[
-                Datum::Int(1_000),
-                Datum::Int(1),
-                Datum::Decimal(crate::Decimal::from_literal("1.0")),
-            ],
-            &crate::NoColumns
-        )
-        .unwrap(),
-        Datum::new_string("838:59:59.0".to_string())
+        crate::tests::chunk_e("MAKETIME(1000, 1, 1.0)"),
+        "DUR:838:59:59.0"
     );
     assert_eq!(
         time_format(&[

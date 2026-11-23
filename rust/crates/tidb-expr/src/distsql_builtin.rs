@@ -16,6 +16,8 @@ use tidb_ast::CiString;
 use tidb_datatype::{Datum, FieldType, FieldTypeCode};
 use tidb_proto::tipb;
 
+pub use crate::rpn::WireExpressionExecution;
+
 /// Go `PbTypeToFieldType`.
 #[must_use]
 pub fn pb_type_to_field_type(tp: &tipb::FieldType) -> FieldType {
@@ -230,7 +232,7 @@ mod tests {
         function.func_name = CiString::new("lower");
         let row = tidb_chunk::mutrow::MutRow::from_datums(&[]);
         assert_eq!(
-            function
+            crate::expression::Expression::ScalarFunction(function)
                 .eval(&crate::NoColumns, row.to_row())
                 .unwrap()
                 .sql_string()

@@ -15,9 +15,8 @@
 //! `pkg/expression/evaluator.go`: evaluate a projection's calculated
 //! expressions before transferring any direct input-column owners.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::{cell::RefCell, collections::HashMap};
 
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::chunk_util::ColumnSwapHelper;
@@ -25,6 +24,7 @@ use tidb_datatype::Datum;
 
 use crate::context::{Columns, EvalError};
 use crate::expression::Expression;
+use crate::rpn::PreparedExpression;
 
 /// Go `HasGetSetVarFunc`: whether an expression contains a user-variable read
 /// or assignment at any depth.
@@ -39,6 +39,39 @@ pub fn has_get_set_var_func(expression: &Expression) -> bool {
         || name == "getvar"
         || name.starts_with("getvar_")
         || function.get_args().iter().any(has_get_set_var_func)
+}
+
+pub(crate) fn has_mutable_effects(expression: &Expression) -> bool {
+    contains_effect(expression, &|function| function.requires_row_order())
+}
+
+pub(crate) fn has_scalar_effects(expression: &Expression) -> bool {
+    contains_effect(expression, &|function| {
+        // Seeded streams belong to the program. Preserve the established
+        // per-mode demand order when NULLIF shares a seeded occurrence.
+        function.requires_row_order()
+            && (function.func_name.lowercase() != "rand" || function.args.is_empty())
+    })
+}
+
+fn contains_effect(
+    expression: &Expression,
+    matches: &impl Fn(&crate::scalar_function::ScalarFunction) -> bool,
+) -> bool {
+    match expression {
+        Expression::ScalarFunction(function) => {
+            matches(function)
+                || function
+                    .args
+                    .iter()
+                    .any(|arg| contains_effect(arg, matches))
+        }
+        Expression::Constant(constant) => constant
+            .deferred_expr
+            .as_deref()
+            .is_some_and(|arg| contains_effect(arg, matches)),
+        Expression::Column(_) | Expression::CorrelatedColumn(_) => false,
+    }
 }
 
 /// Go `Vectorizable`: whether expressions may be evaluated column by column.
@@ -70,23 +103,182 @@ pub fn vectorizable(expressions: &[Expression]) -> bool {
     !((nextval > 0 && (lastval > 0 || setval > 0)) || nextval > 1)
 }
 
-/// Go `expression.VecEvalBool`/`VectorizedFilterConsiderNull`.
+/// Filter definitions and their execution-local programs. One instance
+/// evaluates the same predicates across every batch of a Selection or
+/// residual filter and starts again when that execution reopens.
+pub struct FilterExecution {
+    predicates: Arc<[Expression]>,
+    prepared: RefCell<Vec<Option<Option<PreparedExpression>>>>,
+}
+
+impl FilterExecution {
+    /// Bind the predicates of one filter execution.
+    #[must_use]
+    pub fn new(predicates: Vec<Expression>) -> Self {
+        Self {
+            prepared: RefCell::new(empty_filter_programs(predicates.len())),
+            predicates: predicates.into(),
+        }
+    }
+
+    /// Open another execution over the same immutable predicates.
+    #[must_use]
+    pub fn start_execution(&self) -> Self {
+        Self {
+            predicates: Arc::clone(&self.predicates),
+            prepared: RefCell::new(empty_filter_programs(self.predicates.len())),
+        }
+    }
+
+    /// Restore fresh execution state when reopening the same filter.
+    pub fn reset(&mut self) {
+        for program in self.prepared.get_mut().iter_mut().flatten().flatten() {
+            program.reset_state();
+        }
+    }
+
+    /// Borrow the bound predicates.
+    #[must_use]
+    pub fn predicates(&self) -> &[Expression] {
+        &self.predicates
+    }
+
+    /// Match Go's filtered physical mask and intersect the chunk's selection.
+    pub fn filter<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        let (mut selected, nulls) = self.filter_physical(
+            ctx,
+            vec_enabled,
+            input,
+            selected,
+            nulls,
+            !vec_enabled || !vectorizable(&self.predicates),
+        )?;
+        apply_input_selection(input, &mut selected);
+        Ok((selected, nulls))
+    }
+
+    /// Match Go's three-valued physical mask before applying any selection.
+    pub fn vec_eval_bool<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        self.filter_physical(ctx, vec_enabled, input, selected, nulls, false)
+    }
+
+    fn filter_physical<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+        row_based: bool,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        filter_physical_rows(
+            ctx,
+            vec_enabled,
+            &self.predicates,
+            &mut self.prepared.borrow_mut(),
+            input,
+            selected,
+            nulls,
+            row_based,
+        )
+    }
+
+    /// Evaluate a single predicate when the caller must process rows in order.
+    pub fn predicate_on_row(
+        &self,
+        ctx: &dyn Columns,
+        predicate: usize,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        let expression = &self.predicates[predicate];
+        evaluate_prepared_row(
+            expression,
+            &mut self.prepared.borrow_mut()[predicate],
+            ctx,
+            row,
+        )
+    }
+}
+
+fn empty_filter_programs(count: usize) -> Vec<Option<Option<PreparedExpression>>> {
+    (0..count).map(|_| None).collect()
+}
+
+fn prepare_expression<'a>(
+    slot: &'a mut Option<Option<PreparedExpression>>,
+    expr: &Expression,
+    ctx: &dyn Columns,
+    columns: usize,
+) -> Result<Option<&'a mut PreparedExpression>, EvalError> {
+    if slot.is_none() {
+        *slot = Some(PreparedExpression::new(expr, ctx, columns)?);
+    }
+    Ok(slot.as_mut().and_then(Option::as_mut))
+}
+
+fn evaluate_prepared_row(
+    expr: &Expression,
+    slot: &mut Option<Option<PreparedExpression>>,
+    ctx: &dyn Columns,
+    row: tidb_chunk::row::Row<'_>,
+) -> Result<Datum, EvalError> {
+    if matches!(expr, Expression::ScalarFunction(_)) {
+        if let Some(prepared) = prepare_expression(slot, expr, ctx, row.len())? {
+            return prepared
+                .evaluate_row(ctx, row)
+                .map(|value| expr.apply_enum_set_as_int(value));
+        }
+    }
+    expr.eval_unprepared(ctx, row)
+}
+
+fn evaluate_scalar_selection(
+    expression: &Expression,
+    slot: &mut Option<Option<PreparedExpression>>,
+    ctx: &dyn Columns,
+    input: &Chunk,
+    selected: &[usize],
+    mut emit: impl FnMut(Datum) -> Result<(), EvalError>,
+) -> Result<(), EvalError> {
+    if selected.is_empty() {
+        return Ok(());
+    }
+    if matches!(expression, Expression::ScalarFunction(_)) {
+        if let Some(prepared) = prepare_expression(slot, expression, ctx, input.num_cols())? {
+            return prepared.evaluate_scalar_selection(ctx, input, selected, |value| {
+                emit(expression.apply_enum_set_as_int(value))
+            });
+        }
+    }
+    for &row in selected {
+        emit(expression.eval_unprepared(ctx, input.physical_row(row))?)?;
+    }
+    Ok(())
+}
+
+/// One batch of Go's `VectorizedFilterConsiderNull`.
 ///
-/// The returned mask is indexed by the physical rows of `input`, just like
-/// Go's `selected` slice. The caller-supplied `selected` and `nulls` vectors
+/// The returned mask is indexed by physical rows. The supplied vectors
 /// are output buffers (their previous contents are discarded); the input
 /// chunk's selection vector is reapplied after evaluating physical rows.
 /// As in Go, the vector path preserves NULL from equality rewritten from IN
 /// until later conjuncts reject the row; ordinary NULL rejects it immediately.
 ///
-/// The expression model exposes Go's typed `VecEval*` only for the numeric
-/// comparisons, `NOT` over them and `IS NULL` over a column
-/// (`ScalarFunction::vec_eval_bool`). The vector evaluator
-/// nevertheless preserves the important vectorized contract: filters run
-/// filter-major, rejected rows are removed before the next filter, and direct
-/// column/constant expressions are materialized column-wise. Any other
-/// scalar-function node uses its row evaluator as the explicit fallback,
-/// without evaluating rows that an earlier filter already rejected.
+/// Predicates run filter-major and receive only the rows that still qualify.
 pub fn vectorized_filter_consider_null<C: Columns>(
     ctx: &C,
     vec_enabled: bool,
@@ -99,6 +291,7 @@ pub fn vectorized_filter_consider_null<C: Columns>(
         ctx,
         vec_enabled,
         filters,
+        &mut empty_filter_programs(filters.len()),
         input,
         selected,
         nulls,
@@ -119,13 +312,23 @@ pub fn vec_eval_bool<C: Columns>(
     selected: Vec<bool>,
     nulls: Vec<bool>,
 ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
-    filter_physical_rows(ctx, vec_enabled, filters, input, selected, nulls, false)
+    filter_physical_rows(
+        ctx,
+        vec_enabled,
+        filters,
+        &mut empty_filter_programs(filters.len()),
+        input,
+        selected,
+        nulls,
+        false,
+    )
 }
 
 fn filter_physical_rows<C: Columns>(
     ctx: &C,
     vec_enabled: bool,
     filters: &[Expression],
+    prepared: &mut [Option<Option<PreparedExpression>>],
     input: &Chunk,
     mut selected: Vec<bool>,
     mut nulls: Vec<bool>,
@@ -148,21 +351,28 @@ fn filter_physical_rows<C: Columns>(
     // filter is not vectorizable. Keep the same filter-major order and
     // three-valued truth handling in that branch.
     if row_based {
-        for filter in filters {
+        let mut live = Vec::with_capacity(physical_rows);
+        for (filter, slot) in filters.iter().zip(prepared) {
             let int_type = filter
                 .static_type()
                 .is_some_and(|ty| ty.eval_type() == tidb_datatype::EvalType::Int);
-            for row_index in 0..physical_rows {
-                if !selected[row_index] {
-                    continue;
-                }
-                let value = filter.eval(ctx, input.physical_row(row_index))?;
+            live.clear();
+            live.extend(
+                selected
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, &keep)| keep.then_some(index)),
+            );
+            let mut physical = live.iter().copied();
+            evaluate_scalar_selection(filter, slot, ctx, input, &live, |value| {
+                let row = physical.next().expect("one result per selected row");
                 let truth = crate::truthy_of(&value)?;
                 if truth.is_none() && int_type {
-                    nulls[row_index] = true;
+                    nulls[row] = true;
                 }
-                selected[row_index] = truth == Some(true);
-            }
+                selected[row] = truth == Some(true);
+                Ok(())
+            })?;
         }
         return Ok((selected, nulls));
     }
@@ -180,7 +390,7 @@ fn filter_physical_rows<C: Columns>(
             Some(true) => 1,
         })
     };
-    for filter in filters {
+    for (filter, slot) in filters.iter().zip(prepared) {
         if sel.is_empty() {
             break;
         }
@@ -202,21 +412,28 @@ fn filter_physical_rows<C: Columns>(
                     is_zero.resize(sel.len(), code);
                     true
                 }
-                Expression::ScalarFunction(function) => {
-                    function.vec_eval_bool(input, &sel, &mut is_zero)?
+                Expression::ScalarFunction(_) => {
+                    match prepare_expression(slot, filter, ctx, input.num_cols())? {
+                        Some(prepared) => {
+                            is_zero.clear();
+                            prepared.evaluate_rows(ctx, input, &sel, true, |datum| {
+                                is_zero.push(truth_code(&datum)?);
+                                Ok(())
+                            })?;
+                            true
+                        }
+                        None => false,
+                    }
                 }
                 Expression::Column(_) | Expression::Constant(_) => false,
             }
         };
         if !column_wise {
-            // The scalar evaluator is the documented fallback for every
-            // other shape, over the live rows only.
             is_zero.clear();
-            for &physical in &sel {
-                is_zero.push(truth_code(
-                    &filter.eval(ctx, input.physical_row(physical))?,
-                )?);
-            }
+            evaluate_scalar_selection(filter, slot, ctx, input, &sel, |value| {
+                is_zero.push(truth_code(&value)?);
+                Ok(())
+            })?;
         }
         let mut kept = 0;
         let eq_from_in = is_eq_cond_from_in(filter);
@@ -307,6 +524,7 @@ pub struct EvaluatorProgram {
     calculated_output_indexes: Vec<usize>,
     calculated: Vec<Expression>,
     vectorizable: bool,
+    parallelizable: bool,
     column_mapping: HashMap<usize, Vec<usize>>,
 }
 
@@ -339,12 +557,18 @@ impl EvaluatorProgram {
         }
 
         let vectorizable = vectorizable(&calculated);
+        let parallelizable = vectorizable && !calculated.iter().any(has_mutable_effects);
         Self {
             calculated_output_indexes,
             calculated,
             vectorizable,
+            parallelizable,
             column_mapping,
         }
+    }
+    /// Independent batches may be evaluated by separate workers.
+    pub fn parallelizable(&self) -> bool {
+        self.parallelizable
     }
 }
 
@@ -353,13 +577,8 @@ impl EvaluatorProgram {
 /// so an evaluation error cannot leave the input chunk half-consumed.
 pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
+    prepared: RefCell<Vec<Option<Option<PreparedExpression>>>>,
     column_swap_helper: Option<ColumnSwapHelper>,
-    upstream: RefCell<Option<UpstreamProjection>>,
-}
-
-struct UpstreamProjection {
-    random: crate::upstream_rpn::RandomScope,
-    expressions: Vec<Option<crate::upstream_rpn::Projection>>,
 }
 
 impl EvaluatorSuite {
@@ -379,9 +598,9 @@ impl EvaluatorSuite {
         let column_swap_helper = (!program.column_mapping.is_empty())
             .then(|| ColumnSwapHelper::from_mapping(program.column_mapping.clone()));
         Self {
+            prepared: RefCell::new(program.calculated.iter().map(|_| None).collect()),
             program,
             column_swap_helper,
-            upstream: RefCell::new(None),
         }
     }
 
@@ -405,51 +624,25 @@ impl EvaluatorSuite {
     ) -> Result<(), EvaluatorError> {
         let rows = input.num_rows();
         let program = &self.program;
+        let mut prepared = self.prepared.borrow_mut();
         if program.vectorizable {
-            let mut upstream = self.upstream.borrow_mut();
-            let random = crate::upstream_rpn::RandomScope::new(ctx);
-            if upstream
-                .as_ref()
-                .is_none_or(|old| !old.random.is_same_scope(&random))
-            {
-                let expressions = program
-                    .calculated
-                    .iter()
-                    .map(|expression| crate::upstream_rpn::Projection::prepare(expression, &random))
-                    .collect();
-                *upstream = Some(UpstreamProjection {
-                    random,
-                    expressions,
-                });
-            }
-            let prepared = &upstream.as_ref().expect("prepared projection").expressions;
-            for ((output_index, expression), prepared) in program
+            for (position, (output_index, expression)) in program
                 .calculated_output_indexes
                 .iter()
                 .zip(&program.calculated)
-                .zip(prepared)
+                .enumerate()
             {
-                if let Some(prepared) = prepared {
-                    if prepared.run(ctx, input, |value| {
-                        output.append_datum(*output_index, &value)
-                    })? {
-                        continue;
-                    }
-                }
-                if let Expression::ScalarFunction(function) = expression {
-                    // Go's typed `VecEvalDecimal` for decimal arithmetic.
-                    if function.vec_eval_decimal_arithmetic(input, output, *output_index)? {
-                        continue;
-                    }
-                }
-                if ctx.enable_vectorized_expression() {
-                    if let Some(values) =
-                        crate::scalar_function::try_eval_numeric_batch(expression, ctx, input)?
-                    {
-                        for value in values {
-                            output.append_datum(*output_index, &value);
+                if rows != 0 && ctx.enable_vectorized_expression() {
+                    if let Some(source) = crate::rpn::batch_source(expression, ctx)? {
+                        if let Some(shared) = prepare_expression(
+                            &mut prepared[position],
+                            source,
+                            ctx,
+                            input.num_cols(),
+                        )? {
+                            shared.append_projection(ctx, input, output, *output_index)?;
+                            continue;
                         }
-                        continue;
                     }
                 }
                 if let Expression::Constant(constant) = expression {
@@ -467,18 +660,29 @@ impl EvaluatorSuite {
                     }
                 }
                 for row_index in 0..rows {
-                    let value = expression.eval(ctx, input.get_row(row_index))?;
+                    let value = evaluate_prepared_row(
+                        expression,
+                        &mut prepared[position],
+                        ctx,
+                        input.get_row(row_index),
+                    )?;
                     output.append_datum(*output_index, &value);
                 }
             }
         } else {
             for row_index in 0..rows {
-                for (output_index, expression) in program
+                for (position, (output_index, expression)) in program
                     .calculated_output_indexes
                     .iter()
                     .zip(&program.calculated)
+                    .enumerate()
                 {
-                    let value = expression.eval(ctx, input.get_row(row_index))?;
+                    let value = evaluate_prepared_row(
+                        expression,
+                        &mut prepared[position],
+                        ctx,
+                        input.get_row(row_index),
+                    )?;
                     output.append_datum(*output_index, &value);
                 }
             }
@@ -541,6 +745,49 @@ mod tests {
         Expression::ScalarFunction(ScalarFunction::new(CiString::new(name), long(), args))
     }
 
+    #[test]
+    fn projection_uses_one_seeded_if_stream_for_its_execution() {
+        let real = FieldType::new(FieldTypeCode::Double);
+        let rand = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("rand"),
+            real.clone(),
+            vec![int_const(7)],
+        ));
+        let expression = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            real.clone(),
+            vec![input_column(0), rand, int_const(0)],
+        ));
+        let program = Arc::new(EvaluatorProgram::new(vec![expression], false));
+        for _ in 0..2 {
+            let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+            for (flags, expected) in [
+                (
+                    vec![None, Some(1), Some(0)],
+                    vec![0.0, 0.9065021936842261, 0.0],
+                ),
+                (vec![Some(0), Some(-1)], vec![0.0, 0.37600881361962185]),
+            ] {
+                let mut input = Chunk::new(&[long()], 3, 3);
+                for flag in flags {
+                    match flag {
+                        Some(flag) => input.append_int64(0, flag),
+                        None => input.append_null(0),
+                    }
+                }
+                let mut output = Chunk::new(std::slice::from_ref(&real), 3, 3);
+                suite.run(&NoColumns, &mut input, &mut output).unwrap();
+                assert!(matches!(&suite.prepared.borrow()[0], Some(Some(_))));
+                assert_eq!(
+                    (0..output.num_rows())
+                        .map(|row| output.get_row(row).get_float64(0))
+                        .collect::<Vec<_>>(),
+                    expected,
+                );
+            }
+        }
+    }
+
     struct CountedParameter {
         value: Result<Datum, EvalError>,
         reads: Cell<usize>,
@@ -562,6 +809,247 @@ mod tests {
         let mut constant = Constant::new(Datum::Null, field_type);
         constant.param_marker = Some(ParamMarker { order: 0 });
         Expression::Constant(constant)
+    }
+
+    #[test]
+    fn shared_projection_preserves_user_variable_order_and_null_assignment() {
+        struct Variables(RefCell<Datum>);
+        impl Columns for Variables {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+
+            fn get_uservar(&self, name: &str) -> Option<Datum> {
+                assert_eq!(name, "running");
+                Some(self.0.borrow().clone())
+            }
+
+            fn set_uservar(&self, name: &str, value: Datum) {
+                assert_eq!(name, "running");
+                self.0.replace(value);
+            }
+        }
+
+        let get = scalar("getvar_int", vec![string_const("running")]);
+        let sum = scalar("plus", vec![get.clone(), input_column(0)]);
+        let set = scalar("setvar", vec![string_const("running"), sum]);
+        let suite = EvaluatorSuite::new(vec![set, get], false);
+        let context = Variables(RefCell::new(Datum::Int(0)));
+        assert!(!suite.vectorizable());
+        for (batch, want) in [
+            (
+                vec![Datum::Int(2), Datum::Null],
+                vec![(Datum::Int(2), Datum::Int(2)), (Datum::Null, Datum::Int(2))],
+            ),
+            (vec![Datum::Int(5)], vec![(Datum::Int(7), Datum::Int(7))]),
+        ] {
+            let mut input = Chunk::new(&[long()], batch.len(), batch.len());
+            for value in batch {
+                input.append_datum(0, &value);
+            }
+            let mut output = Chunk::new(&[long(), long()], input.num_rows(), input.num_rows());
+            suite.run(&context, &mut input, &mut output).unwrap();
+            let got = (0..output.num_rows())
+                .map(|row| {
+                    let row = output.get_row(row);
+                    (row.get_datum(0, &long()), row.get_datum(1, &long()))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(got, want);
+            assert!(suite
+                .prepared
+                .borrow()
+                .iter()
+                .all(|slot| matches!(slot, Some(Some(_)))));
+        }
+    }
+
+    #[test]
+    fn shared_arithmetic_observes_scalar_and_batch_operand_demand() {
+        let expression = scalar("minus", vec![input_column(0), parameter(long())]);
+        let error = EvalError::Unsupported("unbound prepared parameter");
+        let context = CountedParameter {
+            value: Err(error.clone()),
+            reads: Cell::new(0),
+        };
+        let mut input = Chunk::new(&[long()], 1, 1);
+        input.append_null(0);
+        let mut prepared = PreparedExpression::new(&expression, &context, 1)
+            .unwrap()
+            .expect("shared integer subtraction");
+        assert_eq!(
+            prepared.evaluate_row(&context, input.get_row(0)),
+            Ok(Datum::Null)
+        );
+        assert_eq!(context.reads.get(), 0);
+        assert_eq!(
+            prepared.evaluate_rows(&context, &input, &[0], true, |_| Ok(())),
+            Err(error)
+        );
+        assert_eq!(context.reads.get(), 1);
+    }
+
+    #[test]
+    fn shared_projection_reads_bound_values_only_for_a_demanded_branch() {
+        let expression = scalar("if", vec![input_column(0), parameter(long()), int_const(0)]);
+        let program = Arc::new(EvaluatorProgram::new(vec![expression], false));
+        for parameter in [Datum::Int(5), Datum::Null, Datum::Int(-2)] {
+            let suite = EvaluatorSuite::from_program(Arc::clone(&program));
+            let context = CountedParameter {
+                value: Ok(parameter.clone()),
+                reads: Cell::new(0),
+            };
+            let mut input = Chunk::new(&[long()], 3, 3);
+            for flag in [1, 0, -1] {
+                input.append_int64(0, flag);
+            }
+            let mut output = Chunk::new(&[long()], 3, 3);
+            suite.run(&context, &mut input, &mut output).unwrap();
+            assert!(matches!(&suite.prepared.borrow()[0], Some(Some(_))));
+            assert_eq!(context.reads.get(), 1);
+            let values = (0..output.num_rows())
+                .map(|row| output.get_row(row).get_datum(0, &long()))
+                .collect::<Vec<_>>();
+            assert_eq!(values, [parameter.clone(), Datum::Int(0), parameter]);
+        }
+
+        let suite = EvaluatorSuite::from_program(program);
+        let error = EvalError::Unsupported("unbound prepared parameter");
+        let context = CountedParameter {
+            value: Err(error.clone()),
+            reads: Cell::new(0),
+        };
+        let mut input = Chunk::new(&[long()], 2, 2);
+        let mut output = Chunk::new(&[long()], 2, 2);
+        input.append_int64(0, 0);
+        suite.run(&context, &mut input, &mut output).unwrap();
+        assert_eq!(context.reads.get(), 0);
+        input.append_int64(0, 1);
+        assert_eq!(
+            suite.run(&context, &mut input, &mut output),
+            Err(error.into())
+        );
+        assert_eq!(context.reads.get(), 1);
+    }
+
+    #[test]
+    fn shared_control_demands_session_values_only_on_selected_rows() {
+        struct Session(Cell<u64>);
+        impl Columns for Session {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn connection_id(&self) -> Option<u64> {
+                let id = self.0.get();
+                self.0.set(id + 1);
+                Some(id)
+            }
+        }
+        let mut unsigned = long();
+        unsigned.add_flags(tidb_datatype::FieldTypeFlags::UNSIGNED);
+        let connection = Expression::ScalarFunction(ScalarFunction::new(
+            tidb_ast::CiString::new("connection_id"),
+            unsigned,
+            Vec::new(),
+        ));
+        let expression = scalar("if", vec![input_column(0), connection, int_const(0)]);
+        let suite = EvaluatorSuite::new(vec![expression], false);
+        let context = Session(Cell::new(7));
+        let mut input = Chunk::new(&[long()], 3, 3);
+        for flag in [0, 1, -1] {
+            input.append_int64(0, flag);
+        }
+        let mut output = Chunk::new(&[long()], 3, 3);
+        suite.run(&context, &mut input, &mut output).unwrap();
+        assert!(matches!(&suite.prepared.borrow()[0], Some(Some(_))));
+        assert_eq!(context.0.get(), 9);
+        let values = (0..output.num_rows())
+            .map(|row| output.get_row(row).get_datum(0, &long()))
+            .collect::<Vec<_>>();
+        assert_eq!(values, [Datum::Int(0), Datum::Int(7), Datum::Int(8)]);
+    }
+
+    #[test]
+    fn shared_control_passes_evaluated_operands_to_session_operations() {
+        struct Session(RefCell<Vec<u64>>);
+        impl Columns for Session {
+            fn get(&self, _: &[String]) -> Option<Datum> {
+                None
+            }
+            fn set_last_insert_id(&self, value: u64) {
+                self.0.borrow_mut().push(value);
+            }
+        }
+        let value = scalar("plus", vec![input_column(1), int_const(1)]);
+        let operation = scalar("last_insert_id", vec![value]);
+        let expression = scalar("if", vec![input_column(0), operation, int_const(0)]);
+        let suite = EvaluatorSuite::new(vec![expression], false);
+        let context = Session(RefCell::new(Vec::new()));
+        let mut input = Chunk::new(&[long(), long()], 4, 4);
+        for (flag, value) in [(0, 7), (1, 9), (0, 11), (-1, 13)] {
+            input.append_int64(0, flag);
+            input.append_int64(1, value);
+        }
+        let mut output = Chunk::new(&[long()], 4, 4);
+        suite.run(&context, &mut input, &mut output).unwrap();
+        assert!(matches!(&suite.prepared.borrow()[0], Some(Some(_))));
+        assert_eq!(*context.0.borrow(), [10, 14]);
+        let values = (0..output.num_rows())
+            .map(|row| output.get_row(row).get_datum(0, &long()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            [Datum::Int(0), Datum::Int(10), Datum::Int(0), Datum::Int(14)]
+        );
+    }
+
+    #[test]
+    fn filter_execution_continues_seeded_demand_across_batch_sizes_and_reopens() {
+        let flag = input_column(0);
+        let seed = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("rand"),
+            FieldType::new(FieldTypeCode::Double),
+            vec![int_const(7)],
+        ));
+        let real_constant = |value| {
+            Expression::Constant(Constant::new(
+                Datum::Real(value),
+                FieldType::new(FieldTypeCode::Double),
+            ))
+        };
+        let conditional = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("if"),
+            FieldType::new(FieldTypeCode::Double),
+            vec![flag, seed, real_constant(0.0)],
+        ));
+        let predicate = scalar("gt", vec![conditional, real_constant(0.5)]);
+        let mut filters = FilterExecution::new(vec![predicate]);
+        let flags = [0, 1, 0, 1, 1, 0, 1, 0];
+        let expected_rng = crate::MysqlRng::new_with_seed(7);
+        let expected = flags.map(|flag| flag != 0 && expected_rng.gen() > 0.5);
+        for batch_size in [2, flags.len(), 1] {
+            filters.reset();
+            let mut actual = Vec::new();
+            for batch in flags.chunks(batch_size) {
+                let mut input = Chunk::new(&[long()], batch.len(), batch.len());
+                for &flag in batch {
+                    input.append_int64(0, flag);
+                }
+                let (selected, nulls) = filters
+                    .filter(&NoColumns, true, &input, Vec::new(), Vec::new())
+                    .unwrap();
+                assert_eq!(nulls, vec![false; batch.len()]);
+                actual.extend(selected);
+            }
+            let prepared = filters.prepared.borrow();
+            assert!(prepared[0]
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .requires_execution_state());
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]
@@ -757,8 +1245,19 @@ mod tests {
             value: Err(EvalError::Unsupported("unbound prepared parameter")),
             reads: Cell::new(0),
         };
-        let unsupported = Expression::ScalarFunction(ScalarFunction::new(
+        let abs = Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("abs"),
+            long(),
+            vec![input_column(0)],
+        ));
+        let mut batch = Chunk::new_with_capacity(&[long()], 1);
+        batch.append_int64(0, -7);
+        assert_eq!(
+            crate::try_evaluate_batch(&abs, &ctx, &batch).unwrap(),
+            Some(vec![Datum::Int(7)])
+        );
+        let unsupported = Expression::ScalarFunction(ScalarFunction::new(
+            CiString::new("row"),
             long(),
             vec![input_column(0)],
         ));
@@ -770,7 +1269,7 @@ mod tests {
         let mut input = Chunk::new_with_capacity(&[long()], 1);
         input.append_int64(0, 1);
         assert_eq!(
-            crate::scalar_function::try_eval_numeric_batch(&expression, &ctx, &input).unwrap(),
+            crate::try_evaluate_batch(&expression, &ctx, &input).unwrap(),
             None
         );
         assert_eq!(
@@ -785,7 +1284,7 @@ mod tests {
         ));
         input.reset();
         assert_eq!(
-            crate::scalar_function::try_eval_numeric_batch(&expression, &ctx, &input).unwrap(),
+            crate::try_evaluate_batch(&expression, &ctx, &input).unwrap(),
             Some(vec![])
         );
         assert_eq!(
@@ -832,13 +1331,9 @@ mod tests {
                     };
                     Datum::Decimal(Decimal::from_literal(value))
                 };
-                let batch = crate::scalar_function::try_eval_numeric_batch(
-                    &expression,
-                    &crate::NoColumns,
-                    &input,
-                )
-                .unwrap()
-                .unwrap();
+                let batch = crate::try_evaluate_batch(&expression, &crate::NoColumns, &input)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(
                     batch,
                     vec![Datum::Null, expected.clone()],
@@ -1347,112 +1842,47 @@ mod tests {
             ),
         ];
         let ctx = NoColumns;
+        let check = |expression: &Expression, input: &mut Chunk| {
+            let field = expression.static_type().unwrap();
+            let expected = (0..input.num_rows())
+                .map(|row| expression.eval(&ctx, input.get_row(row)).unwrap())
+                .collect::<Vec<_>>();
+            let suite = EvaluatorSuite::new(vec![expression.clone()], false);
+            let mut output =
+                Chunk::new_with_capacity(std::slice::from_ref(field), input.num_rows());
+            suite.run(&ctx, input, &mut output).unwrap();
+            assert!(matches!(&suite.prepared.borrow()[0], Some(Some(_))));
+            assert_eq!(output.num_rows(), expected.len());
+            for (row, expected) in expected.into_iter().enumerate() {
+                let actual = output.get_row(row).get_datum(0, field);
+                assert_eq!(actual, expected);
+                if let (Datum::Decimal(actual), Datum::Decimal(expected)) = (actual, expected) {
+                    assert_eq!(actual.to_string(), expected.to_string());
+                }
+            }
+        };
         for expression in &expressions {
-            let Expression::ScalarFunction(function) = expression else {
-                unreachable!()
-            };
-            let mut expected = Chunk::new_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &expression.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
-            // A selection on the input is honored.
+            check(expression, &mut input);
             input.set_sel(Some(vec![1, 3, 6]));
-            let mut expected = Chunk::new_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                3,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &expression.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                3,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
+            check(expression, &mut input);
             input.set_sel(None);
         }
-        // Go `builtinCastIntAsDecimalSig.vecEvalDecimal`: an integer column
-        // cast to a DECIMAL wide enough for every integer is the padded
-        // integer, at scale 0 and at a positive scale.
-        let mut wide = FieldType::new(FieldTypeCode::NewDecimal);
-        wide.set_flen(20);
-        wide.set_decimal(0);
-        let mut wide_scaled = FieldType::new(FieldTypeCode::NewDecimal);
-        wide_scaled.set_flen(22);
-        wide_scaled.set_decimal(2);
-        for target in [&wide, &wide_scaled] {
+        // Keep integer-to-decimal padding and a declared shape that can
+        // clamp in the same compiler, across both zero and positive scales.
+        for (flen, scale) in [(20, 0), (22, 2), (10, 0)] {
+            let mut target = FieldType::new(FieldTypeCode::NewDecimal);
+            target.set_flen(flen);
+            target.set_decimal(scale);
             let product = typed(
                 "mul",
                 vec![
                     decimal_column(0, &price_type),
-                    typed("cast_decimal", vec![input_column(2)], target),
+                    typed("cast_decimal", vec![input_column(2)], &target),
                 ],
                 &result_type,
             );
-            let Expression::ScalarFunction(function) = &product else {
-                unreachable!()
-            };
-            let mut expected = Chunk::new_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &product.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
+            check(&product, &mut input);
         }
-        // A target that can clamp (`ProduceDecWithSpecifiedTp`) keeps the
-        // row path.
-        let mut narrow = FieldType::new(FieldTypeCode::NewDecimal);
-        narrow.set_flen(10);
-        narrow.set_decimal(0);
-        let Expression::ScalarFunction(clamping) = typed(
-            "mul",
-            vec![
-                decimal_column(0, &price_type),
-                typed("cast_decimal", vec![input_column(2)], &narrow),
-            ],
-            &result_type,
-        ) else {
-            unreachable!()
-        };
-        let mut output = Chunk::new_with_capacity(&[result_type.clone()], 8);
-        assert!(!clamping
-            .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-            .unwrap());
-        assert_eq!(output.num_rows(), 0);
-        // Two integers stay integer arithmetic: not covered.
-        let Expression::ScalarFunction(ints) =
-            typed("plus", vec![input_column(2), int_const(1)], &result_type)
-        else {
-            unreachable!()
-        };
-        let mut output = Chunk::new_with_capacity(&[result_type.clone()], 8);
-        assert!(!ints
-            .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-            .unwrap());
-        assert_eq!(output.num_rows(), 0);
     }
 
     /// Go `builtinGTDecimalSig.vecEvalInt`: a decimal column against an

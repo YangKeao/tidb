@@ -46,24 +46,25 @@ pub(crate) fn dispatch(
     vals: &[Datum],
     ctx: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
-    match (name, vals.len()) {
-        ("MD5", 1) => Some(hash_unary::<Md5>(&vals[0])),
-        ("SHA" | "SHA1", 1) => Some(hash_unary::<Sha1>(&vals[0])),
-        ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1])),
-        ("SM3", 1) => Some(sm3_hash(&vals[0])),
-        ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
-        ("RANDOM_BYTES", _) => Some(Err(EvalError::WrongParameterCount("random_bytes"))),
-        ("PASSWORD", 1) => Some(password_hash(&vals[0], ctx)),
-        ("VALIDATE_PASSWORD_STRENGTH", 1) => Some(validate_password_strength(&vals[0], ctx)),
-        ("ENCODE", 2) => Some(sql_encode(&vals[0], &vals[1])),
-        ("DECODE", 2) => Some(sql_decode(&vals[0], &vals[1])),
-        ("COMPRESS", 1) => Some(compress(&vals[0])),
-        ("AES_ENCRYPT" | "AES_DECRYPT", _) => {
-            eval_aes_lazy(name, vals.len(), |i| Ok(vals[i].clone()), ctx)
-        }
-        ("UNCOMPRESS", 1) => Some(uncompress(&vals[0], ctx)),
-        ("UNCOMPRESSED_LENGTH", 1) => Some(uncompressed_length(&vals[0], ctx)),
-        _ => None,
+    dispatch_eager(name, vals, ctx)
+        .or_else(|| eval_aes_lazy(name, vals.len(), |index| Ok(vals[index].clone()), ctx))
+}
+
+eager_dispatch! {
+    dispatch_eager(name, vals, ctx) {
+        ("MD5", 1) => hash_unary::<Md5>(&vals[0]),
+        ("SHA" | "SHA1", 1) => hash_unary::<Sha1>(&vals[0]),
+        ("SHA2", 2) => sha2_hash(&vals[0], &vals[1]),
+        ("SM3", 1) => sm3_hash(&vals[0]),
+        ("RANDOM_BYTES", 1) => random_bytes(&vals[0]),
+        ("RANDOM_BYTES", _) => Err(EvalError::WrongParameterCount("random_bytes")),
+        ("PASSWORD", 1) => password_hash(&vals[0], ctx),
+        ("VALIDATE_PASSWORD_STRENGTH", 1) => validate_password_strength(&vals[0], ctx),
+        ("ENCODE", 2) => sql_encode(&vals[0], &vals[1]),
+        ("DECODE", 2) => sql_decode(&vals[0], &vals[1]),
+        ("COMPRESS", 1) => compress(&vals[0]),
+        ("UNCOMPRESS", 1) => uncompress(&vals[0], ctx),
+        ("UNCOMPRESSED_LENGTH", 1) => uncompressed_length(&vals[0], ctx),
     }
 }
 
@@ -72,32 +73,18 @@ pub(crate) fn dispatch(
 /// a stream ending in ASCII space from being changed by SQL trailing-space
 /// handling, matching TiDB's public format.
 fn compress(arg: &Datum) -> Result<Datum, EvalError> {
+    use tidb_query_datatype::codec::data_type::{ChunkedVec, ChunkedVecBytes};
+
     let Some(payload) = sql_string_bytes(arg)? else {
         return Ok(Datum::Null);
     };
-    if payload.is_empty() {
-        return Ok(Datum::new_string(Vec::new()));
-    }
-
-    // go's `deflate()` helper: zlib.NewWriter (level 6) + Write + Close —
-    // transcribed bit-exactly in [`go_flate`]; a generic rust zlib backend
-    // makes different encoder choices and diverges on the wire.
-    let compressed = crate::go_flate::go_zlib_deflate(&payload);
-    Ok(Datum::new_string(frame_compressed(
-        payload.len() as u32,
-        compressed,
-    )))
-}
-
-fn frame_compressed(original_len: u32, compressed: Vec<u8>) -> Vec<u8> {
-    let append_suffix = compressed.last() == Some(&b' ');
-    let mut framed = Vec::with_capacity(4 + compressed.len() + usize::from(append_suffix));
-    framed.extend_from_slice(&original_len.to_le_bytes());
-    framed.extend_from_slice(&compressed);
-    if append_suffix {
-        framed.push(b'.');
-    }
-    framed
+    let writer = ChunkedVecBytes::with_capacity(1).into_writer();
+    let result = tidb_query_expr::impl_encryption::compress(&payload, writer)
+        .map_err(crate::rpn::query_error)?;
+    Ok(result
+        .into_inner()
+        .get(0)
+        .map_or(Datum::Null, Datum::new_string))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +207,14 @@ const AES_BLOCK_SIZE: usize = 16;
 /// require and evaluate exactly three arguments. Keeping the evaluator as a
 /// closure lets both AST and chunk paths share this ordering without copying
 /// their row-access machinery.
+pub(crate) fn aes_operand_count(mode: BlockEncryptionMode, arg_count: usize) -> Option<usize> {
+    if mode.iv_required() {
+        (arg_count == 3).then_some(3)
+    } else {
+        (2..=3).contains(&arg_count).then_some(2)
+    }
+}
+
 pub(crate) fn eval_aes_lazy<F>(
     name: &str,
     arg_count: usize,
@@ -475,7 +470,10 @@ fn identity_username(identity: &str) -> &str {
 }
 
 /// `VALIDATE_PASSWORD_STRENGTH(str)`.
-fn validate_password_strength(value: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+pub(crate) fn validate_password_strength(
+    value: &Datum,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
     use tidb_util::password_validation::{self, PasswordUser};
 
     let Some(password) = sql_string_bytes(value)? else {
@@ -714,7 +712,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    use super::{dispatch, frame_compressed, inflate};
+    use super::{dispatch, inflate};
     use crate::{Columns, Datum, Decimal, EvalError};
 
     fn call(name: &str, vals: &[Datum]) -> Datum {
@@ -965,13 +963,6 @@ mod tests {
         assert_eq!(
             bytes_of(&call("UNCOMPRESS", std::slice::from_ref(&compressed))),
             bytes_of(&large)
-        );
-
-        // The suffix rule is part of the SQL framing, independent of which
-        // inputs a particular zlib implementation happens to encode that way.
-        assert_eq!(
-            frame_compressed(1, vec![0x78, b' ']),
-            vec![1, 0, 0, 0, 0x78, b' ', b'.']
         );
 
         // compress('hello') = LE(5) + zlib stream.

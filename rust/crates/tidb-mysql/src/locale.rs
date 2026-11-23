@@ -3,7 +3,80 @@
 
 //! Locale-aware `FORMAT()` number grouping and separators.
 
-use crate::charset::is_unicode_decimal_digit;
+/// Mirrors Go `unicode.IsDigit` for password and locale classification.
+pub fn is_unicode_decimal_digit(character: char) -> bool {
+    let character = u32::from(character);
+    UNICODE_DECIMAL_DIGITS
+        .get(UNICODE_DECIMAL_DIGITS.partition_point(|&(_, end)| end < character))
+        .is_some_and(|&(start, _)| start <= character)
+}
+
+const UNICODE_DECIMAL_DIGITS: &[(u32, u32)] = &[
+    (0x30, 0x39),
+    (0x660, 0x669),
+    (0x6F0, 0x6F9),
+    (0x7C0, 0x7C9),
+    (0x966, 0x96F),
+    (0x9E6, 0x9EF),
+    (0xA66, 0xA6F),
+    (0xAE6, 0xAEF),
+    (0xB66, 0xB6F),
+    (0xBE6, 0xBEF),
+    (0xC66, 0xC6F),
+    (0xCE6, 0xCEF),
+    (0xD66, 0xD6F),
+    (0xDE6, 0xDEF),
+    (0xE50, 0xE59),
+    (0xED0, 0xED9),
+    (0xF20, 0xF29),
+    (0x1040, 0x1049),
+    (0x1090, 0x1099),
+    (0x17E0, 0x17E9),
+    (0x1810, 0x1819),
+    (0x1946, 0x194F),
+    (0x19D0, 0x19D9),
+    (0x1A80, 0x1A89),
+    (0x1A90, 0x1A99),
+    (0x1B50, 0x1B59),
+    (0x1BB0, 0x1BB9),
+    (0x1C40, 0x1C49),
+    (0x1C50, 0x1C59),
+    (0xA620, 0xA629),
+    (0xA8D0, 0xA8D9),
+    (0xA900, 0xA909),
+    (0xA9D0, 0xA9D9),
+    (0xA9F0, 0xA9F9),
+    (0xAA50, 0xAA59),
+    (0xABF0, 0xABF9),
+    (0xFF10, 0xFF19),
+    (0x104A0, 0x104A9),
+    (0x10D30, 0x10D39),
+    (0x11066, 0x1106F),
+    (0x110F0, 0x110F9),
+    (0x11136, 0x1113F),
+    (0x111D0, 0x111D9),
+    (0x112F0, 0x112F9),
+    (0x11450, 0x11459),
+    (0x114D0, 0x114D9),
+    (0x11650, 0x11659),
+    (0x116C0, 0x116C9),
+    (0x11730, 0x11739),
+    (0x118E0, 0x118E9),
+    (0x11950, 0x11959),
+    (0x11C50, 0x11C59),
+    (0x11D50, 0x11D59),
+    (0x11DA0, 0x11DA9),
+    (0x11F50, 0x11F59),
+    (0x16A60, 0x16A69),
+    (0x16AC0, 0x16AC9),
+    (0x16B50, 0x16B59),
+    (0x1D7CE, 0x1D7FF),
+    (0x1E140, 0x1E149),
+    (0x1E2F0, 0x1E2F9),
+    (0x1E4F0, 0x1E4F9),
+    (0x1E950, 0x1E959),
+    (0x1FBF0, 0x1FBF9),
+];
 
 /// Separator/grouping rules for a MySQL locale.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,6 +231,92 @@ pub fn format_by_locale(
 ) -> Result<(Vec<u8>, bool), std::convert::Infallible> {
     let (style, found) = locale_format_style(locale);
     Ok((format_with_style(number, precision, style), found))
+}
+
+/// Round and format a SQL number, reporting unknown or NULL locale separately.
+pub fn format_sql_number<'a>(
+    number: &str,
+    precision: i64,
+    locale: Option<&'a str>,
+) -> (Vec<u8>, Option<&'a str>) {
+    let precision = precision.clamp(0, 30) as usize;
+    let rounded = round_format_args(number, precision);
+    let (style, found) = locale_format_style(locale.unwrap_or("en_US"));
+    let unknown = match locale {
+        None => Some("NULL"),
+        Some(locale) if !found => Some(locale),
+        _ => None,
+    };
+    (
+        format_with_style(&rounded, &precision.to_string(), style),
+        unknown,
+    )
+}
+
+fn round_format_args(number: &str, precision: usize) -> String {
+    let (negative, number) = number
+        .strip_prefix('-')
+        .map_or((false, number), |n| (true, n));
+    let (mut integer, fraction) = number.split_once('.').unwrap_or((number, ""));
+    if !integer.bytes().all(|digit| digit.is_ascii_digit())
+        || !fraction.bytes().all(|digit| digit.is_ascii_digit())
+    {
+        integer = "0";
+    }
+    let mut fraction: Vec<u8> = fraction.bytes().take(precision).collect();
+    while fraction.len() < precision {
+        fraction.push(b'0');
+    }
+    let round_up = number
+        .split_once('.')
+        .and_then(|(_, f)| f.as_bytes().get(precision))
+        .is_some_and(|d| *d >= b'5');
+    if round_up {
+        let mut carry = true;
+        for digit in fraction.iter_mut().rev() {
+            if *digit == b'9' {
+                *digit = b'0';
+            } else {
+                *digit += 1;
+                carry = false;
+                break;
+            }
+        }
+        if carry {
+            let mut digits = integer.as_bytes().to_vec();
+            for digit in digits.iter_mut().rev() {
+                if *digit == b'9' {
+                    *digit = b'0';
+                } else {
+                    *digit += 1;
+                    carry = false;
+                    break;
+                }
+            }
+            if carry {
+                return format_number_parts(
+                    negative,
+                    format!("1{}", "0".repeat(integer.len())),
+                    fraction,
+                );
+            }
+            return format_number_parts(negative, String::from_utf8(digits).unwrap(), fraction);
+        }
+    }
+    format_number_parts(negative, integer.to_string(), fraction)
+}
+
+fn format_number_parts(negative: bool, integer: String, fraction: Vec<u8>) -> String {
+    let mut out = String::new();
+    if negative {
+        out.push('-');
+    }
+    out.push_str(&integer);
+    if !fraction.is_empty() {
+        out.push('.');
+        out.push_str(std::str::from_utf8(&fraction).unwrap());
+    }
+    out
 }
 
 fn format_with_style(number: &str, precision: &str, style: LocaleFormatStyle) -> Vec<u8> {

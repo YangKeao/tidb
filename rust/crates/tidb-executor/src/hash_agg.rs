@@ -2935,7 +2935,7 @@ impl<C: Columns> GroupedStreamAggExec<C> {
         }
         self.group_by
             .iter()
-            .map(|expr| expr.eval(&self.ctx, row).map_err(ExecError::from))
+            .map(|expr| expr.eval_reusing(&self.ctx, row).map_err(ExecError::from))
             .collect()
     }
 
@@ -3273,6 +3273,41 @@ impl<C: HashAggContext> HashAggExec<C> {
         }
     }
 
+    fn prepare_computed_count(&self, chunk: &Chunk) -> Vec<bool> {
+        let [AggFunc {
+            kind: AggKind::Count,
+            arg: Some(expression),
+            distinct: false,
+            extra_args,
+            order_by,
+            ..
+        }] = self.agg_funcs.as_slice()
+        else {
+            return Vec::new();
+        };
+        let mut not_null = Vec::new();
+        if !matches!(self.input_modes.as_slice(), [AggInputMode::Expression])
+            || !extra_args.is_empty()
+            || !order_by.is_empty()
+        {
+            return not_null;
+        }
+        // A row whose group does not exist yet can be deferred by a spill
+        // starting midway through the chunk. Only batch rows already known
+        // to belong to this round.
+        if self.group_by.is_empty()
+            || self
+                .group_key_buffer
+                .encoded
+                .iter()
+                .take(chunk.num_rows())
+                .all(|key| self.groups.get(key).is_some())
+        {
+            expression.append_quiet_int_presence(&self.ctx, chunk, &mut not_null);
+        }
+        not_null
+    }
+
     /// Go's inner loop of `execute`: fold `chunk`'s rows into their groups,
     /// returning the bytes the group table grew by and the rows this round
     /// refused to open a group for (Go's `sel`).
@@ -3281,6 +3316,7 @@ impl<C: HashAggContext> HashAggExec<C> {
         debug_assert_eq!(rows, chunk.num_rows());
         self.group_key_buffer
             .prepare(&self.ctx, chunk, &self.group_by, self.output_group_keys)?;
+        let computed_count = self.prepare_computed_count(chunk);
         let inputs = input::bind_inputs(&self.input_modes, chunk);
         let mut state_memory_delta = 0;
         for r in 0..rows {
@@ -3322,6 +3358,11 @@ impl<C: HashAggContext> HashAggExec<C> {
                     idx
                 }
             };
+            if let Some(&not_null) = computed_count.get(r) {
+                if self.ordered[idx].update_count_fast(not_null) {
+                    continue;
+                }
+            }
             let width = self.agg_funcs.len();
             let delta = input::update_row(
                 &inputs,
@@ -3577,7 +3618,7 @@ fn eval_agg_input<C: Columns>(
         ) {
         (
             match &f.arg {
-                Some(expr) => Some(expr.eval(ctx, row)?),
+                Some(expr) => Some(expr.eval_reusing(ctx, row)?),
                 None => None,
             },
             None,
@@ -3586,11 +3627,11 @@ fn eval_agg_input<C: Columns>(
         // JSON_OBJECTAGG keeps key/value separate. Final-mode AVG uses the
         // same representation for Go's `(partial count, partial sum)` pair.
         for expr in &f.extra_args {
-            extra_values.push(expr.eval(ctx, row)?);
+            extra_values.push(expr.eval_reusing(ctx, row)?);
         }
         (
             match &f.arg {
-                Some(expr) => Some(expr.eval(ctx, row)?),
+                Some(expr) => Some(expr.eval_reusing(ctx, row)?),
                 None => None,
             },
             None,
@@ -3607,7 +3648,7 @@ fn eval_agg_input<C: Columns>(
         // and manufacture a false collision or split.
         let mut tuple_key = Some(Vec::new());
         for expr in f.arg.iter().chain(f.extra_args.iter()) {
-            let datum = expr.eval(ctx, row)?;
+            let datum = expr.eval_reusing(ctx, row)?;
             if datum == Datum::Null {
                 tuple_key = None;
                 break;
@@ -3635,7 +3676,7 @@ fn eval_agg_input<C: Columns>(
         // hash input has to match Go byte for byte.
         let mut tuple_key = Some(Vec::new());
         for expr in f.arg.iter().chain(f.extra_args.iter()) {
-            let datum = expr.eval(ctx, row)?;
+            let datum = expr.eval_reusing(ctx, row)?;
             if datum == Datum::Null {
                 tuple_key = None;
                 break;
@@ -3654,7 +3695,7 @@ fn eval_agg_input<C: Columns>(
         let mut concatenated = Some(Vec::new());
         let mut distinct_key = f.distinct.then(Vec::new);
         for expr in f.arg.iter().chain(f.extra_args.iter()) {
-            let datum = expr.eval(ctx, row)?;
+            let datum = expr.eval_reusing(ctx, row)?;
             if datum == Datum::Null {
                 concatenated = None;
                 distinct_key = None;

@@ -339,7 +339,6 @@ pub mod column;
 pub mod constant;
 pub mod constant_fold;
 pub mod constant_propagation;
-mod go_flate;
 pub use constant_fold::{
     derive_constant_null_flag, fold_constant_in_mode,
     fold_constant_in_mode_preserving_warning_casts, ConstantFoldMode,
@@ -347,7 +346,6 @@ pub use constant_fold::{
 mod context;
 pub mod convert_charset;
 pub mod evaluator;
-mod upstream_rpn;
 pub mod expr_collation;
 pub mod expr_util;
 pub mod exprctx;
@@ -369,14 +367,16 @@ pub use new_function::{
     new_function_try_fold, new_function_with_init, scalar_funcs_to_exprs, type_infer_for_null,
     ScalarFunctionCallBack,
 };
-mod ops;
 pub mod distsql_builtin;
+mod ops;
 pub mod pb_predicate;
 pub mod pushdown_catalog;
 pub mod ranger_context;
 mod regexp;
 pub mod rewriter;
 mod row;
+mod rpn;
+pub use rpn::{try_evaluate_batch, RowEvaluationCache, SyntaxExecution};
 pub mod scalar_function;
 pub mod schema;
 pub mod sessionexpr;
@@ -394,7 +394,7 @@ pub use build::{BuildContext, BuiltStringLength, StringLengthFunction, StringLen
 pub use coerce::truthy_of;
 pub use context::{
     BlockEncryptionMode, Columns, CurrentTso, ErrorLevel, EvalError, JsonError, NoColumns,
-    SeededRand, SequenceEvalError, SessionTimeZone, ZonedNoColumns,
+    SequenceEvalError, SessionTimeZone, StatementSeededRandom, ZonedNoColumns,
 };
 pub use grouping::{GroupingFunction, GroupingMetadata, GroupingMetadataError, GroupingMode};
 pub use like::{ilike_match, like_match_with_collation};
@@ -403,59 +403,11 @@ pub use row::{compare_datums, compare_datums_with_collation};
 pub(crate) use tidb_datatype::{Datum, Decimal};
 pub use tidb_util::mathutil::MysqlRng;
 
-use tidb_ast::{CastStyle, Expr, GetFormatSelector, IsTarget};
+use tidb_ast::Expr;
 
-use binary_literal::{bit_literal_value, hex_literal_value};
-
-/// Whether this AST node is a BIT literal, whose `types.DefaultTypeForValue`
-/// arm is the one that does NOT add `mysql.UnsignedFlag` -- the AST tier's
-/// stand-in for the `FieldType` the chunk tier reads instead.
-fn is_signed_binary_literal(expr: &Expr) -> bool {
-    match expr {
-        Expr::Bit(_) => true,
-        // Go drops unary plus while building the expression, so it cannot
-        // change a BIT literal into the unsigned HEX-literal domain.
-        Expr::Paren(inner) | Expr::Unary(tidb_ast::UnaryOp::Plus, inner) => {
-            is_signed_binary_literal(inner)
-        }
-        _ => false,
-    }
-}
-
-/// Go's arithmetic signatures include the source-shaped binary expression in
-/// DOUBLE and DECIMAL overflow errors. The AST evaluator retains that syntax
-/// until this boundary; the values-only operator helper intentionally keeps
-/// returning its datum-level carrier.
-fn ast_binary_overflow_error(
-    operator: tidb_ast::BinaryOp,
-    left: &Expr,
-    right: &Expr,
-    integer_unsigned: bool,
-    error: EvalError,
-) -> EvalError {
-    let value = match error {
-        EvalError::IntOverflow if integer_unsigned => "BIGINT UNSIGNED",
-        EvalError::IntOverflow => "BIGINT",
-        EvalError::FloatOverflow => "DOUBLE",
-        EvalError::DecimalOverflow => "DECIMAL",
-        _ => return error,
-    };
-    let Some(expression) = crate::math_fn::render_ast_binary_expression(operator, left, right)
-    else {
-        return error;
-    };
-    EvalError::DataOutOfRange { value, expression }
-}
-use coerce::{bool_int, coerce_str, coerce_str_bytes};
-use func::{eval_func, eval_in_list, negate_if};
-use like::like_match;
 use ops::{
     effective_div_precision_increment, eval_binary, eval_binary_with_div_precision, eval_unary,
-    logic_and,
 };
-use regexp::regexp_match;
-use row::row_compare;
-use string_fn::{position, trim_value};
 
 /// Evaluates a constant expression, or returns why it is out of scope.
 pub fn eval(expr: &Expr) -> Result<Datum, EvalError> {
@@ -792,509 +744,12 @@ pub fn fit_decimal_column(value: Datum, precision: u32, scale: u32) -> Option<Da
     }
 }
 
-/// Evaluates an expression, resolving column references via `cols`.
+/// Binds a syntax expression against the declared host columns and evaluates
+/// it in the common expression program.
 pub fn eval_in(expr: &Expr, cols: &dyn Columns) -> Result<Datum, EvalError> {
-    match expr {
-        Expr::Int(s) => s
-            .parse::<u64>()
-            .map(|i| match i64::try_from(i) {
-                Ok(i) => Datum::Int(i),
-                Err(_) => Datum::UInt(i),
-            })
-            .map_err(|_| EvalError::IntOverflow),
-        Expr::Bool(b) => Ok(Datum::Int(i64::from(*b))),
-        Expr::String(s) => Ok(Datum::new_string(s.clone())),
-        Expr::CharsetString { charset, value } => {
-            let collation_name = tidb_datatype::get_default_collation_legacy(charset)
-                .map_err(|_| EvalError::Unsupported("unknown character introducer"))?;
-            let collation = tidb_datatype::Collation::from_name(&collation_name)
-                .ok_or(EvalError::Unsupported("unknown character introducer"))?;
-            Ok(if collation == tidb_datatype::Collation::Binary {
-                Datum::Bytes(value.as_bytes().to_vec())
-            } else {
-                Datum::new_collation_string(value.as_bytes().to_vec(), collation)
-            })
-        }
-        Expr::Decimal(s) => Ok(Datum::Decimal(Decimal::from_literal(s))),
-        // Always finite: the parser itself rejects a literal that would
-        // overflow to infinity (confirmed via `godump restore` — real
-        // TiDB rejects `1e400` at PARSE time, not eval time), so no
-        // finiteness check is needed here.
-        Expr::Float(f) => Ok(Datum::Real(*f)),
-        Expr::Hex(digits) => hex_literal_value(digits),
-        Expr::Bit(digits) => bit_literal_value(digits),
-        // Go's charset introducer annotates the ValueExpr FieldType while the
-        // Datum remains the same KindBinaryLiteral/KindMysqlBit payload. The
-        // value-tier evaluator therefore delegates to the introduced leaf;
-        // the chunk rewriter below retains the type annotation separately.
-        Expr::CharsetBinary { value, .. } => eval_in(value, cols),
-        Expr::Null => Ok(Datum::Null),
-        Expr::Column(path) => cols
-            .get(path)
-            .ok_or(EvalError::Unsupported("unknown column")),
-        // Reading an unset (or session-less) user variable is `NULL`,
-        // never an error — the opposite convention from `Expr::SysVar`
-        // just below, whose UNRECOGNIZED-name case is a genuine
-        // `Unsupported` (see `Columns::get_uservar`'s own doc for why the
-        // two differ). `SET @x = ...` (assignment) is a separate
-        // top-level `tidb_ast::SessionStmt::SetUserVar` statement, not an
-        // expression form reachable from here.
-        Expr::UserVar(name) => Ok(cols.get_uservar(name).unwrap_or(Datum::Null)),
-        // The inline `@x := expr` ASSIGNMENT EXPRESSION (usable
-        // mid-`SELECT`, e.g. the classic MySQL running-total idiom
-        // `SELECT @rn := @rn + 1 FROM t`, confirmed via `gorun`):
-        // evaluates `value`, writes it through `Columns::set_uservar`
-        // (a SIDE EFFECT — see that method's own doc for the interior-
-        // mutability architecture this relies on), and evaluates to the
-        // SAME assigned value, matching `gorun`'s own observed
-        // `SELECT @i := 1` => `1`. This function's own CALLER
-        // (`tidb_exec::aggregate::Database::project_row`'s row-wise
-        // select-list loop, evaluated left to right per row) is what
-        // gives a LATER select-list item visibility into an EARLIER
-        // one's assignment within the same row, and one row's
-        // assignment visibility into the next — this function itself
-        // has no notion of "row" or "order," it just performs the one
-        // write it's asked for.
-        Expr::Assign { name, value } => {
-            let v = eval_in(value, cols)?;
-            // Go's scalar `SETVAR` signatures return NULL without touching
-            // the existing variable when their RHS is NULL
-            // (`builtin_other.go`'s `builtinSet*VarSig`). This is distinct
-            // from top-level `SET @x = NULL`, whose executor semantics clear
-            // the session value, so keep the boundary here rather than
-            // teaching `Columns::set_uservar` a statement-kind flag.
-            if v != Datum::Null {
-                cols.set_uservar(name, v.clone());
-            }
-            Ok(v)
-        }
-        Expr::SysVar { scope, name } => cols
-            .sysvar(*scope, name)
-            .ok_or(EvalError::Unsupported("unknown system variable")),
-        Expr::Paren(e) => eval_in(e, cols),
-        // Go's parser does not build an operator node for unary plus: it
-        // returns the operand unchanged. Delegating here preserves the
-        // operand's exact Datum kind as well as its value (notably signed BIT
-        // literals, which the generic numeric-unary path would promote to a
-        // Decimal before surrounding arithmetic can inspect the type).
-        Expr::Unary(tidb_ast::UnaryOp::Plus, e) => eval_in(e, cols),
-        Expr::Unary(op, e) => eval_unary(*op, eval_in(e, cols)?, ops::Operand::Literal, cols),
-        // `ROW(...) <op> ROW(...)` — see `crate::row`'s own doc for
-        // why this is a special case rather than a new `Datum`
-        // variant: real MySQL/TiDB restricts a bare `ROW(...)` to
-        // ONLY appear as a comparison/`IN` operand, so `eval_in` never
-        // needs to evaluate one standalone.
-        Expr::Binary(op, l, r)
-            if matches!((l.as_ref(), r.as_ref()), (Expr::Row(_), Expr::Row(_))) =>
-        {
-            let (Expr::Row(lv), Expr::Row(rv)) = (l.as_ref(), r.as_ref()) else {
-                unreachable!("checked above")
-            };
-            let lv: Vec<Datum> = lv
-                .iter()
-                .map(|e| eval_in(e, cols))
-                .collect::<Result<_, _>>()?;
-            let rv: Vec<Datum> = rv
-                .iter()
-                .map(|e| eval_in(e, cols))
-                .collect::<Result<_, _>>()?;
-            row_compare(*op, &lv, &rv)
-        }
-        Expr::Binary(op, l, r) => {
-            // Go's `DefaultTypeForValue` gives a BIT literal a SIGNED field
-            // type and a HEX one an unsigned one, and the arithmetic classes
-            // are the only place that difference is reachable. This tier has
-            // no `FieldType` at all, so the AST node itself is the type
-            // fact -- see `binary_literal::cast_signed_literal_operands`.
-            let signed = [is_signed_binary_literal(l), is_signed_binary_literal(r)];
-            let (left, right) = binary_literal::cast_signed_literal_operands(
-                *op,
-                eval_in(l, cols)?,
-                eval_in(r, cols)?,
-                signed,
-            );
-            let unsigned_result =
-                !matches!(*op, tidb_ast::BinaryOp::Minus) || !cols.no_unsigned_subtraction();
-            let integer_unsigned = unsigned_result
-                && (matches!(&left, Datum::UInt(_)) || matches!(&right, Datum::UInt(_)));
-            eval_binary_with_div_precision(*op, left, right, cols.div_precision_increment(), cols)
-                .map_err(|error| ast_binary_overflow_error(*op, l, r, integer_unsigned, error))
-        }
-        // A constant `RAND(N)` has state per function occurrence for the
-        // whole statement. The function node's address is stable while this
-        // parsed statement is evaluated; an argument-slice view is not,
-        // because temporary views can be reused for siblings.
-        Expr::Func { name, args, .. } => {
-            eval_func(name, args, cols, Some(expr as *const Expr as usize))
-        }
-        // EXTRACT owns its datetime/duration signature and signed unit value.
-        Expr::Extract { unit, value } => {
-            time_fn::extract::extract(unit, &eval_in(value, cols)?, None, cols)
-        }
-        // `TIMESTAMPADD(unit, n, datetime)`'s unit is a dedicated AST field
-        // rather than an argument expression (see
-        // `tidb_ast::Expr::TimestampAdd`), and Go's
-        // `builtinTimestampAddSig.evalString` reads it as its first VALUE --
-        // so the same implementation the chunk tier reaches through the
-        // rewriter runs here with the unit prepended as a string datum.
-        Expr::TimestampAdd {
-            unit,
-            interval,
-            expr,
-        } => {
-            let vals = vec![
-                Datum::new_string(unit.clone()),
-                eval_in(interval, cols)?,
-                eval_in(expr, cols)?,
-            ];
-            // This arm builds its own argument list, so it must impose the
-            // declared argument eval types itself: Go's
-            // `timestampAddFunctionClass` declares
-            // `types.ETString, types.ETString, types.ETReal, types.ETDatetime`
-            // (`builtin_time.go:6551`), and the signature body is entitled to
-            // a DATETIME third argument either way it is reached.
-            let vals = arg_eval_type::wrap_datetime_args("TIMESTAMPADD", vals, &[], cols)?;
-            time_fn::add_sub::timestamp_add(&vals, cols)
-        }
-        // `GET_FORMAT(<type>, location)` — the type is an AST selector (the
-        // parser already collapsed `TIMESTAMP` into `Datetime`), so only the
-        // location is evaluated; a NULL location yields NULL. Port of
-        // `builtinGetFormatSig.evalString` + `getFormat`.
-        Expr::GetFormat { selector, expr } => match coerce_str(&eval_in(expr, cols)?)? {
-            None => Ok(Datum::Null),
-            Some(location) => {
-                let format_type = match selector {
-                    GetFormatSelector::Date => "DATE",
-                    GetFormatSelector::Time => "TIME",
-                    GetFormatSelector::Datetime => "DATETIME",
-                };
-                Ok(Datum::new_string(time_fn::get_format(
-                    format_type,
-                    &location,
-                )))
-            }
-        },
-        // `CAST`/`CONVERT(expr, type)` share one evaluator (see
-        // `tidb_ast::Expr::Cast`'s own doc for why they share one AST node);
-        // `NULL` maps to `NULL` for every target type, so it's handled once
-        // here rather than in each of `cast::eval_cast`'s own arms.
-        //
-        // The three ODBC-style typed-literal styles (`DATE`/`TIME`/
-        // `TIMESTAMP 'literal'`) are checked FIRST and always
-        // `Unsupported`, deliberately NOT falling through to
-        // `cast::eval_cast` — confirmed via `goeval`/`gorun` that real
-        // TiDB's own evaluation for these genuinely diverges from
-        // `CAST(... AS DATE)`'s own (never-fails: a warning plus `NULL`,
-        // or the value itself when the statement's flags admit it)
-        // behavior: an invalid date string is a hard query ERROR for the
-        // typed-literal form (`SELECT DATE '2007-10-00'` fails outright)
-        // where the cast of that same text answers `2007-10-00` under
-        // every mode — reusing `cast::eval_cast` here would silently
-        // produce the WRONG value for exactly the invalid-date inputs
-        // this syntax is most often used to test, not just an incomplete
-        // one. See `tidb_ast::CastStyle::DateLiteral`'s own doc.
-        Expr::Cast(cast)
-            if matches!(
-                cast.style,
-                CastStyle::DateLiteral | CastStyle::TimeLiteral | CastStyle::TimestampLiteral
-            ) =>
-        {
-            Err(EvalError::Unsupported("date/time/timestamp literal"))
-        }
-        // `AS type ARRAY` (a JSON multi-valued-index type modifier — see
-        // `tidb_ast::CastExpr::array`'s own doc) is ALWAYS `Unsupported`,
-        // unconditionally — this crate has no JSON value domain at all,
-        // the SAME boundary `CastType::Json` already has. Covers
-        // `CastStyle::JsonSumCrc32` too, which always sets `array: true`.
-        Expr::Cast(cast) if cast.array => Err(EvalError::Unsupported("ARRAY cast type")),
-        Expr::Cast(cast) => match eval_in(&cast.expr, cols)? {
-            Datum::Null => Ok(Datum::Null),
-            // The AST tier carries no static types, so no source type is
-            // available; every `CAST` it evaluates routes by datum kind.
-            v => cast::eval_cast(&cast.cast_type, v, None, cols),
-        },
-        // `CONVERT(expr USING charset)` evaluates through ETString, then
-        // transcodes according to the argument's declared charset. Literal
-        // introducers are part of that declared type: a plain hex/bit literal
-        // is binary, while `_utf8 0x...` is UTF-8. Preserve that distinction
-        // here instead of reconstructing every value as a UTF-8 string.
-        Expr::ConvertUsing { expr, charset } => match eval_in(expr, cols)? {
-            Datum::Null => Ok(Datum::Null),
-            value => {
-                let (string_value, source) = if let Some(source_charset) = literal_charset(expr) {
-                    let source_charset = tidb_datatype::Charset::from_name(source_charset)
-                        .ok_or(EvalError::Unsupported("unknown character introducer"))?;
-                    let collation = source_charset.default_collation();
-                    let mut source =
-                        tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
-                    source.set_charset_name(source_charset.name());
-                    source.set_collation_name(collation.name());
-                    (
-                        Datum::new_collation_string(value.go_bytes().to_vec(), collation),
-                        source,
-                    )
-                } else {
-                    let text = value
-                        .sql_string()
-                        .map_err(|_| EvalError::Unsupported("invalid UTF-8 string coercion"))?;
-                    let collation = value
-                        .collation()
-                        .unwrap_or(tidb_datatype::Collation::DEFAULT);
-                    (
-                        Datum::new_collation_string(text.into_bytes(), collation),
-                        tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString)
-                            .with_collation(collation),
-                    )
-                };
-                convert_charset::convert_using(
-                    &string_value,
-                    &source,
-                    &charset.to_ascii_lowercase(),
-                )
-            }
-        },
-        // `COLLATE` doesn't change the value at all (unlike `CONVERT ...
-        // USING`, which stringifies) — it only affects comparison/sort
-        // behavior, not modelled here (see `tidb_ast::Expr::Collate`'s own
-        // doc). A NON-string operand is a genuine error in real TiDB
-        // (confirmed via `goeval`: `1 COLLATE utf8mb4_bin` errors), but
-        // that type restriction is a KNOWN, deliberately unmodelled
-        // boundary here — every real-world use found in the corpus that
-        // surfaced this feature collates a string, so this stays a plain
-        // passthrough rather than adding a check nothing exercises.
-        Expr::Collate { expr, .. } => eval_in(expr, cols),
-        Expr::In { expr, list, not } => eval_in_list(expr, list, *not, cols),
-        Expr::Between {
-            expr,
-            low,
-            high,
-            not,
-        } => {
-            // `x BETWEEN lo AND hi` is `x >= lo AND x <= hi`, in three-valued
-            // logic; `NOT BETWEEN` negates the result (NULL stays NULL).
-            let v = eval_in(expr, cols)?;
-            let ge = crate::ops::eval_binary_in(
-                tidb_ast::BinaryOp::Ge,
-                v.clone(),
-                eval_in(low, cols)?,
-                cols,
-            )?;
-            let le =
-                crate::ops::eval_binary_in(tidb_ast::BinaryOp::Le, v, eval_in(high, cols)?, cols)?;
-            Ok(negate_if(logic_and(ge, le, cols)?, *not))
-        }
-        Expr::Is { expr, target, not } => {
-            // IS is always TRUE/FALSE (never NULL): it tests a definite property.
-            let v = eval_in(expr, cols)?;
-            let holds = match target {
-                IsTarget::Null | IsTarget::Unknown => v == Datum::Null,
-                IsTarget::True => truthy_of(&v)? == Some(true),
-                IsTarget::False => truthy_of(&v)? == Some(false),
-            };
-            Ok(bool_int(holds ^ not))
-        }
-        Expr::Like {
-            expr,
-            pattern,
-            not,
-            ilike,
-            escape,
-        } => {
-            // Case-sensitive (utf8mb4_bin) LIKE; either NULL operand yields
-            // NULL. A non-string operand (on EITHER side, confirmed via
-            // `gorun`: `'2' LIKE 2` is TRUE) is implicitly stringified the
-            // SAME way `Datum::sql_string` already renders it — including
-            // a `DECIMAL`'s declared scale, confirmed via `gorun`: `12.50
-            // LIKE '12.5'` is FALSE but `12.50 LIKE '12.50'` is TRUE,
-            // matching how `Decimal`'s own `Display` already keeps
-            // trailing zeros rather than simplifying them away. `escape`
-            // passes straight through to `like_match` — see
-            // `tidb_ast::Expr::Like::escape`'s own doc for its exact
-            // `None`/`Some(0)`/`Some(byte)` meaning, confirmed via
-            // `gorun` for a custom single-byte escape character.
-            match (eval_in(expr, cols)?, eval_in(pattern, cols)?) {
-                (Datum::Null, _) | (_, Datum::Null) => Ok(Datum::Null),
-                (v, p) => {
-                    let value = v.sql_bytes().map_err(|_| {
-                        EvalError::Unsupported("invalid LIKE operand scalar domain")
-                    })?;
-                    let pattern = p.sql_bytes().map_err(|_| {
-                        EvalError::Unsupported("invalid LIKE pattern scalar domain")
-                    })?;
-                    let matched = if *ilike {
-                        ilike_match(value, pattern, escape.unwrap_or(b'\\'))
-                    } else {
-                        like_match(value, pattern, *escape)
-                    };
-                    Ok(bool_int(matched ^ not))
-                }
-            }
-        }
-        // Case-sensitive (utf8mb4_bin) `[NOT] REGEXP`/`RLIKE`, the SAME
-        // NULL-propagation and non-string-operand-coercion rules
-        // `Expr::Like` just above already established (confirmed via
-        // `gorun`: `5 REGEXP '5'` is `TRUE`) — see `crate::regexp::
-        // regexp_match`'s own doc for the empty-pattern/malformed-
-        // pattern error rules.
-        Expr::Regexp { expr, pattern, not } => {
-            match (eval_in(expr, cols)?, eval_in(pattern, cols)?) {
-                (Datum::Null, _) | (_, Datum::Null) => Ok(Datum::Null),
-                (v, p) => {
-                    let value = v
-                        .sql_string()
-                        .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP operand"))?;
-                    let pattern = p
-                        .sql_string()
-                        .map_err(|_| EvalError::Unsupported("invalid UTF-8 REGEXP pattern"))?;
-                    Ok(bool_int(regexp_match(&value, &pattern)? ^ not))
-                }
-            }
-        }
-        // Go `weightStringFunctionClass`: a NUMERIC argument builds
-        // `builtinWeightStringNullSig`, which is always NULL. Go reads that
-        // off the argument's FieldType while BUILDING; this tier has only the
-        // evaluated value, whose kind is the same fact for every argument a
-        // constant expression can produce. The collation likewise comes from
-        // the VALUE here (`Datum::String` carries one) rather than from a
-        // static type -- the chunk tier reads the real derived one.
-        Expr::WeightString { expr, as_type } => {
-            let value = eval_in(expr, cols)?;
-            if matches!(
-                value,
-                Datum::Int(_)
-                    | Datum::UInt(_)
-                    | Datum::Real(_)
-                    | Datum::Float32(_)
-                    | Datum::Decimal(_)
-            ) {
-                return Ok(Datum::Null);
-            }
-            let collation = match &value {
-                Datum::String(text) => text.collation(),
-                Datum::Bytes(_) => tidb_datatype::Collation::Binary,
-                _ => crate::ops::DERIVATION_FREE_COLLATION,
-            };
-            string_packet::weight_string(
-                &value,
-                as_type.map(|(kind, length)| {
-                    (
-                        kind == tidb_ast::WeightStringType::Binary,
-                        i64::try_from(length).unwrap_or(i64::MAX),
-                    )
-                }),
-                collation,
-                cols,
-            )
-        }
-        Expr::Position { substr, str } => Ok(position(
-            coerce_str(&eval_in(substr, cols)?)?,
-            coerce_str(&eval_in(str, cols)?)?,
-        )),
-        Expr::Trim {
-            expr,
-            remstr,
-            direction,
-        } => {
-            // A bare `TRIM(expr)` (no `remstr`, no `direction`) defaults
-            // to stripping spaces from BOTH ends — see
-            // `tidb_ast::Expr::Trim::remstr`'s own doc for why every
-            // OTHER combination already has a real `remstr` (a `NULL`
-            // remstr's own explicit `NULL` restores un-omitted, so it
-            // still reaches here as a real evaluated expression, not a
-            // magic `None`).
-            let str_value = eval_in(expr, cols)?;
-            let binary = matches!(str_value, Datum::Bytes(_));
-            let str = coerce_str_bytes(&str_value)?;
-            let remstr = match remstr {
-                Some(r) => coerce_str_bytes(&eval_in(r, cols)?)?,
-                None => Some(b" ".to_vec()),
-            };
-            Ok(trim_value(
-                str,
-                remstr,
-                direction.unwrap_or(tidb_ast::TrimDirection::Both),
-                binary,
-            ))
-        }
-        Expr::Case {
-            value,
-            when_clauses,
-            else_clause,
-        } => {
-            // LAZY: only the WHEN conditions up to (and including) the
-            // first match, plus that one branch's own result, are ever
-            // evaluated — matching real MySQL's short-circuit CASE, a
-            // load-bearing idiom for guarding against errors (confirmed
-            // via `gorun`: `CASE WHEN x != 0 THEN 1/x ELSE NULL END`
-            // never raises division-by-zero for `x = 0`). Real MySQL
-            // additionally infers CASE's overall result type from EVERY
-            // branch statically (even ones never evaluated — confirmed
-            // via `gorun`: the type promotes even when the promoting
-            // branch is an unreached `1/0`), which cannot be replicated
-            // without a genuine type-inference pass; deliberately NOT
-            // attempted here — the result is simply whichever branch was
-            // taken, in its own natural type, matching the common case
-            // where every branch already shares one type.
-            let taken = match value {
-                // Simple form: `value = cond`, ordinary `=` (not `<=>`) —
-                // a NULL `value` or `cond` never matches, matching `=`'s
-                // own propagation (confirmed via `goeval`: `CASE NULL
-                // WHEN NULL THEN 1 ELSE 2 END` is `2`, not `1`).
-                Some(value_expr) => {
-                    let v = eval_in(value_expr, cols)?;
-                    let mut taken = None;
-                    for (cond, result) in when_clauses {
-                        let w = eval_in(cond, cols)?;
-                        if crate::ops::eval_binary_in(tidb_ast::BinaryOp::Eq, v.clone(), w, cols)?
-                            == Datum::Int(1)
-                        {
-                            taken = Some(result);
-                            break;
-                        }
-                    }
-                    taken
-                }
-                // Searched form: each `cond` is truthiness-tested
-                // directly, the same three-valued logic `IF`/`WHERE`
-                // already use.
-                None => {
-                    let mut taken = None;
-                    for (cond, result) in when_clauses {
-                        if truthy_of(&eval_in(cond, cols)?)? == Some(true) {
-                            taken = Some(result);
-                            break;
-                        }
-                    }
-                    taken
-                }
-            };
-            match taken {
-                Some(result) => eval_in(result, cols),
-                None => match else_clause {
-                    Some(e) => eval_in(e, cols),
-                    None => Ok(Datum::Null),
-                },
-            }
-        }
-        _ => Err(EvalError::Unsupported("unsupported expression")),
-    }
-}
-
-/// Returns the parser-owned charset of a literal string value.
-///
-/// Go's `DefaultTypeForValue` makes bare hex/bit literals binary strings;
-/// `parseCharsetIntroducer` overrides that type without changing the datum.
-/// Parentheses preserve the type. Other expression types need resolver-owned
-/// field metadata and therefore deliberately fall back to their evaluated
-/// datum above.
-fn literal_charset(expr: &Expr) -> Option<&str> {
-    match expr {
-        Expr::Hex(_) | Expr::Bit(_) => Some("binary"),
-        Expr::String(_) => Some("utf8mb4"),
-        Expr::CharsetString { charset, .. } | Expr::CharsetBinary { charset, .. } => Some(charset),
-        Expr::Paren(inner) => literal_charset(inner),
-        _ => None,
-    }
+    crate::rpn::try_evaluate_ast(expr, cols)?.ok_or(EvalError::Unsupported(
+        "expression has no shared declaration",
+    ))
 }
 
 #[cfg(test)]

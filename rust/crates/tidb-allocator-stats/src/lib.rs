@@ -125,7 +125,28 @@ mod profile_config {
     }
 
     #[allow(non_upper_case_globals)]
-    #[export_name = "_rjem_malloc_conf"]
+    #[cfg_attr(
+        all(
+            feature = "unprefixed-jemalloc",
+            not(any(
+                target_os = "android",
+                target_os = "dragonfly",
+                target_vendor = "apple"
+            ))
+        ),
+        export_name = "malloc_conf"
+    )]
+    #[cfg_attr(
+        not(all(
+            feature = "unprefixed-jemalloc",
+            not(any(
+                target_os = "android",
+                target_os = "dragonfly",
+                target_vendor = "apple"
+            ))
+        )),
+        export_name = "_rjem_malloc_conf"
+    )]
     pub static malloc_conf: Option<&'static c_char> = Some(unsafe {
         Pointer {
             // `prof:true` bootstraps the profiling structures (so
@@ -153,7 +174,7 @@ mod profile_config {
             // memory on its own pace; the ordinary dirty-page decay
             // (`dirty_decay_ms`, 10 s) is jemalloc's counterpart, and this
             // setting routes huge allocations through it.
-            bytes: &b"prof:true,prof.active:false,lg_prof_sample:19,oversize_threshold:0\0"[0],
+            bytes: &b"prof:true,prof_active:false,lg_prof_sample:19,oversize_threshold:0\0"[0],
         }
         .chars
     });

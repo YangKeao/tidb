@@ -132,7 +132,7 @@ fn eval_setvar(value: Datum, value_ft: FieldType, store: &VarStore) -> Result<Da
         vec![var_name("f"), const_arg(value, value_ft)],
     );
     let empty = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    function.eval(store, empty.get_row(0))
+    crate::expression::Expression::ScalarFunction(function.clone()).eval(store, empty.get_row(0))
 }
 
 /// GO PORT of `pkg/expression/builtin_other_test.go:84 TestSetVar`.
@@ -164,7 +164,12 @@ fn setvar_stores_session_value_and_returns_it() {
         ],
     );
     let empty = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    assert_eq!(renamed.eval(&store, empty.get_row(0)).unwrap(), text("34"));
+    assert_eq!(
+        crate::expression::Expression::ScalarFunction(renamed)
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
+        text("34")
+    );
     assert_eq!(store.get("g"), Some(text("34")));
 
     // {c, nil}: NULL assignment propagates and must NOT create the variable.
@@ -177,7 +182,9 @@ fn setvar_stores_session_value_and_returns_it() {
         ],
     );
     assert_eq!(
-        null_call.eval(&store, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(null_call)
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
         Datum::Null
     );
     assert_eq!(store.get("h"), None);
@@ -191,7 +198,12 @@ fn setvar_stores_session_value_and_returns_it() {
             const_arg(text("ABC"), FieldType::new(C::VarString)),
         ],
     );
-    assert_eq!(abc.eval(&store, empty.get_row(0)).unwrap(), text("ABC"));
+    assert_eq!(
+        crate::expression::Expression::ScalarFunction(abc)
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
+        text("ABC")
+    );
     assert_eq!(store.get("h"), Some(text("ABC")));
     let def = ScalarFunction::new(
         CiString::new("setvar"),
@@ -201,7 +213,12 @@ fn setvar_stores_session_value_and_returns_it() {
             const_arg(text("dEf"), FieldType::new(C::VarString)),
         ],
     );
-    assert_eq!(def.eval(&store, empty.get_row(0)).unwrap(), text("dEf"));
+    assert_eq!(
+        crate::expression::Expression::ScalarFunction(def)
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
+        text("dEf")
+    );
     assert_eq!(store.get("h"), Some(text("dEf")));
 
     // {d, int64(3)}: the int sig stores an Int datum.
@@ -214,7 +231,9 @@ fn setvar_stores_session_value_and_returns_it() {
         ],
     );
     assert_eq!(
-        int_sig.eval(&store, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(int_sig)
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
         Datum::Int(3)
     );
     assert_eq!(store.get("i"), Some(Datum::Int(3)));
@@ -229,7 +248,9 @@ fn setvar_stores_session_value_and_returns_it() {
         ],
     );
     assert_eq!(
-        real_sig.eval(&store, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(real_sig)
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
         Datum::Real(2.5)
     );
     assert_eq!(store.get("j"), Some(Datum::Real(2.5)));
@@ -245,7 +266,9 @@ fn setvar_stores_session_value_and_returns_it() {
         ],
     );
     assert_eq!(
-        decimal_sig.eval(&store, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(decimal_sig)
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
         Datum::Decimal(dec.clone())
     );
     assert_eq!(store.get("k"), Some(Datum::Decimal(dec)));
@@ -263,7 +286,9 @@ fn setvar_stores_session_value_and_returns_it() {
         ],
     );
     assert_eq!(
-        time_sig.eval(&store, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(time_sig)
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
         Datum::Time(time)
     );
     assert_eq!(store.get("l"), Some(Datum::Time(time)));
@@ -347,7 +372,7 @@ fn eval_getvar(kind: &str, name: &str, ctx: &VarStore) -> Result<Datum, EvalErro
         vec![var_name(name)],
     );
     let empty = tidb_chunk::chunk::Chunk::new_empty(&[]);
-    function.eval(ctx, empty.get_row(0))
+    crate::expression::Expression::ScalarFunction(function.clone()).eval(ctx, empty.get_row(0))
 }
 
 /// GO PORT of `pkg/expression/builtin_other_test.go:173 TestTypeConversion`.
@@ -398,7 +423,7 @@ fn setvar_from_column_snapshots_the_row_value() {
     };
 
     let first = build_chunk("a");
-    let assigned = assign
+    let assigned = crate::expression::Expression::ScalarFunction(assign.clone())
         .eval(&store, first.get_row(0))
         .expect("assignment must evaluate");
     assert_eq!(assigned, Datum::new_string("a".to_owned()));
@@ -438,14 +463,18 @@ fn values_function_reads_the_current_insert_row() {
     let store = InsertValuesStore::default();
     let empty = tidb_chunk::chunk::Chunk::new_empty(&[]);
     assert_eq!(
-        function.eval(&store, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(function.clone())
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
         Datum::Null
     );
 
     // A non-empty row whose offset is outside the insert field list is the
     // exact Go runtime error, rather than a silent NULL.
     store.set(vec![Datum::new_string("1".to_owned())]);
-    let error = function.eval(&store, empty.get_row(0)).unwrap_err();
+    let error = crate::expression::Expression::ScalarFunction(function.clone())
+        .eval(&store, empty.get_row(0))
+        .unwrap_err();
     assert!(
         matches!(error, EvalError::IncorrectArguments(ref message) if message.starts_with("Session current insert values len 1")),
         "unexpected VALUES() error: {error:?}"
@@ -458,12 +487,16 @@ fn values_function_reads_the_current_insert_row() {
         Datum::new_string("2".to_owned()),
     ]);
     assert_eq!(
-        function.eval(&store, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(function.clone())
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
         Datum::new_string("2".to_owned())
     );
     store.set(vec![Datum::new_string("1".to_owned()), Datum::Null]);
     assert_eq!(
-        function.eval(&store, empty.get_row(0)).unwrap(),
+        crate::expression::Expression::ScalarFunction(function.clone())
+            .eval(&store, empty.get_row(0))
+            .unwrap(),
         Datum::Null
     );
 
@@ -475,7 +508,7 @@ fn values_function_reads_the_current_insert_row() {
         vec![const_arg(Datum::Int(1), FieldType::new(C::LongLong))],
     );
     assert!(matches!(
-        malformed.eval(&store, empty.get_row(0)),
+        crate::expression::Expression::ScalarFunction(malformed).eval(&store, empty.get_row(0)),
         Err(EvalError::WrongParameterCount("values"))
     ));
 }
@@ -502,7 +535,9 @@ fn getparam_function_evaluation_matches_plan_cache_values() {
             vec![const_arg(Datum::Int(index), FieldType::new(C::LongLong))],
         );
         assert_eq!(
-            function.eval(&ctx, empty.get_row(0)).unwrap(),
+            crate::expression::Expression::ScalarFunction(function.clone())
+                .eval(&ctx, empty.get_row(0))
+                .unwrap(),
             Datum::new_string(expected.to_owned())
         );
     }
@@ -513,7 +548,7 @@ fn getparam_function_evaluation_matches_plan_cache_values() {
         vec![const_arg(Datum::Int(2), FieldType::new(C::LongLong))],
     );
     assert_eq!(
-        out_of_range.eval(&ctx, empty.get_row(0)),
+        crate::expression::Expression::ScalarFunction(out_of_range).eval(&ctx, empty.get_row(0)),
         Err(EvalError::ParamIndexExceedParamCounts)
     );
 
@@ -525,16 +560,9 @@ fn getparam_function_evaluation_matches_plan_cache_values() {
         origin_position: 0,
     };
     assert_eq!(
-        crate::func::eval_func("GETPARAM", &ast_args(&ast), &ctx, None),
+        crate::eval_in(&ast, &ctx),
         Ok(Datum::new_string("abc".to_owned()))
     );
-}
-
-fn ast_args(expr: &tidb_ast::Expr) -> &[tidb_ast::Expr] {
-    let tidb_ast::Expr::Func { args, .. } = expr else {
-        unreachable!("test helper receives a function")
-    };
-    args
 }
 
 /// GO PORT of `pkg/expression/builtin_other_vec_test.go:58
@@ -572,7 +600,13 @@ fn vectorized_builtin_other_func_representable_arms() {
             ft.clone(),
             vec![var_name(name), const_arg(value.clone(), ft)],
         );
-        assert_eq!(sig.eval(&store, empty.get_row(0)).unwrap(), value, "{name}");
+        assert_eq!(
+            crate::expression::Expression::ScalarFunction(sig)
+                .eval(&store, empty.get_row(0))
+                .unwrap(),
+            value,
+            "{name}"
+        );
         assert_eq!(store.get(name), Some(value), "{name}");
     }
 

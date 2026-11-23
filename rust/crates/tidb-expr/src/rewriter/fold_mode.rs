@@ -45,6 +45,10 @@ impl<'a> FoldModeResolver<'a> {
 }
 
 impl ColumnResolver for FoldModeResolver<'_> {
+    fn rand_call_occurrence(&self, syntax: &tidb_ast::Expr) -> Option<usize> {
+        self.base.rand_call_occurrence(syntax)
+    }
+
     fn rewrite_grouping(&self, args: &[Expression]) -> Result<Expression, crate::EvalError> {
         self.base.rewrite_grouping(args)
     }

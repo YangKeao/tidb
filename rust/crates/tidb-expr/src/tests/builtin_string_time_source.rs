@@ -170,8 +170,12 @@ fn eval_scalar<C: Columns>(
     args: Vec<Expression>,
     ctx: &C,
 ) -> Result<Datum, EvalError> {
-    ScalarFunction::new(CiString::new(name), ret_type, args)
-        .eval(ctx, tidb_chunk::row::Row::empty())
+    crate::expression::Expression::ScalarFunction(ScalarFunction::new(
+        CiString::new(name),
+        ret_type,
+        args,
+    ))
+    .eval(ctx, tidb_chunk::row::Row::empty())
 }
 
 /// Rewrites one SELECT-field expression through the chunk tier.
@@ -907,9 +911,18 @@ fn test_to_base64_gbk_session_rows() {
         rewritten.eval(&GbkSession, chunk.get_row(0)).unwrap()
     };
 
-    assert_eq!(eval("abc"), Datum::new_string("YWJj"));
-    assert_eq!(eval("一二三"), Datum::new_string("0ru2/sj9"));
-    assert_eq!(eval("一二三!"), Datum::new_string("0ru2/sj9IQ=="));
+    assert_eq!(
+        eval("abc"),
+        Datum::new_collation_string("YWJj", tidb_datatype::Collation::GbkBin)
+    );
+    assert_eq!(
+        eval("一二三"),
+        Datum::new_collation_string("0ru2/sj9", tidb_datatype::Collation::GbkBin)
+    );
+    assert_eq!(
+        eval("一二三!"),
+        Datum::new_collation_string("0ru2/sj9IQ==", tidb_datatype::Collation::GbkBin)
+    );
 }
 
 /// Go `pkg/expression/builtin_string_test.go:2650 TestToBase64Sig`. The
@@ -1941,7 +1954,7 @@ fn test_clock_parts_and_invalid_time_warning() {
         // TIME keeps the duration PART only, so a datetime-prefixed input
         // loses its date side in both tiers.
         let dur_part = input.rsplit(' ').next().expect("nonempty");
-        assert_eq!(e(&format!("time({text})")), format!("STR:{dur_part}"));
+        assert_eq!(e(&format!("time({text})")), format!("DUR:{dur_part}"));
         assert_eq!(chunk_e(&format!("time({text})")), format!("DUR:{dur_part}"));
     }
     for func in ["hour", "minute", "second", "microsecond", "time"] {
@@ -2005,7 +2018,7 @@ fn test_time_values_and_result_type() {
             panic!("{sql} must rewrite to a scalar function");
         }
         assert_eq!(chunk_e(&sql), format!("DUR:{want}"), "{sql}");
-        assert_eq!(e(&sql), format!("STR:{want}"), "{sql}");
+        assert_eq!(e(&sql), format!("DUR:{want}"), "{sql}");
     }
 }
 
@@ -2206,12 +2219,29 @@ fn test_add_time_sig_value_tables() {
     // (1292) warning in master's accumulation bookkeeping.
     let null_at = |left: Datum, right: Datum| {
         let local = UtcClockCtx::new(1234);
+        let field = |value: &Datum| {
+            FieldType::new(match value {
+                Datum::Duration(_) => FieldTypeCode::Duration,
+                Datum::Time(time) if time.kind() == tidb_datatype::TimeType::Date => {
+                    FieldTypeCode::Date
+                }
+                Datum::Time(_) => FieldTypeCode::Datetime,
+                _ => FieldTypeCode::VarString,
+            })
+        };
+        let left_type = field(&left);
+        let right_type = field(&right);
+        let ret = if left_type.code() == FieldTypeCode::Date {
+            FieldType::new(FieldTypeCode::VarString)
+        } else {
+            left_type.clone()
+        };
         let got = eval_scalar(
             "ADDTIME",
-            FieldType::new(FieldTypeCode::VarString),
+            ret,
             vec![
-                const_arg_typed(left, FieldType::new(FieldTypeCode::VarString)),
-                const_arg_typed(right, FieldType::new(FieldTypeCode::VarString)),
+                const_arg_typed(left, left_type),
+                const_arg_typed(right, right_type),
             ],
             &local,
         )

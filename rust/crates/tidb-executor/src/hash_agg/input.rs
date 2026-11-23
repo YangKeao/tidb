@@ -585,7 +585,7 @@ impl AggInputMode<ColumnRead<'_>> {
         let input = eval_agg_input(func, ctx, row, &mut *extra_values)?;
         let mut sort_key = Vec::with_capacity(func.order_by.len());
         for (expr, _) in &func.order_by {
-            sort_key.push(expr.eval(ctx, row)?);
+            sort_key.push(expr.eval_reusing(ctx, row)?);
         }
         state.update(input.value, extra_values, sort_key, input.distinct_key)
     }

@@ -21,6 +21,7 @@ mod advisory_get_lock_integration_source;
 mod aggregation_arithmetic_cast_source;
 mod binary_string_signature;
 mod builtin_info_json_math_source;
+pub(crate) use builtin_info_json_math_source::typed_json_predicate;
 mod builtin_math_misc_op_source;
 mod builtin_string_time_source;
 mod builtin_time_calendars_source;
@@ -652,8 +653,9 @@ fn char_length_rejects_unresolved_field_type_before_runtime_datum() {
     };
     assert_eq!(
         eval_in(&expression, &RuntimeBytes),
-        Err(EvalError::Unsupported(
-            "unresolved CHAR_LENGTH argument FieldType"
+        Err(EvalError::UnknownColumnInClause(
+            "binary_col".to_owned(),
+            "expression"
         ))
     );
 }
@@ -1541,8 +1543,14 @@ fn builtin_other_type_conversion_source_scalars() {
     }
 
     let resolver = UserVar(Datum::Int(3));
-    assert_eq!(eval_user_expr("cast(@a as decimal)", &resolver), "DEC:3");
-    assert_eq!(eval_user_expr("cast(@a as double)", &resolver), "FLOAT:3");
+    assert_eq!(
+        eval_user_expr("cast(getvar_int('a') as decimal)", &resolver),
+        "DEC:3"
+    );
+    assert_eq!(
+        eval_user_expr("cast(getvar_int('a') as double)", &resolver),
+        "FLOAT:3"
+    );
 }
 
 #[test]
@@ -1831,7 +1839,7 @@ fn out_of_domain_is_unsupported() {
     // variable would give, not an error.
     assert_eq!(
         {
-            let stmt = tidb_parser::parse("select @x").unwrap();
+            let stmt = tidb_parser::parse("select getvar_string('x')").unwrap();
             let Stmt::Query(query) = stmt else {
                 unreachable!()
             };
@@ -2095,15 +2103,11 @@ fn weight_string_and_load_file_source_vectors() {
         "STR:0032003000310039002D00300038002D00320031"
     );
 
-    // The AST/value tier agrees on every row EXCEPT the explicit COLLATE one:
-    // it has no collation derivation, so it keys `'A'` under the connection
-    // default and answers `41` where the chunk tier answers the
-    // `utf8mb4_general_ci` weight `0041`. The same documented boundary the
-    // other collation-aware builtins carry.
+    // Syntax binding preserves the explicit collation on the argument.
     assert_eq!(e("hex(weight_string('ab' as binary(4)))"), "STR:61620000");
     assert_eq!(
         e("hex(weight_string('A' collate utf8mb4_general_ci))"),
-        "STR:41"
+        "STR:0041"
     );
 }
 
@@ -2128,6 +2132,8 @@ fn hex_and_bit_literals_are_binary_literals_in_a_numeric_context() {
         // `UnsignedFlag` for Hex and Binary literals, not for Bit), so its
         // arithmetic answers INT where a hex literal's answers UINT.
         ("b'101' + 1", "INT:6"),
+        ("ifnull(null,b'1') + 0", "INT:1"),
+        ("ifnull(b'1',null) = 1", "INT:1"),
         ("abs(b'11')", "FLOAT:3"),
         ("0x1A > 25", "INT:1"),
         ("0xFF + 0", "UINT:255"),

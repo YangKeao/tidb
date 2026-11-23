@@ -174,7 +174,13 @@ fn constant_folding_isnull_and_unary_not_reduce() {
         "eq",
         vec![
             column(0),
-            build("not", vec![build("plus", vec![int_const(1), int_const(1)])]),
+            RealFunctionBuilder::new(&NoColumns)
+                .new_function(
+                    "not",
+                    Some(longlong_type()),
+                    vec![build("plus", vec![int_const(1), int_const(1)])],
+                )
+                .unwrap(),
         ],
     );
     let folded = fold(&expr);

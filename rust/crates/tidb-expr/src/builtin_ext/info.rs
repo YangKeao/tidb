@@ -19,20 +19,13 @@ use crate::ops::to_f64_with_mysql_string;
 use crate::{Datum, EvalError};
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
-pub(crate) fn dispatch(
-    name: &str,
-    vals: &[Datum],
-    ctx: &dyn crate::Columns,
-) -> Option<Result<Datum, EvalError>> {
-    match (name, vals) {
-        ("FORMAT_BYTES", [value]) => Some(format_bytes(value, ctx)),
-        ("FORMAT_NANO_TIME", [value]) => Some(format_nano_time(value, ctx)),
-        ("TIDB_DECODE_PLAN", [value]) => Some(decode_plan(value)),
-        ("TIDB_DECODE_BINARY_PLAN", [value]) => Some(decode_binary_plan(value, ctx)),
-        ("TIDB_ENCODE_SQL_DIGEST", [value]) => Some(encode_sql_digest(value)),
-        _ => None,
-    }
-}
+crate::builtin_ext::eager_dispatch!(dispatch(_name, vals, ctx) {
+    ("FORMAT_BYTES", 1) => format_bytes(&vals[0], ctx),
+    ("FORMAT_NANO_TIME", 1) => format_nano_time(&vals[0], ctx),
+    ("TIDB_DECODE_PLAN", 1) => decode_plan(&vals[0]),
+    ("TIDB_DECODE_BINARY_PLAN", 1) => decode_binary_plan(&vals[0], ctx),
+    ("TIDB_ENCODE_SQL_DIGEST", 1) => encode_sql_digest(&vals[0]),
+});
 
 /// `TIDB_ENCODE_SQL_DIGEST(sql)`: the digest of the parser-normalized SQL,
 /// using the same normalizer and SHA-256 representation as `parser.DigestHash`.
@@ -131,7 +124,6 @@ fn real_arg(value: &Datum, ctx: &dyn crate::Columns) -> Result<Option<f64>, Eval
     }
 }
 
-/// Shared structural port of `GetFormatBytes` and `GetFormatNanoTime`.
 fn format_scaled(value: f64, scales: &[(u64, &str)], base_unit: &str) -> String {
     let magnitude = value.abs();
     let Some(&(divisor, unit)) = scales

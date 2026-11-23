@@ -90,6 +90,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 [[package]]
 name = "api_version"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "bitflags 1.3.2",
  "codec",
@@ -617,6 +618,7 @@ dependencies = [
 [[package]]
 name = "cloud"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "async-trait",
  "derive_more",
@@ -644,6 +646,7 @@ dependencies = [
 [[package]]
 name = "codec"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "byteorder",
  "error_code",
@@ -656,6 +659,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "fxhash",
  "tikv_alloc",
@@ -805,19 +809,20 @@ dependencies = [
 [[package]]
 name = "crossbeam-skiplist"
 version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df29de440c58ca2cc6e587ec3d22347551a32435fbde9d2bff64e78a9ffa151b"
 dependencies = [
  "crossbeam-epoch",
- "crossbeam-skiplist 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "crossbeam-utils",
 ]
 
 [[package]]
 name = "crossbeam-skiplist"
 version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df29de440c58ca2cc6e587ec3d22347551a32435fbde9d2bff64e78a9ffa151b"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "crossbeam-epoch",
+ "crossbeam-skiplist 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "crossbeam-utils",
 ]
 
@@ -830,6 +835,7 @@ checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 [[package]]
 name = "crypto"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "openssl",
  "openssl-sys",
@@ -1110,6 +1116,7 @@ dependencies = [
 [[package]]
 name = "encryption"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -1144,6 +1151,7 @@ dependencies = [
 [[package]]
 name = "engine_traits"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "collections",
  "encryption",
@@ -1205,6 +1213,7 @@ dependencies = [
 [[package]]
 name = "error_code"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "kvproto",
  "lazy_static",
@@ -1290,6 +1299,7 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 [[package]]
 name = "file_system"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "collections",
  "crc32fast",
@@ -2300,6 +2310,7 @@ dependencies = [
 [[package]]
 name = "keys"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "byteorder",
  "kvproto",
@@ -2409,6 +2420,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 [[package]]
 name = "log_wrappers"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "atomic 0.5.3",
  "hex 0.4.3",
@@ -2797,6 +2809,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "online_config"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "chrono",
  "online_config_derive",
@@ -2806,6 +2819,7 @@ dependencies = [
 [[package]]
 name = "online_config_derive"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4044,6 +4058,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "scoped-tls-hkt"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9603871ffe5df3ac39cb624790c296dbd47a400d202f56bf3e414045099524d"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4814,6 +4834,7 @@ dependencies = [
  "tidb-hack",
  "tidb-kvcache",
  "tidb-mysql",
+ "tidb_query_datatype",
  "unicode-general-category",
 ]
 
@@ -5070,7 +5091,7 @@ dependencies = [
  "tidb-util",
  "tidb-vardef",
  "tikv-client",
- "tikv-jemallocator",
+ "tikv-jemalloc-sys",
  "tracing",
 ]
 
@@ -5086,8 +5107,10 @@ dependencies = [
  "jsonschema",
  "md-5",
  "prost 0.14.4",
+ "protobuf",
  "regex",
  "reqwest 0.13.4",
+ "scoped-tls-hkt",
  "serde_json",
  "sha1 0.10.7",
  "sha2",
@@ -5110,6 +5133,7 @@ dependencies = [
  "tidb_query_common",
  "tidb_query_datatype",
  "tidb_query_expr",
+ "tikv_util",
  "tipb",
 ]
 
@@ -5464,7 +5488,6 @@ dependencies = [
  "tidb-workloadrepo",
  "tikv-client",
  "tikv-jemalloc-sys",
- "tikv-jemallocator",
  "toml 0.8.23",
 ]
 
@@ -5945,6 +5968,7 @@ dependencies = [
 [[package]]
 name = "tidb_query_codegen"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "darling",
  "heck 0.3.3",
@@ -5956,6 +5980,7 @@ dependencies = [
 [[package]]
 name = "tidb_query_common"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "anyhow",
  "api_version",
@@ -5980,6 +6005,7 @@ dependencies = [
 [[package]]
 name = "tidb_query_datatype"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "api_version",
  "base64 0.13.1",
@@ -6022,6 +6048,7 @@ dependencies = [
 [[package]]
 name = "tidb_query_expr"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "base64 0.13.1",
  "bstr",
@@ -6115,18 +6142,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "tikv-jemallocator"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "249f09e49ab1609436f34c776e84231bead18d6a955f119f939bdc1d847561bd"
-dependencies = [
- "libc",
- "tikv-jemalloc-sys",
-]
-
-[[package]]
 name = "tikv_alloc"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "fxhash",
  "lazy_static",
@@ -6136,6 +6154,7 @@ dependencies = [
 [[package]]
 name = "tikv_util"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "async-speed-limit",
  "backtrace",
@@ -6146,7 +6165,7 @@ dependencies = [
  "collections",
  "cpu-time",
  "crossbeam",
- "crossbeam-skiplist 0.1.3",
+ "crossbeam-skiplist 0.1.3 (git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5)",
  "derive_more",
  "error_code",
  "fail 0.5.1",
@@ -6595,6 +6614,7 @@ dependencies = [
 [[package]]
 name = "tracker"
 version = "0.0.1"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "crossbeam-utils",
  "kvproto",
@@ -6625,6 +6645,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "txn_types"
 version = "0.1.0"
+source = "git+https://github.com/tikv/tikv.git?rev=548812e1ef57aef077a2062a9cc356640a6347f5#548812e1ef57aef077a2062a9cc356640a6347f5"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",

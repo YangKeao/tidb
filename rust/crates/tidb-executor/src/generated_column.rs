@@ -458,12 +458,19 @@ pub(crate) fn materialize_with_conversion_flags<S: GeneratedColumnSlot>(
                 detail: "the generated expression does not build in this session".to_owned(),
                 eval: None,
             })?;
-        let value = eval_over_dependencies(&expr, &generated.dependencies, columns, row, ctx)
-            .map_err(|error| GenerationError {
-                column: columns[offset].column_name().to_owned(),
-                detail: format!("{error:?}"),
-                eval: Some(error),
-            })?;
+        let value = eval_over_dependencies_bound(
+            &expr,
+            &generated.expr,
+            &generated.dependencies,
+            columns,
+            row,
+            ctx,
+        )
+        .map_err(|error| GenerationError {
+            column: columns[offset].column_name().to_owned(),
+            detail: format!("{error:?}"),
+            eval: Some(error),
+        })?;
         // Go casts the generated value into the column's declared type before
         // it is stored or returned (`table.CastValue`), which is what makes
         // `b INT AS (a / 2)` an integer rather than the decimal the division
@@ -514,6 +521,17 @@ pub(crate) fn eval_over_dependencies<S: GeneratedColumnSlot>(
     row: &[Datum],
     ctx: &impl tidb_expr::Columns,
 ) -> Result<Datum, tidb_expr::EvalError> {
+    eval_over_dependencies_bound(expr, expr, dependencies, columns, row, ctx)
+}
+
+pub(crate) fn eval_over_dependencies_bound<S: GeneratedColumnSlot>(
+    expr: &Expression,
+    declaration: &Expression,
+    dependencies: &[String],
+    columns: &[S],
+    row: &[Datum],
+    ctx: &impl tidb_expr::Columns,
+) -> Result<Datum, tidb_expr::EvalError> {
     let mut types = Vec::with_capacity(dependencies.len());
     let mut values = Vec::with_capacity(dependencies.len());
     for name in dependencies {
@@ -521,9 +539,9 @@ pub(crate) fn eval_over_dependencies<S: GeneratedColumnSlot>(
             "a generated or partition expression names a column the table no longer defines",
         ))?;
         types.push(columns[offset].column_type().clone());
-        values.push(row.get(offset).cloned().unwrap_or(Datum::Null));
+        values.push(row.get(offset).unwrap_or(&Datum::Null));
     }
-    eval_over_row(expr, &types, &values, ctx)
+    expr.eval_reusing_datums(declaration, ctx, &types, values.into_iter())
 }
 
 /// Evaluates one expression against a row of datums by materializing the row
@@ -539,17 +557,7 @@ pub(crate) fn eval_over_row(
     row: &[Datum],
     ctx: &impl tidb_expr::Columns,
 ) -> Result<Datum, tidb_expr::EvalError> {
-    let mut chunk = tidb_chunk::chunk::Chunk::new_with_capacity(types, 1);
-    for (index, value) in row.iter().enumerate() {
-        chunk.append_datum(index, value);
-    }
-    // A row shorter than the schema (a partially built INSERT row) still has
-    // to present every column, or a reference to a trailing column would read
-    // off the end.
-    for index in row.len()..types.len() {
-        chunk.append_datum(index, &Datum::Null);
-    }
-    expr.eval(ctx, chunk.get_row(0))
+    expr.eval_reusing_datums(expr, ctx, types, row.iter())
 }
 
 /// Why DDL refused a generated column.

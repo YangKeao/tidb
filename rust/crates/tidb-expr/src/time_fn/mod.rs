@@ -35,81 +35,74 @@ use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
-pub(crate) fn dispatch(
-    name: &str,
-    vals: &[Datum],
-    cols: &dyn Columns,
-) -> Option<Result<Datum, EvalError>> {
-    Some(match name {
+crate::builtin_ext::eager_dispatch! {
+    dispatch(name, vals, cols) {
         // `pkg/expression/builtin.go:722-725` binds all four names to the SAME
         // `nowFunctionClass`, so LOCALTIME and LOCALTIMESTAMP are NOW down to
         // the optional fsp argument and the statement-timestamp clock. Go's
         // capture: `select localtime(), localtimestamp(), localtime,
         // localtimestamp, now()` prints one value five times, and
         // `localtime() = now()` is 1.
-        "NOW" | "CURRENT_TIMESTAMP" | "LOCALTIME" | "LOCALTIMESTAMP" => now(vals, cols),
-        "UTC_TIMESTAMP" => utc_timestamp(vals, cols),
-        "CURDATE" | "CURRENT_DATE" => current_date(vals, cols),
-        "UTC_DATE" => utc_date(vals, cols),
-        "CURTIME" => current_time(vals, "curtime", cols),
-        "CURRENT_TIME" => current_time(vals, "current_time", cols),
-        "UTC_TIME" => utc_time(vals, cols),
-        "DATE" => date(vals, cols),
-        "MICROSECOND" => microsecond(vals),
-        "TIME" => time(vals, cols),
-        "MONTH" => month(vals),
-        "DAY" | "DAYOFMONTH" => day_of_month(vals),
-        "DAYOFWEEK" => day_of_week(vals),
-        "DAYOFYEAR" => day_of_year(vals),
-        "WEEKDAY" => weekday(vals),
-        "QUARTER" => quarter(vals),
-        "WEEK" => week(vals, cols.default_week_format()),
-        "WEEKOFYEAR" => week_of_year_builtin(vals),
-        "TIDB_PARSE_TSO_LOGICAL" => tidb_parse_tso_logical(vals),
-        "TIDB_BOUNDED_STALENESS" => tidb_bounded_staleness(vals, cols),
-        "TIDB_CURRENT_TSO" => current_tso(vals, cols),
-        "GET_FORMAT" => get_format_value(vals),
-        "YEARWEEK" => yearweek(vals),
-        "MONTHNAME" => monthname(vals),
-        "DAYNAME" => dayname(vals),
-        "LAST_DAY" => last_day(vals),
-        "TIME_TO_SEC" => time_to_sec(vals),
-        "SEC_TO_TIME" => sec_to_time(vals, cols),
-        "MAKEDATE" => makedate(vals),
-        "MAKETIME" => maketime(vals, cols),
-        "PERIOD_ADD" => period_add(vals),
-        "PERIOD_DIFF" => period_diff(vals),
-        "TIME_FORMAT" => time_format(vals),
-        "STR_TO_DATE" => calendar::str_to_date(vals, cols),
-        "FROM_DAYS" => calendar::from_days(vals),
-        "TIMEDIFF" => time_diff(vals),
-        "CONVERT_TZ" => convert_tz::convert_tz(vals),
-        "FROM_UNIXTIME" => session_tz::from_unixtime(vals, cols),
-        "UNIX_TIMESTAMP" => session_tz::unix_timestamp(vals, cols),
-        "TIDB_PARSE_TSO" => session_tz::tidb_parse_tso(vals, cols),
-        "TIMESTAMPDIFF" => calendar::timestamp_diff(vals),
+        ("NOW" | "CURRENT_TIMESTAMP" | "LOCALTIME" | "LOCALTIMESTAMP", _) => now(vals, cols),
+        ("UTC_TIMESTAMP", _) => utc_timestamp(vals, cols),
+        ("CURDATE" | "CURRENT_DATE", _) => current_date(vals, cols),
+        ("UTC_DATE", _) => utc_date(vals, cols),
+        ("CURTIME", _) => current_time(vals, "curtime", cols),
+        ("CURRENT_TIME", _) => current_time(vals, "current_time", cols),
+        ("UTC_TIME", _) => utc_time(vals, cols),
+        ("DATE", _) => date(vals, cols),
+        ("MICROSECOND", _) => microsecond(vals),
+        ("TIME", _) => time(vals, cols),
+        ("MONTH", _) => month(vals),
+        ("DAY" | "DAYOFMONTH", _) => day_of_month(vals),
+        ("DAYOFWEEK", _) => day_of_week(vals),
+        ("DAYOFYEAR", _) => day_of_year(vals),
+        ("WEEKDAY", _) => weekday(vals),
+        ("QUARTER", _) => quarter(vals),
+        ("WEEK", _) => week(vals, cols.default_week_format()),
+        ("WEEKOFYEAR", _) => week_of_year_builtin(vals),
+        ("TIDB_PARSE_TSO_LOGICAL", _) => tidb_parse_tso_logical(vals),
+        ("TIDB_BOUNDED_STALENESS", _) => tidb_bounded_staleness(vals, cols),
+        ("TIDB_CURRENT_TSO", _) => current_tso(vals, cols),
+        ("GET_FORMAT", _) => get_format_value(vals),
+        ("YEARWEEK", _) => yearweek(vals),
+        ("MONTHNAME", _) => monthname(vals),
+        ("DAYNAME", _) => dayname(vals),
+        ("LAST_DAY", _) => last_day(vals),
+        ("TIME_TO_SEC", _) => time_to_sec(vals),
+        ("SEC_TO_TIME", _) => sec_to_time(vals, cols),
+        ("PERIOD_ADD", _) => period_add(vals),
+        ("PERIOD_DIFF", _) => period_diff(vals),
+        ("TIME_FORMAT", _) => time_format(vals),
+        ("STR_TO_DATE", _) => calendar::str_to_date(vals, cols),
+        ("FROM_DAYS", _) => calendar::from_days(vals),
+        ("TIMEDIFF", _) => time_diff(vals),
+        ("CONVERT_TZ", _) => convert_tz::convert_tz(vals),
+        ("FROM_UNIXTIME", _) => session_tz::from_unixtime(vals, cols),
+        ("UNIX_TIMESTAMP", _) => session_tz::unix_timestamp(vals, cols),
+        ("TIDB_PARSE_TSO", _) => session_tz::tidb_parse_tso(vals, cols),
+        ("TIMESTAMPDIFF", _) => calendar::timestamp_diff(vals),
         // `ADDTIME`/`SUBTIME` reach here with no static argument types, so
         // every argument takes Go's `default` branch -- which is the branch
         // Go itself selects for a string constant. The chunk tier, which
         // does have the types, enters through [`add_sub::add_sub_time`]
         // directly; see that module's doc for the row/vec split this
         // `row_path = true` selects.
-        "ADDTIME" | "SUBTIME" => add_sub::add_sub_untyped(name, vals, cols),
-        "TIMESTAMP" => add_sub::timestamp(vals, cols),
-        "TIMESTAMPADD" => add_sub::timestamp_add(vals, cols),
-        "SYSDATE" => add_sub::sysdate(vals, cols),
-        "TO_DAYS" => calendar::to_days(vals),
-        "TO_SECONDS" => calendar::to_seconds(vals),
+        ("ADDTIME" | "SUBTIME", _) => add_sub::add_sub_untyped(name, vals, cols),
+        ("TIMESTAMP", _) => add_sub::timestamp(vals, cols),
+        ("TIMESTAMPADD", _) => add_sub::timestamp_add(vals, cols),
+        ("SYSDATE", _) => add_sub::sysdate(vals, cols),
+        ("TO_DAYS", _) => calendar::to_days(vals),
+        ("TO_SECONDS", _) => calendar::to_seconds(vals),
         // `EXTRACT(<composite unit> FROM value)`, e.g. `HOUR_MINUTE`,
         // `DAY_SECOND`, `YEAR_MONTH` — see `calendar::extract_composite`'s
         // own doc.
-        "YEAR_MONTH" | "DAY_HOUR" | "DAY_MINUTE" | "DAY_SECOND" | "DAY_MICROSECOND"
+        ("YEAR_MONTH" | "DAY_HOUR" | "DAY_MINUTE" | "DAY_SECOND" | "DAY_MICROSECOND"
         | "HOUR_MINUTE" | "HOUR_SECOND" | "HOUR_MICROSECOND" | "MINUTE_SECOND"
-        | "MINUTE_MICROSECOND" | "SECOND_MICROSECOND" => {
+        | "MINUTE_MICROSECOND" | "SECOND_MICROSECOND", _) => {
             calendar::extract_composite(name, vals, cols)
-        }
-        _ => return None,
-    })
+        },
+    }
 }
 
 /// `TIDB_CURRENT_TSO()`: the active transaction's start timestamp, or zero
@@ -1146,7 +1139,7 @@ fn format_duration(seconds: f64, fsp: usize) -> String {
 }
 
 /// `builtinMakeDateSig` in `pkg/expression/builtin_time.go`.
-fn makedate(vals: &[Datum]) -> Result<Datum, EvalError> {
+pub(crate) fn makedate(vals: &[Datum]) -> Result<Datum, EvalError> {
     if vals.len() != 2 {
         return Err(EvalError::Unsupported("bad function arity"));
     }
@@ -1171,7 +1164,7 @@ fn makedate(vals: &[Datum]) -> Result<Datum, EvalError> {
 }
 
 /// `builtinMakeTimeSig` in `pkg/expression/builtin_time.go`.
-fn maketime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
+pub(crate) fn maketime(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
     if vals.len() != 3 {
         return Err(EvalError::Unsupported("bad function arity"));
     }

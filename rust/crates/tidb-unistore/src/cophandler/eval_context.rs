@@ -24,6 +24,8 @@ pub(super) struct RequestEvalContext {
     pub(super) zone: SessionTimeZone,
     pub(super) division_precision: u32,
     pub(super) flags: u64,
+    #[cfg(test)]
+    pub(super) legacy_fixture: bool,
     pub(super) column_types: Vec<tidb_datatype::FieldType>,
     warnings: Mutex<Vec<(u16, String)>>,
 }
@@ -34,9 +36,17 @@ impl RequestEvalContext {
             zone,
             division_precision,
             flags,
+            #[cfg(test)]
+            legacy_fixture: false,
             column_types: Vec::new(),
             warnings: Mutex::new(Vec::new()),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn as_legacy_fixture(mut self) -> Self {
+        self.legacy_fixture = true;
+        self
     }
 
     pub(super) fn condition_value(&self, value: &Datum) -> Result<i128, String> {
@@ -103,15 +113,22 @@ impl Columns for RequestEvalContext {
 }
 
 /// A decoded builtin and the request that owns its evaluation settings.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SharedExpression {
-    pub(super) expression: tidb_expr::expression::Expression,
+    pub(super) expression: SharedProgram,
     pub(super) context: Arc<RequestEvalContext>,
+}
+
+#[derive(Debug)]
+pub(super) enum SharedProgram {
+    Rpn(Mutex<tidb_expr::distsql_builtin::WireExpressionExecution>),
+    #[cfg(test)]
+    Legacy(tidb_expr::expression::Expression),
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{RegionAggregator, TopNSpec, convert_expr_with_context, eval_datum};
+    use super::super::{convert_expr_with_context, eval_datum, RegionAggregator, TopNSpec};
     use super::*;
     use tidb_proto::tipb;
 
@@ -150,11 +167,37 @@ mod tests {
         )
     }
     fn context(flags: u64) -> Arc<RequestEvalContext> {
-        Arc::new(RequestEvalContext::new(
-            SessionTimeZone::Named(chrono_tz::Asia::Shanghai),
-            8,
-            flags,
-        ))
+        Arc::new(
+            RequestEvalContext::new(SessionTimeZone::Named(chrono_tz::Asia::Shanghai), 8, flags)
+                .as_legacy_fixture(),
+        )
+    }
+
+    #[test]
+    fn typed_logical_program_obeys_the_request_short_circuit_flag() {
+        let literal = tipb::Expr {
+            tp: Some(tipb::ExprType::String as i32),
+            val: Some(b"bad".to_vec()),
+            ..Default::default()
+        };
+        let cast = call(tipb::ScalarFuncSig::CastStringAsInt, vec![literal], 8);
+        let mut zero = Vec::new();
+        tidb_codec::encode_int(&mut zero, 0);
+        let zero = tipb::Expr {
+            tp: Some(tipb::ExprType::Int64 as i32),
+            val: Some(zero),
+            ..Default::default()
+        };
+        let expr = call(tipb::ScalarFuncSig::LogicalAnd, vec![zero, cast], 8);
+        for (short_circuit, warning_count) in [(false, 1), (true, 0)] {
+            // TiPB DagRequest's EnableShortCircuitExpression flag.
+            let flags = FLAG_TRUNCATE_AS_WARNING | if short_circuit { 1 << 12 } else { 0 };
+            let context = context(flags);
+            let expression = convert_expr_with_context(&expr, &context).unwrap();
+            assert_eq!(eval_datum(&expression, &[]).unwrap(), Datum::Int(0));
+            let warnings = context.take_warnings();
+            assert_eq!(warnings.len(), warning_count);
+        }
     }
 
     #[test]

@@ -1564,7 +1564,9 @@ mod tests {
         let last_insert_id_type = FieldType::new(FieldTypeCode::LongLong);
         let node = Expression::ScalarFunction(ScalarFunction::new(
             CiString::new("last_insert_id"),
-            last_insert_id_type.clone(),
+            last_insert_id_type
+                .clone()
+                .with_added_flags(tidb_datatype::FieldTypeFlags::UNSIGNED),
             empty_args,
         ));
         let value = node

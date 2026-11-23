@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tidb_datatype::Datum;
 use tidb_distsql::{ReplicaReadType, WarningCollector, WarningLevel};
-use tidb_expr::{Columns, CurrentTso, ErrorLevel, MysqlRng, SeededRand};
+use tidb_expr::{Columns, CurrentTso, ErrorLevel, MysqlRng};
 
 const MAX_WARNING_COUNT: usize = u16::MAX as usize;
 /// Go `vardef.DefDistSQLScanConcurrency`, the value a context built without
@@ -285,6 +285,12 @@ impl PlannerWarningAppender {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum RandSeedKey {
+    Legacy(usize),
+    Program { call: usize, seed: i64 },
+}
+
 /// Go `stmtctx.StatementContext`, in the part evaluation actually reads: the
 /// warning buffer and the error levels that decide whether a tolerable
 /// condition warns or fails the statement.
@@ -313,7 +319,7 @@ impl std::ops::Deref for StmtContext {
 impl std::ops::DerefMut for StmtContext {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::make_mut(&mut self.0)
+        self.mutable_data()
     }
 }
 
@@ -389,6 +395,7 @@ impl Default for StmtContextSessionState {
 pub struct StmtContextData {
     /// Go `StatementContext.CtxID`, unique for each newly created statement.
     context_id: u64,
+    scalar_programs: tidb_expr::RowEvaluationCache,
     /// Go's `StaticWarnHandler` entries: a LEVEL, a code and a message.
     ///
     /// The level is not decoration. Go reaches this one buffer through three
@@ -541,7 +548,8 @@ pub struct StmtContextData {
     /// constant `RAND(N)` occurrence, created fresh for each STATEMENT (Go
     /// builds a new `builtinFunc` per plan) and advanced once per row by the
     /// evaluator, keyed by the call site's stable identity.
-    rand_seeded: Arc<SeededRand>,
+    rand_seeded: Arc<Mutex<HashMap<RandSeedKey, MysqlRng>>>,
+    statement_seeded_random: Arc<Mutex<HashMap<usize, tidb_expr::StatementSeededRandom>>>,
     /// Go `StatementContext.LastInsertID`/`LastInsertIDSet`: the id this
     /// statement publishes as `LAST_INSERT_ID()`.
     ///
@@ -957,10 +965,19 @@ macro_rules! context_configuration {
         pub fn $name:ident(mut $this:ident $(, $arg:ident: $ty:ty)* $(,)?) -> Self $body:block
     )*) => {
         impl StmtContext {
+    fn next_statement_seed(&self, key: RandSeedKey, seed: i64) -> f64 {
+        self.rand_seeded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_insert_with(|| MysqlRng::new_with_seed(seed))
+            .gen()
+    }
+
             $(
                 $(#[$attr])*
                 pub fn $name(mut $this $(, $arg: $ty)*) -> Self {
-                    let _ = Arc::make_mut(&mut $this.0).$name($($arg),*);
+                    let _ = $this.mutable_data().$name($($arg),*);
                     $this
                 }
             )*
@@ -1692,6 +1709,13 @@ context_configuration! {
     /// expression evaluator built with this statement context.
     #[must_use]
     pub fn with_prepared_params(mut self, values: Arc<[Datum]>) -> Self {
+        if self
+            .prepared_params
+            .as_ref()
+            .is_none_or(|previous| !Arc::ptr_eq(previous, &values))
+        {
+            self.statement_seeded_random = Arc::default();
+        }
         self.prepared_params = Some(values);
         self
     }
@@ -1821,11 +1845,17 @@ impl Default for ExecutorChunkSizes {
 pub use crate::driver::SequenceSnapshot;
 
 impl StmtContext {
+    fn mutable_data(&mut self) -> &mut StmtContextData {
+        let data = Arc::make_mut(&mut self.0);
+        data.scalar_programs = Default::default();
+        data
+    }
+
     /// Applies one setup batch, detaching shared configuration at most once.
     /// Statement effects keep their existing shared owners, as for with_* calls.
     #[must_use]
     pub fn configure(mut self, configure: impl FnOnce(&mut StmtContextData)) -> Self {
-        configure(Arc::make_mut(&mut self.0));
+        configure(self.mutable_data());
         self
     }
 
@@ -1843,6 +1873,7 @@ impl StmtContext {
             client_error_count: 0,
             client_warning_count: 0,
             context_id: NEXT_STATEMENT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed),
+            scalar_programs: Default::default(),
             warnings: Arc::default(),
             extra_warnings: Arc::default(),
             message: Arc::default(),
@@ -1893,6 +1924,7 @@ impl StmtContext {
             prepared_params: None,
             current_insert_values: Arc::default(),
             rand_seeded: Arc::default(),
+            statement_seeded_random: Arc::default(),
             last_insert_id: session.last_insert_id,
             prev_last_insert_id: 0,
             prev_row_count: 0,
@@ -4039,6 +4071,10 @@ fn resolve_statement_clock(
 }
 
 impl Columns for StmtContext {
+    fn row_evaluation_cache(&self) -> Option<&tidb_expr::RowEvaluationCache> {
+        Some(&self.scalar_programs)
+    }
+
     fn context_id(&self) -> u64 {
         if self.context_id != 0 {
             self.context_id
@@ -4261,20 +4297,27 @@ impl Columns for StmtContext {
         }
     }
 
-    fn rand_session_handle(&self) -> Option<Arc<MysqlRng>> {
-        self.rand_session.clone()
-    }
-
     fn rand_next(&self) -> Option<f64> {
         self.rand_session.as_ref().map(|rng| rng.gen())
     }
 
-    fn rand_seeded_state(&self) -> Option<Arc<SeededRand>> {
-        Some(self.rand_seeded.clone())
+    fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
+        Some(self.next_statement_seed(RandSeedKey::Legacy(key), seed))
     }
 
-    fn rand_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
-        Some(self.rand_seeded.generator(key, seed).gen())
+    fn rand_program_seeded_next(&self, key: usize, seed: i64) -> Option<f64> {
+        Some(self.next_statement_seed(RandSeedKey::Program { call: key, seed }, seed))
+    }
+
+    fn statement_seeded_random(&self, key: usize) -> Option<tidb_expr::StatementSeededRandom> {
+        Some(
+            self.statement_seeded_random
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(key)
+                .or_default()
+                .clone(),
+        )
     }
 
     fn current_database(&self) -> Option<String> {
@@ -4326,6 +4369,10 @@ impl Columns for StmtContext {
 
     fn windowing_use_high_precision(&self) -> bool {
         self.windowing_use_high_precision
+    }
+
+    fn expression_statement_flags(&self) -> Option<u64> {
+        Some(self.push_down_flags())
     }
 
     fn division_by_zero_level(&self) -> ErrorLevel {

@@ -183,7 +183,6 @@ fn eval_to_mysql_error(error: EvalError) -> MysqlError {
         EvalError::TruncatedWrongValue(message) => {
             MysqlError::coded(ER_TRUNCATED_WRONG_VALUE, message)
         }
-        EvalError::SharedEvaluation { code, message } => MysqlError::coded(code, message),
         EvalError::Conversion(error) => {
             let error = error.to_sql_error();
             MysqlError::coded(error.code, error.message)
@@ -231,7 +230,8 @@ fn eval_to_mysql_error(error: EvalError) -> MysqlError {
             1426,
             format!("Too-big precision {fsp} specified for '{function}'. Maximum is 6."),
         ),
-        EvalError::AdvisoryLock { code, message } => MysqlError::coded(code, message),
+        EvalError::SharedEvaluation { code, message }
+        | EvalError::AdvisoryLock { code, message } => MysqlError::coded(code, message),
         EvalError::DataOutOfRange { value, expression } => MysqlError::new(
             ER_DATA_OUT_OF_RANGE,
             format!("{value} value is out of range in '{expression}'"),

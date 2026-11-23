@@ -25,6 +25,8 @@
 //! guessing. `JSON_DEPTH` and the storage sizes live in `super::super::json2`
 //! because they read BinaryJSON's encoded layout, not its value.
 
+use std::sync::{Arc, Mutex};
+
 use serde_json::{Number, Value as Json};
 
 use super::path::{extract, parse_path};
@@ -37,6 +39,83 @@ use crate::coerce::coerce_str;
 use crate::expression::{ConstLevel, Expression};
 use crate::{Columns, Datum, EvalError, JsonError};
 use tidb_chunk::row::Row;
+/// A checked Draft 2019-09 schema. External references are resolved only
+/// when a document is validated, using the caller's retrieval policy.
+#[derive(Debug)]
+pub struct PreparedJsonSchema {
+    schema: serde_json::Value,
+    validator: std::sync::OnceLock<std::result::Result<jsonschema::Validator, String>>,
+}
+
+impl PreparedJsonSchema {
+    /// Check the schema before demanding its document.
+    pub fn new(schema: serde_json::Value) -> std::result::Result<Self, String> {
+        if !matches!(
+            schema,
+            serde_json::Value::Object(_) | serde_json::Value::Bool(_)
+        ) {
+            return Err("object".into());
+        }
+        jsonschema::draft201909::meta::validate(&schema).map_err(|error| error.to_string())?;
+        Ok(Self {
+            schema,
+            validator: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Build the validator on first use, then reuse it and any build error.
+    pub fn validate<F>(
+        &self,
+        document: &serde_json::Value,
+        make_retriever: impl FnOnce() -> std::result::Result<F, String>,
+    ) -> std::result::Result<bool, String>
+    where
+        F: Fn(
+                &str,
+                &str,
+                &str,
+            )
+                -> std::result::Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.validator
+            .get_or_init(|| {
+                jsonschema::options()
+                    .with_draft(jsonschema::Draft::Draft201909)
+                    // TiDB's source validator treats format as an assertion.
+                    .should_validate_formats(true)
+                    .with_retriever(SchemaRetriever(make_retriever()?))
+                    .build(&self.schema)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map(|validator| validator.is_valid(document))
+            .map_err(Clone::clone)
+    }
+}
+
+struct SchemaRetriever<F>(F);
+
+impl<F> jsonschema::Retrieve for SchemaRetriever<F>
+where
+    F: Fn(
+            &str,
+            &str,
+            &str,
+        )
+            -> std::result::Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>>
+        + Send
+        + Sync,
+{
+    fn retrieve(
+        &self,
+        uri: &jsonschema::Uri<String>,
+    ) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+        (self.0)(uri.scheme().as_str(), uri.as_str(), uri.path().as_str())
+    }
+}
 
 /// Per-signature cache and lazy evaluator for `JSON_SCHEMA_VALID`.
 ///
@@ -45,50 +124,76 @@ use tidb_chunk::row::Row;
 /// context and admits `ConstOnlyInContext`, matching Go's
 /// `builtinFuncCache[jsonschema.Schema]` consumer.
 #[derive(Debug, Default)]
-pub(crate) struct JsonSchemaCache(BuiltinFuncCache<Option<PreparedJsonSchema>>);
+struct JsonSchemaCache(BuiltinFuncCache<Option<PreparedJsonSchema>>);
 
-#[derive(Debug)]
-struct PreparedJsonSchema {
-    schema: Json,
-    validator: std::sync::OnceLock<Result<jsonschema::Validator, EvalError>>,
-}
-
-impl Clone for JsonSchemaCache {
-    fn clone(&self) -> Self {
-        Self::default()
+impl JsonSchemaCache {
+    fn prepare(
+        &self,
+        value: &Datum,
+        cache: bool,
+        ctx: &dyn Columns,
+    ) -> Result<Arc<Option<PreparedJsonSchema>>, EvalError> {
+        if value.is_null() {
+            return Ok(Arc::new(None));
+        }
+        if cache {
+            self.0
+                .get_or_init_cache(ctx.context_id(), || prepare_json_schema(value))
+        } else {
+            prepare_json_schema(value).map(Arc::new)
+        }
     }
 }
 
-impl JsonSchemaCache {
-    pub(crate) fn eval(
+/// Schema and document are separate ordered operands of one shared program.
+/// The prepared row value stays private to that program. A new schema visit
+/// replaces any state left by a previous document error.
+pub(crate) struct JsonSchemaExecution {
+    constant_schema: bool,
+    cache: JsonSchemaCache,
+    current: Mutex<Option<Arc<Option<PreparedJsonSchema>>>>,
+}
+
+impl JsonSchemaExecution {
+    pub(crate) fn new(constant_schema: bool) -> Self {
+        Self {
+            constant_schema,
+            cache: JsonSchemaCache::default(),
+            current: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn prepare_operand(
         &self,
-        args: &[Expression],
+        value: &Datum,
         ctx: &dyn Columns,
-        row: Row<'_>,
     ) -> Result<Datum, EvalError> {
-        let [schema_arg, document_arg] = args else {
-            return Err(EvalError::WrongParameterCount("json_schema_valid"));
+        let schema = self.cache.prepare(value, self.constant_schema, ctx)?;
+        let result = if schema.is_some() {
+            Datum::Int(1)
+        } else {
+            Datum::Null
         };
-        let schema_value = schema_arg.eval(ctx, row)?;
-        if schema_value.is_null() {
-            return Ok(Datum::Null);
-        }
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(schema);
+        Ok(result)
+    }
 
-        if schema_arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT {
-            let schema = self
-                .0
-                .get_or_init_cache(ctx.context_id(), || prepare_json_schema(&schema_value))?;
-            let Some(schema) = schema.as_ref().as_ref() else {
-                return Ok(Datum::Null);
-            };
-            return validate_json_schema(schema, &document_arg.eval(ctx, row)?);
+    pub(crate) fn validate_operand(&self, document: &Datum) -> Result<Datum, EvalError> {
+        let prepared = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or(EvalError::Unsupported(
+                "JSON schema operand was not prepared",
+            ))?;
+        match prepared.as_ref().as_ref() {
+            Some(schema) => validate_json_schema(schema, document),
+            None => Ok(Datum::Null),
         }
-
-        let schema = prepare_json_schema(&schema_value)?;
-        let Some(schema) = schema.as_ref() else {
-            return Ok(Datum::Null);
-        };
-        validate_json_schema(schema, &document_arg.eval(ctx, row)?)
     }
 }
 
@@ -99,52 +204,28 @@ fn prepare_json_schema(value: &Datum) -> Result<Option<PreparedJsonSchema>, Eval
     let Some(schema) = parse_json_document_argument(value)? else {
         return Ok(None);
     };
-    if !matches!(schema, Json::Object(_) | Json::Bool(_)) {
-        return Err(EvalError::Json(JsonError::InvalidJsonType {
-            argument: 1,
-            function: "json_schema_valid",
-            required: "object".to_owned(),
-        }));
-    }
-    jsonschema::draft201909::meta::validate(&schema).map_err(invalid_json_schema)?;
-    Ok(Some(PreparedJsonSchema {
-        schema,
-        validator: std::sync::OnceLock::new(),
-    }))
-}
-
-fn build_json_schema(schema: &Json) -> Result<jsonschema::Validator, EvalError> {
-    let client = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(invalid_json_schema)?;
-    jsonschema::options()
-        .with_draft(jsonschema::Draft::Draft201909)
-        // qri-io's Draft2019_09 `Format` keyword is an assertion, while the
-        // Rust validator follows the newer annotation default unless enabled.
-        .should_validate_formats(true)
-        .with_retriever(LocalSchemaRetriever { client })
-        .build(schema)
+    PreparedJsonSchema::new(schema)
+        .map(Some)
         .map_err(invalid_json_schema)
 }
 
-struct LocalSchemaRetriever {
-    client: reqwest::blocking::Client,
-}
-
-impl jsonschema::Retrieve for LocalSchemaRetriever {
-    fn retrieve(
-        &self,
-        uri: &jsonschema::Uri<String>,
-    ) -> Result<Json, Box<dyn std::error::Error + Send + Sync>> {
-        match uri.scheme().as_str() {
-            "http" | "https" => Ok(self.client.get(uri.as_str()).send()?.json()?),
-            "file" => Ok(serde_json::from_reader(std::fs::File::open(
-                uri.path().as_str(),
-            )?)?),
-            scheme => Err(format!("unsupported schema URI scheme: {scheme}").into()),
-        }
-    }
+/// TiDB owns file and HTTP(S) retrieval. The shared validator has no default
+/// network or filesystem resolver.
+fn schema_retriever() -> Result<
+    impl Fn(&str, &str, &str) -> Result<Json, Box<dyn std::error::Error + Send + Sync>> + Send + Sync,
+    String,
+> {
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok(move |scheme: &str, uri: &str, path: &str| match scheme {
+        "http" | "https" => Ok(client.get(uri).send()?.json()?),
+        "file" => Ok(serde_json::from_reader::<_, Json>(std::fs::File::open(
+            path,
+        )?)?),
+        scheme => Err(format!("unsupported schema URI scheme: {scheme}").into()),
+    })
 }
 
 fn invalid_json_schema(error: impl ToString) -> EvalError {
@@ -161,14 +242,10 @@ fn validate_json_schema(schema: &PreparedJsonSchema, document: &Datum) -> Result
     let Some(document) = parse_json_document_argument(document)? else {
         return Ok(Datum::Null);
     };
-    let validator = match schema
-        .validator
-        .get_or_init(|| build_json_schema(&schema.schema))
-    {
-        Ok(validator) => validator,
-        Err(error) => return Err(error.clone()),
-    };
-    Ok(Datum::Int(i64::from(validator.is_valid(&document))))
+    schema
+        .validate(&document, schema_retriever)
+        .map(|valid| Datum::Int(i64::from(valid)))
+        .map_err(invalid_json_schema)
 }
 
 /// Datum-level `JSON_SCHEMA_VALID(schema, document)` used by callers that do
