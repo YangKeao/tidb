@@ -431,30 +431,6 @@ fn is_default_show_collation(collation: tidb_datatype::Collation) -> bool {
 /// resolves against.
 const SHOW_VARIABLE_COLUMNS: &[&str; 2] = &["Variable_name", "Value"];
 
-/// The virtual column names available to `SHOW CHARSET WHERE`.
-const SHOW_CHARSET_COLUMNS: &[&str; 4] = &["Charset", "Description", "Default collation", "Maxlen"];
-
-/// The virtual column names available to `SHOW ENGINES WHERE`.
-const SHOW_ENGINES_COLUMNS: &[&str; 6] = &[
-    "Engine",
-    "Support",
-    "Comment",
-    "Transactions",
-    "XA",
-    "Savepoints",
-];
-
-/// The virtual column names available to `SHOW COLLATION WHERE`.
-const SHOW_COLLATION_COLUMNS: &[&str; 7] = &[
-    "Collation",
-    "Charset",
-    "Id",
-    "Default",
-    "Compiled",
-    "Sortlen",
-    "Pad_attribute",
-];
-
 /// The status variables this tier truthfully reports for `SHOW STATUS`, as
 /// `(name, value, session_only)`, in row order.
 ///
@@ -490,43 +466,48 @@ const SHOW_STATUS_VARS: &[(&str, &str, bool)] = &[
 /// without a plan to carry it.
 struct ShowRowResolver<'a> {
     columns: &'a [&'a str],
+    fields: &'a [(String, FieldType)],
     row: &'a [Datum],
 }
 
-impl tidb_executor::Columns for ShowRowResolver<'_> {
-    fn get(&self, path: &[String]) -> Option<Datum> {
+impl ShowRowResolver<'_> {
+    fn index(&self, path: &[String]) -> Option<usize> {
         let name = path.last()?;
-        let index = self
-            .columns
+        self.columns
             .iter()
-            .position(|candidate| candidate.eq_ignore_ascii_case(name))?;
-        self.row.get(index).cloned()
+            .position(|candidate| candidate.eq_ignore_ascii_case(name))
     }
 }
 
-/// Whether one virtual `SHOW` row satisfies the statement's `WHERE`.
-fn show_row_matches(
-    predicate: &tidb_ast::Expr,
-    columns: &[&str],
-    row: &[Datum],
-) -> Result<bool, DriverError> {
-    // go's SHOW WHERE resolves names against the statement's OWN output
-    // columns; a name outside that list is ErrBadField with the 'where
-    // clause' clause -- even when it names a DATA column of the inspected
-    // table (oracle: `SHOW COLUMNS FROM sy WHERE b IS NOT NULL` fails
-    // `Unknown column 'b' in 'where clause'`).
+impl tidb_executor::Columns for ShowRowResolver<'_> {
+    fn column_type(&self, path: &[String]) -> Option<FieldType> {
+        Some(self.fields.get(self.index(path)?)?.1.clone())
+    }
+
+    fn get(&self, path: &[String]) -> Option<Datum> {
+        self.row.get(self.index(path)?).cloned()
+    }
+}
+
+fn validate_show_where(predicate: &tidb_ast::Expr, columns: &[&str]) -> Result<(), DriverError> {
+    // SHOW WHERE resolves names against the statement's own output columns.
     if let Some(missing) = first_unknown_output_column(predicate, columns) {
         return Err(DriverError::UnknownColumnInClause {
             column: missing,
             clause: "where clause".to_owned(),
         });
     }
-    let resolver = ShowRowResolver { columns, row };
-    let value = tidb_executor::eval_in(predicate, &resolver)
-        .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?;
-    let truthy = tidb_executor::truthy_of(&value)
-        .map_err(|e| DriverError::Exec(tidb_executor::ExecError::Eval(e)))?;
-    Ok(truthy.unwrap_or(false))
+    Ok(())
+}
+
+fn show_eval_error(error: tidb_executor::EvalError) -> DriverError {
+    DriverError::Exec(tidb_executor::ExecError::Eval(error))
+}
+
+fn show_truth(value: Datum) -> Result<bool, DriverError> {
+    Ok(tidb_executor::truthy_of(&value)
+        .map_err(show_eval_error)?
+        .unwrap_or(false))
 }
 
 /// The first referenced column name that is not one of the SHOW output's own
@@ -647,11 +628,15 @@ fn filter_show_output(
     like_pattern: Option<ShowLikePattern>,
     where_clause: Option<&tidb_ast::Expr>,
 ) -> Result<StmtOutput, DriverError> {
+    if like_pattern.is_none() && where_clause.is_none() {
+        return Ok(output);
+    }
     let StmtOutput::Rows { columns, rows } = output else {
         return Ok(output);
     };
     let column_names: Vec<&str> = columns.iter().map(|(name, _)| name.as_str()).collect();
     let mut filtered = Vec::with_capacity(rows.len());
+    let mut prepared = None;
     for row in rows {
         let matches_like = match &like_pattern {
             None => true,
@@ -664,7 +649,26 @@ fn filter_show_output(
             continue;
         }
         if let Some(predicate) = where_clause {
-            if !show_row_matches(predicate, &column_names, &row)? {
+            let resolver = ShowRowResolver {
+                columns: &column_names,
+                fields: &columns,
+                row: &row,
+            };
+            if prepared.is_none() {
+                validate_show_where(predicate, &column_names)?;
+                prepared = Some(
+                    tidb_executor::SyntaxExecution::new(predicate, &resolver)
+                        .map_err(show_eval_error)?,
+                );
+            }
+            let value = if let Some(execution) = prepared.as_mut().and_then(Option::as_mut) {
+                execution.evaluate(&resolver)
+            } else {
+                Err(tidb_executor::EvalError::Unsupported(
+                    "SHOW predicate has no shared declaration",
+                ))
+            };
+            if !show_truth(value.map_err(show_eval_error)?)? {
                 continue;
             }
         }
@@ -1051,22 +1055,16 @@ impl Session {
                         Datum::Bytes(definition.name.as_bytes().to_vec()),
                         Datum::Bytes(value.into_bytes()),
                     ];
-                    // Go plans the WHERE as a selection over the same
-                    // virtual rows, which is what this filter is.
-                    if let Some(predicate) = &show.where_clause {
-                        if !show_row_matches(predicate, SHOW_VARIABLE_COLUMNS, &row)? {
-                            continue;
-                        }
-                    }
                     rows.push(row);
                 }
-                Ok(Some(StmtOutput::Rows {
+                let output = StmtOutput::Rows {
                     columns: vec![
                         (SHOW_VARIABLE_COLUMNS[0].to_owned(), text()),
                         (SHOW_VARIABLE_COLUMNS[1].to_owned(), text()),
                     ],
                     rows,
-                }))
+                };
+                filter_show_output(output, None, show.where_clause.as_ref()).map(Some)
             }
             // Go `fetchShowStatus`: one `Variable_name | Value` row per
             // status variable that `variable.GetStatusVars` collects from
@@ -1142,22 +1140,16 @@ impl Session {
                         Datum::Bytes(name.as_bytes().to_vec()),
                         Datum::Bytes(value.as_bytes().to_vec()),
                     ];
-                    // Go plans the WHERE as a selection over the same
-                    // virtual rows, which is what this filter is.
-                    if let Some(predicate) = predicate {
-                        if !show_row_matches(predicate, SHOW_VARIABLE_COLUMNS, &row)? {
-                            continue;
-                        }
-                    }
                     rows.push(row);
                 }
-                Ok(Some(StmtOutput::Rows {
+                let output = StmtOutput::Rows {
                     columns: vec![
                         (SHOW_VARIABLE_COLUMNS[0].to_owned(), text()),
                         (SHOW_VARIABLE_COLUMNS[1].to_owned(), text()),
                     ],
                     rows,
-                }))
+                };
+                filter_show_output(output, None, predicate).map(Some)
             }
             // Go `fetchShowCharset`: one row per charset in the parser's
             // registry, captured from mock TiDB (`Charset | Description |
@@ -1206,14 +1198,9 @@ impl Session {
                         Datum::Bytes(info.default_collation.into_bytes()),
                         Datum::Int(info.maxlen as i64),
                     ];
-                    if let Some(predicate) = predicate {
-                        if !show_row_matches(predicate, SHOW_CHARSET_COLUMNS, &row)? {
-                            continue;
-                        }
-                    }
                     rows.push(row);
                 }
-                Ok(Some(StmtOutput::Rows {
+                let output = StmtOutput::Rows {
                     columns: vec![
                         ("Charset".to_owned(), text()),
                         ("Description".to_owned(), text()),
@@ -1221,7 +1208,8 @@ impl Session {
                         ("Maxlen".to_owned(), number()),
                     ],
                     rows,
-                }))
+                };
+                filter_show_output(output, None, predicate).map(Some)
             }
             // Go `fetchShowEngines`: this tier is the mock/embedded
             // single-engine server, so the table is always the single
@@ -1261,11 +1249,8 @@ impl Session {
                         None,
                         tidb_datatype::Collation::Utf8Mb4Bin,
                     )
-                }) && predicate
-                    .map(|predicate| show_row_matches(predicate, SHOW_ENGINES_COLUMNS, &row))
-                    .transpose()?
-                    .unwrap_or(true);
-                Ok(Some(StmtOutput::Rows {
+                });
+                let output = StmtOutput::Rows {
                     columns: vec![
                         ("Engine".to_owned(), text()),
                         ("Support".to_owned(), text()),
@@ -1275,7 +1260,8 @@ impl Session {
                         ("Savepoints".to_owned(), text()),
                     ],
                     rows: included.then_some(row).into_iter().collect(),
-                }))
+                };
+                filter_show_output(output, None, predicate).map(Some)
             }
             tidb_ast::AdminStmt::ShowStatsTopN(show) => self.stats_topn_stmt(show).map(Some),
             tidb_ast::AdminStmt::ShowStatsBuckets(show) => self.stats_buckets_stmt(show).map(Some),
@@ -1347,14 +1333,9 @@ impl Session {
                         Datum::Int(sortlen),
                         Datum::Bytes(pad_attribute.as_bytes().to_vec()),
                     ];
-                    if let Some(predicate) = predicate {
-                        if !show_row_matches(predicate, SHOW_COLLATION_COLUMNS, &row)? {
-                            continue;
-                        }
-                    }
                     rows.push(row);
                 }
-                Ok(Some(StmtOutput::Rows {
+                let output = StmtOutput::Rows {
                     columns: vec![
                         ("Collation".to_owned(), text()),
                         ("Charset".to_owned(), text()),
@@ -1365,7 +1346,8 @@ impl Session {
                         ("Pad_attribute".to_owned(), text()),
                     ],
                     rows,
-                }))
+                };
+                filter_show_output(output, None, predicate).map(Some)
             }
             // Go `ShowExec` with `ShowWarnings`/`ShowErrors`: the rows are
             // the statement-context warnings, whose `Level` column is
@@ -1806,11 +1788,6 @@ impl Session {
                 };
                 let field_type =
                     tidb_datatype::FieldType::new(tidb_datatype::FieldTypeCode::VarString);
-                let column_names: Vec<&str> = if full {
-                    vec![name_column.as_str(), "Table_type"]
-                } else {
-                    vec![name_column.as_str()]
-                };
                 let mut rows = Vec::with_capacity(listed.len());
                 for (name, is_view, is_sequence) in listed {
                     let mut row = vec![Datum::Bytes(name.into_bytes())];
@@ -1818,11 +1795,6 @@ impl Session {
                         row.push(Datum::Bytes(
                             table_type_of(is_view, is_sequence).as_bytes().to_vec(),
                         ));
-                    }
-                    if let Some(predicate) = where_clause {
-                        if !show_row_matches(predicate, &column_names, &row)? {
-                            continue;
-                        }
                     }
                     rows.push(row);
                 }
@@ -1834,7 +1806,7 @@ impl Session {
                 } else {
                     vec![(name_column, field_type)]
                 };
-                Ok(Some(StmtOutput::Rows { columns, rows }))
+                filter_show_output(StmtOutput::Rows { columns, rows }, None, where_clause).map(Some)
             }
             // Go `SimpleExec.executeShutdown` + `asyncDelayShutdown`
             // (pkg/executor/simple.go:3584-3611): the statement answers

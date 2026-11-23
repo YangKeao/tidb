@@ -77,6 +77,7 @@ impl ProjectionContext for crate::StmtContext {
 struct ParallelProjectionShared<C> {
     program: Arc<EvaluatorProgram>,
     ctx: C,
+    free_suites: std::sync::Mutex<Vec<EvaluatorSuite>>,
 }
 
 /// Go `projectionInputFetcher` + `projectionWorker`s, driven from the session
@@ -155,7 +156,11 @@ impl<C: Columns> ProjectionExec<C> {
     /// `tidb_projection_concurrency` workers, or zero for the serial path.
     #[must_use]
     pub fn with_workers(mut self, num_workers: usize) -> Self {
-        self.num_workers = num_workers;
+        self.num_workers = if self.program.parallelizable() {
+            num_workers
+        } else {
+            0
+        };
         self
     }
 
@@ -180,6 +185,7 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
                 shared: Arc::new(ParallelProjectionShared {
                     program: Arc::clone(&self.program),
                     ctx: self.ctx.clone(),
+                    free_suites: std::sync::Mutex::new(Vec::new()),
                 }),
                 result_tx,
                 result_rx,
@@ -296,11 +302,21 @@ impl<C: Columns + Clone + Send + Sync + 'static> ProjectionExec<C> {
             let mut input = input;
             let mut output = output;
             let result = crate::sort_util::recover_worker_panic(|| {
-                let suite = EvaluatorSuite::from_program(Arc::clone(&shared.program));
+                let suite = shared
+                    .free_suites
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop()
+                    .unwrap_or_else(|| EvaluatorSuite::from_program(Arc::clone(&shared.program)));
                 suite
                     .run(&shared.ctx, &mut input, &mut output)
-                    .map(|()| (input, output))
-                    .map_err(Self::evaluator_error)
+                    .map_err(Self::evaluator_error)?;
+                shared
+                    .free_suites
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(suite);
+                Ok((input, output))
             });
             // A dropped receiver means the projection is already closed.
             let _ = result_tx.send((seq, result));
@@ -342,6 +358,7 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
     fn open(&mut self) -> Result<(), ExecError> {
         self.child.open()?;
         self.child_chunk.reset();
+        self.evaluator_suite = EvaluatorSuite::from_program(Arc::clone(&self.program));
         self.parallel = None;
         Ok(())
     }

@@ -138,6 +138,7 @@ pub(super) struct IndexHashState {
     outer_row: usize,
     scratch: Chunk,
     candidate_outer: Vec<usize>,
+    filters: tidb_expr::evaluator::FilterExecution,
     selected: Vec<bool>,
     nulls: Vec<bool>,
     memory: StatementMemory,
@@ -316,6 +317,7 @@ impl IndexHashState {
             outer_row: 0,
             scratch: Chunk::new_with_capacity(&output.condition_types, 1),
             candidate_outer: Vec::new(),
+            filters: tidb_expr::evaluator::FilterExecution::new(output.conditions.clone()),
             selected: Vec::new(),
             nulls: Vec::new(),
             memory: memory.clone(),
@@ -440,10 +442,9 @@ impl IndexHashState {
         req: &mut Chunk,
     ) -> Result<(), ExecError> {
         self.evaluations += self.scratch.num_rows() as u64;
-        let (selected, nulls) = tidb_expr::evaluator::vectorized_filter_consider_null(
+        let (selected, nulls) = self.filters.filter(
             ctx,
             output.vectorized,
-            &output.conditions,
             &self.scratch,
             std::mem::take(&mut self.selected),
             std::mem::take(&mut self.nulls),
