@@ -119,10 +119,16 @@ impl Columns for RequestEvalContext {
 }
 
 /// A decoded builtin and the request that owns its evaluation settings.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SharedExpression {
-    pub(super) expression: tidb_expr::expression::Expression,
+    pub(super) program: SharedProgram,
     pub(super) context: Arc<RequestEvalContext>,
+}
+
+#[derive(Debug)]
+pub(super) enum SharedProgram {
+    Rpn(Mutex<tidb_expr::rpn::WireExpressionExecution>),
+    Typed(tidb_expr::expression::Expression),
 }
 
 #[cfg(test)]
