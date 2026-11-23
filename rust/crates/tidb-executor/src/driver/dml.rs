@@ -4284,8 +4284,10 @@ fn run_update_with_physical(
         field_types: &field_types,
         stored_meta: &stored_meta,
         visible_offsets: &visible_offsets,
-        set_exprs: &set_exprs,
-        programs: set_exprs.iter().map(|_| Default::default()).collect(),
+        programs: set_exprs
+            .into_iter()
+            .map(|(offset, expression)| (offset, tidb_expr::evaluator::RowProgram::new(expression)))
+            .collect(),
         ctx,
         on_update_now: &on_update_now,
         stored_handle_slot,
@@ -4432,12 +4434,11 @@ struct UpdateRowEvaluator<'a> {
     /// The statement's visible columns, then Go's extra handle column when
     /// the table has one.
     field_types: &'a [FieldType],
-    /// Every column of the stored row, which `set_exprs` offsets address.
+    /// Every column of the stored row, which the assignment offsets address.
     stored_meta: &'a [ColumnDefaultMeta],
     /// The stored offsets of the visible columns, in order.
     visible_offsets: &'a [usize],
-    set_exprs: &'a [(usize, Expression)],
-    programs: Vec<tidb_expr::evaluator::RowProgram>,
+    programs: Vec<(usize, tidb_expr::evaluator::RowProgram)>,
     ctx: &'a crate::StmtContext,
     on_update_now: &'a PreparedOnUpdateNow,
     /// The extra handle's assignment offset, one past the stored row: Go
@@ -4479,10 +4480,9 @@ impl UpdateRowEvaluator<'_> {
         // against the single unmodified `chunk` makes that the only reading there
         // is, rather than a rule the loop has to re-establish per assignment.
         let mut new_row = row.to_vec();
-        for ((offset, expr), program) in self.set_exprs.iter().zip(&mut self.programs) {
+        for (offset, program) in &mut self.programs {
             let value = program
                 .evaluate(
-                    expr,
                     self.ctx,
                     physical_row.ok_or_else(|| {
                         DriverError::unsupported(

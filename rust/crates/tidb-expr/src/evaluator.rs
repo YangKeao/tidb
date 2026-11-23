@@ -620,19 +620,29 @@ fn evaluate_prepared_row(
 }
 
 /// Execution state for repeatedly evaluating one bound expression on rows.
-#[derive(Default)]
-pub struct RowProgram(Option<Option<PreparedExpression>>);
+pub struct RowProgram {
+    expression: Expression,
+    prepared: Option<Option<PreparedExpression>>,
+}
 
 impl RowProgram {
-    /// Evaluate on the current row, using the bound program when it can
-    /// represent the current expression's declaration.
+    /// Bind an expression to this execution.
+    pub fn new(expression: Expression) -> Self {
+        Self { expression, prepared: None }
+    }
+
+    /// Return the bound expression's declaration.
+    pub fn expression(&self) -> &Expression {
+        &self.expression
+    }
+
+    /// Evaluate the bound expression on the current row.
     pub fn evaluate(
         &mut self,
-        expression: &Expression,
         ctx: &dyn Columns,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<Datum, EvalError> {
-        evaluate_prepared_row(expression, &mut self.0, ctx, row)
+        evaluate_prepared_row(&self.expression, &mut self.prepared, ctx, row)
     }
 }
 
@@ -784,6 +794,36 @@ impl EvaluatorSuite {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn row_programs_keep_their_bound_arithmetic_across_rows() {
+        use tidb_datatype::{FieldType, FieldTypeCode};
+
+        let field = FieldType::new(FieldTypeCode::LongLong);
+        let mut input = Chunk::new_chunk_with_capacity(std::slice::from_ref(&field), 2);
+        input.append_int64(0, 7);
+        input.append_int64(0, 3);
+        let mut column = crate::column::Column::new(1, field.clone());
+        column.index = 0;
+        let bind = |name| {
+            let expression = crate::new_function::new_function_base(
+                &crate::NoColumns,
+                name,
+                field.clone(),
+                vec![
+                    Expression::Column(column.clone()),
+                    Expression::Constant(crate::constant::Constant::new(Datum::Int(1), field.clone())),
+                ],
+            ).unwrap();
+            RowProgram::new(expression)
+        };
+        let mut add = bind("plus");
+        let mut subtract = bind("minus");
+        for (row, value) in [7, 3].into_iter().enumerate() {
+            assert_eq!(add.evaluate(&crate::NoColumns, input.get_row(row)).unwrap(), Datum::Int(value + 1));
+            assert_eq!(subtract.evaluate(&crate::NoColumns, input.get_row(row)).unwrap(), Datum::Int(value - 1));
+        }
+    }
+
     use std::cell::Cell;
 
     use super::*;
