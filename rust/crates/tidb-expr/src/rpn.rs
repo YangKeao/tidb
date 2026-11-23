@@ -2037,6 +2037,9 @@ fn sql_cast_override(
             flen: length.unwrap_or(0),
             scale: fsp.unwrap_or(crate::cast::UNSPECIFIED_CAST_SCALE),
         },
+        // The storage CAST renders the exact Decimal coefficient, which can
+        // retain more fractional digits than the protocol result display.
+        "cast_char" if source.eval_type() == NativeEvalType::Decimal => return None,
         "cast_char" => CastType::Char {
             len: length,
             charset: Some(if result.is_binary_string() {
