@@ -1584,7 +1584,13 @@ pub(crate) fn bit_count(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datu
                 .value as u64
         }
     };
-    Ok(Datum::Int(i64::from(bits.count_ones())))
+    sdk_bit_count(bits as i64)
+}
+
+pub(super) fn sdk_bit_count(value: i64) -> Result<Datum, EvalError> {
+    tidb_query_expr::impl_other::bit_count(&value)
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 /// Coerces a raw string/bytes payload through the integer cast used by

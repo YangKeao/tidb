@@ -126,82 +126,9 @@ pub(crate) fn integer_binary(
             }
             integer_result(unsigned && !force_signed, bits_a.wrapping_sub(bits_b))
         }
-        // `*` matches Go's two sigs, selected by whether either operand is
-        // unsigned (`getFunction`: `HasUnsignedFlag(lhs) || HasUnsignedFlag(rhs)`
-        // == this `unsigned`). `builtinArithmeticMultiplyIntUnsignedSig` multiplies
-        // the u64 bit patterns and errors when the product wraps
-        // (`unsignedA != 0 && result/unsignedA != unsignedB`); `...MultiplyIntSig`
-        // multiplies as i64 (`a != 0 && result/a != b`, plus the `MinInt64 * -1`
-        // case). Both are exactly `checked_mul` on the respective type.
-        Mul => {
-            if unsigned {
-                return bits_a
-                    .checked_mul(bits_b)
-                    .map(Datum::UInt)
-                    .ok_or(EvalError::IntOverflow);
-            }
-            return (bits_a as i64)
-                .checked_mul(bits_b as i64)
-                .map(Datum::Int)
-                .ok_or(EvalError::IntOverflow);
-        }
-        // `DIV`/`MOD` by zero yield NULL in MySQL. `DIV` truncates toward zero.
-        IntDiv => {
-            if bits_b == 0 {
-                crate::expression_errors::handle_division_by_zero(ctx)?;
-                Datum::Null
-            } else {
-                // Go selects a different checked helper for every signedness
-                // pair.  In particular, a mixed signed/unsigned quotient is
-                // an unsigned result and rejects a negative quotient instead
-                // of dividing the raw two's-complement bit patterns.
-                let quotient = match (a, b) {
-                    (Integer::Unsigned(lhs), Integer::Unsigned(rhs)) => lhs / rhs,
-                    (Integer::Unsigned(lhs), Integer::Signed(rhs)) => {
-                        div_uint_with_int(lhs, rhs).map_err(|_| EvalError::IntOverflow)?
-                    }
-                    (Integer::Signed(lhs), Integer::Unsigned(rhs)) => {
-                        div_int_with_uint(lhs, rhs).map_err(|_| EvalError::IntOverflow)?
-                    }
-                    (Integer::Signed(lhs), Integer::Signed(rhs)) => {
-                        return div_int64(lhs, rhs)
-                            .map(Datum::Int)
-                            .map_err(|_| EvalError::IntOverflow);
-                    }
-                };
-                Datum::UInt(quotient)
-            }
-        }
-        Mod => {
-            if bits_b == 0 {
-                crate::expression_errors::handle_division_by_zero(ctx)?;
-                Datum::Null
-            } else {
-                // MOD's result flag follows the left operand only.  Go's
-                // mixed-sign implementations also preserve the dividend sign
-                // instead of taking a remainder over raw unsigned bits.
-                match (a, b) {
-                    (Integer::Unsigned(lhs), Integer::Unsigned(rhs)) => Datum::UInt(lhs % rhs),
-                    (Integer::Unsigned(lhs), Integer::Signed(rhs)) => {
-                        Datum::UInt(lhs % rhs.unsigned_abs())
-                    }
-                    (Integer::Signed(lhs), Integer::Unsigned(rhs)) => {
-                        let remainder = if lhs < 0 {
-                            ((lhs.unsigned_abs() % rhs) as i64).wrapping_neg()
-                        } else {
-                            (lhs as u64 % rhs) as i64
-                        };
-                        Datum::Int(remainder)
-                    }
-                    (Integer::Signed(lhs), Integer::Signed(rhs)) => {
-                        Datum::Int(lhs.wrapping_rem(rhs))
-                    }
-                }
-            }
-        }
-        BitAnd => Datum::UInt(bits_a & bits_b),
-        BitOr => Datum::UInt(bits_a | bits_b),
-        BitXor => Datum::UInt(bits_a ^ bits_b),
+        Mul => return integer_multiply(bits_a as i64, bits_b as i64, unsigned),
+        IntDiv | Mod => return integer_div_mod(op, bits_a as i64, bits_b as i64, [lhs_unsigned, rhs_unsigned], ctx),
+        BitAnd | BitOr | BitXor => return integer_bitwise(op, bits_a as i64, bits_b as i64),
         LeftShift => Datum::UInt(shift_left(bits_a, bits_b)),
         RightShift => Datum::UInt(shift_right(bits_a, bits_b)),
         Eq => bool_int(integer_cmp(a, b).is_eq()),
@@ -213,6 +140,53 @@ pub(crate) fn integer_binary(
         Div => unreachable!("handled above"),
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled above"),
     })
+}
+
+pub(super) fn integer_bitwise(op: BinaryOp, left: i64, right: i64) -> Result<Datum, EvalError> {
+    use tidb_query_expr::impl_op::{bit_and, bit_or, bit_xor};
+    let kernel = match op {
+        BinaryOp::BitAnd => bit_and,
+        BinaryOp::BitOr => bit_or,
+        BinaryOp::BitXor => bit_xor,
+        _ => unreachable!("only bitwise binary operators use the SDK bitwise kernel"),
+    };
+    sdk_integer_result(kernel(Some(&left), Some(&right)), true)
+}
+
+fn integer_div_mod(
+    op: BinaryOp,
+    left: i64,
+    right: i64,
+    unsigned: [bool; 2],
+    ctx: &dyn tidb_exprctx::context::Columns,
+) -> Result<Datum, EvalError> {
+    use tidb_query_expr::impl_arithmetic::{
+        ArithmeticOp, IntDivideInt, IntDivideUint, IntIntMod, IntUintMod, UintDivideInt,
+        UintDivideUint, UintIntMod, UintUintMod,
+    };
+    if right == 0 {
+        crate::expression_errors::handle_division_by_zero(ctx)?;
+        return Ok(Datum::Null);
+    }
+    let result = if op == BinaryOp::IntDiv {
+        match unsigned {
+            [false, false] => IntDivideInt::calc(&left, &right),
+            [false, true] => IntDivideUint::calc(&left, &right),
+            [true, false] => UintDivideInt::calc(&left, &right),
+            [true, true] => UintDivideUint::calc(&left, &right),
+        }
+    } else {
+        match unsigned {
+            // Rust remainder overflows for this pair, but Go returns 0.
+            [false, false] if left == i64::MIN && right == -1 => Ok(Some(0)),
+            [false, false] => IntIntMod::calc(&left, &right),
+            [false, true] => IntUintMod::calc(&left, &right),
+            [true, false] => UintIntMod::calc(&left, &right),
+            [true, true] => UintUintMod::calc(&left, &right),
+        }
+    };
+    let unsigned_result = unsigned[0] || (op == BinaryOp::IntDiv && unsigned[1]);
+    sdk_integer_result(result, unsigned_result)
 }
 
 pub(super) fn integer_result(unsigned: bool, bits: u64) -> Datum {
@@ -230,24 +204,39 @@ pub(super) fn integer_result(unsigned: bool, bits: u64) -> Datum {
 /// checked operation: a mixed sum underflows past `0` when a negative addend
 /// exceeds the unsigned operand, or overflows past `u64::MAX`.
 pub(super) fn integer_add(a: Integer, b: Integer) -> Result<Datum, EvalError> {
-    match (a, b) {
-        (Integer::Signed(x), Integer::Signed(y)) => x
-            .checked_add(y)
-            .map(Datum::Int)
-            .ok_or(EvalError::IntOverflow),
-        (Integer::Unsigned(x), Integer::Unsigned(y)) => x
-            .checked_add(y)
-            .map(Datum::UInt)
-            .ok_or(EvalError::IntOverflow),
-        (Integer::Unsigned(x), Integer::Signed(y)) | (Integer::Signed(y), Integer::Unsigned(x)) => {
-            let sum = if y < 0 {
-                x.checked_sub(y.unsigned_abs())
-            } else {
-                x.checked_add(y.unsigned_abs())
-            };
-            sum.map(Datum::UInt).ok_or(EvalError::IntOverflow)
+    use tidb_query_expr::impl_arithmetic::{ArithmeticOp, IntIntPlus, IntUintPlus, UintUintPlus};
+
+    let (result, unsigned) = match (a, b) {
+        (Integer::Signed(x), Integer::Signed(y)) => (IntIntPlus::calc(&x, &y), false),
+        (Integer::Unsigned(x), Integer::Unsigned(y)) => {
+            (UintUintPlus::calc(&(x as i64), &(y as i64)), true)
         }
-    }
+        (Integer::Unsigned(x), Integer::Signed(y)) | (Integer::Signed(y), Integer::Unsigned(x)) => {
+            (IntUintPlus::calc(&y, &(x as i64)), true)
+        }
+    };
+    sdk_integer_result(result, unsigned)
+}
+
+pub(crate) fn integer_multiply(left: i64, right: i64, unsigned: bool) -> Result<Datum, EvalError> {
+    use tidb_query_expr::impl_arithmetic::{ArithmeticOp, IntIntMultiply, UintUintMultiply};
+
+    let result = if unsigned {
+        UintUintMultiply::calc(&left, &right)
+    } else {
+        IntIntMultiply::calc(&left, &right)
+    };
+    sdk_integer_result(result, unsigned)
+}
+
+fn sdk_integer_result(
+    result: tidb_query_common::Result<Option<i64>>,
+    unsigned: bool,
+) -> Result<Datum, EvalError> {
+    // The caller formats the overflow using the original SQL operands.
+    result
+        .map(|value| value.map_or(Datum::Null, |bits| integer_result(unsigned, bits as u64)))
+        .map_err(|_| EvalError::IntOverflow)
 }
 
 /// A line-for-line port of Go `builtinArithmeticMinusIntSig.overflowCheck`:

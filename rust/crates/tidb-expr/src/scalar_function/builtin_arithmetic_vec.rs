@@ -77,12 +77,8 @@ pub(super) fn eval(
             Kernel::IntegerMultiply { unsigned } => {
                 let l = crate::arg_eval_type::eval_int(&left)?.unwrap();
                 let r = crate::arg_eval_type::eval_int(&right)?.unwrap();
-                (if unsigned {
-                    (l as u64).checked_mul(r as u64).map(Datum::UInt)
-                } else {
-                    l.checked_mul(r).map(Datum::Int)
-                })
-                .ok_or_else(|| super::arithmetic_overflow_error(function, op, ctx))?
+                crate::ops::integer_multiply(l, r, unsigned)
+                    .map_err(|_| super::arithmetic_overflow_error(function, op, ctx))?
             }
             Kernel::IntegerMod { unsigned } => {
                 let operand = |v: Datum, unsigned: bool| -> Result<Datum, EvalError> {

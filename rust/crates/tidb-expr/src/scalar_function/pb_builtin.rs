@@ -1591,13 +1591,7 @@ impl PbBuiltin {
                 let Some(right) = crate::arg_eval_type::eval_int(&right)? else {
                     return Ok(Datum::Null);
                 };
-                // These Go signatures bake signedness into the implementation.
-                let result = if unsigned {
-                    (left as u64).checked_mul(right as u64).map(Datum::UInt)
-                } else {
-                    left.checked_mul(right).map(Datum::Int)
-                };
-                result.ok_or_else(|| {
+                crate::ops::integer_multiply(left, right, unsigned).map_err(|_| {
                     match super::arithmetic_overflow_expression(function, BinaryOp::Mul, ctx) {
                         Some(expression) => EvalError::DataOutOfRange {
                             value: if unsigned {

@@ -23,12 +23,11 @@ use crate::coerce::{
     Integer,
 };
 use crate::{Datum, Decimal, EvalError};
-use tidb_datatype::{div_int64, div_int_with_uint, div_uint_with_int};
 
 mod integer_coerce;
 mod operand;
 mod real_coerce;
-pub(crate) use integer_coerce::integer_binary;
+pub(crate) use integer_coerce::{integer_binary, integer_multiply};
 use integer_coerce::*;
 pub(crate) use operand::{Operand, Operands};
 pub(crate) use real_coerce::*;
@@ -1038,9 +1037,7 @@ fn decimal_binary(
         BitAnd | BitOr | BitXor | LeftShift | RightShift => {
             let (ai, bi) = (decimal_bit_operand(&a, ctx)?, decimal_bit_operand(&b, ctx)?);
             match op {
-                BitAnd => Datum::UInt((ai as u64) & (bi as u64)),
-                BitOr => Datum::UInt((ai as u64) | (bi as u64)),
-                BitXor => Datum::UInt((ai as u64) ^ (bi as u64)),
+                BitAnd | BitOr | BitXor => return integer_bitwise(op, ai, bi),
                 LeftShift => Datum::UInt(shift_left(ai as u64, bi as u64)),
                 RightShift => Datum::UInt(shift_right(ai as u64, bi as u64)),
                 _ => unreachable!("guarded by outer match"),

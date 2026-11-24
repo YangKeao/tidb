@@ -48,8 +48,8 @@ pub(super) fn eval(
         }
         for row in 0..input.num_rows() {
             if !result.is_null(row) {
-                let count = result.get_int64(row).count_ones();
-                vec_eval::put(result, row, EvalType::Int, &Datum::Int(i64::from(count)))?;
+                let count = crate::string_fn::sdk_bit_count(result.get_int64(row))?;
+                vec_eval::put(result, row, EvalType::Int, &count)?;
             }
         }
         return Ok(());
