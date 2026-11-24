@@ -27,7 +27,7 @@ use crate::{Datum, Decimal, EvalError};
 mod integer_coerce;
 mod operand;
 mod real_coerce;
-pub(crate) use integer_coerce::{integer_binary, integer_multiply};
+pub(crate) use integer_coerce::{integer_binary, integer_multiply, signed_remainder};
 use integer_coerce::*;
 pub(crate) use operand::{Operand, Operands};
 pub(crate) use real_coerce::*;

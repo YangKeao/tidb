@@ -227,6 +227,7 @@ struct Kernel {
     metadata: Box<dyn Any + Send>,
     diagnostic: Option<usize>,
     check_integer_zero_divisor: bool,
+    signed_remainder: bool,
     decimal_arithmetic: Option<DecimalArithmetic>,
 }
 
@@ -263,6 +264,18 @@ fn decorated_kernel(
     }
     let result = if let Some(arithmetic) = kernel.decimal_arithmetic {
         arithmetic.evaluate(ctx, count, args)
+    } else if kernel.signed_remainder {
+        let mut result = VectorValue::with_capacity(count, EvalType::Int);
+        for row in 0..count {
+            let value = match (args[0].get_logical_scalar_ref(row), args[1].get_logical_scalar_ref(row)) {
+                (ScalarValueRef::Int(Some(left)), ScalarValueRef::Int(Some(right))) => {
+                    crate::ops::signed_remainder(*left, *right)?
+                }
+                _ => None,
+            };
+            result.push_int(value);
+        }
+        Ok(result)
     } else {
         (kernel.upstream.fn_ptr)(ctx, count, args, extra, kernel.metadata.as_ref())
     };
@@ -425,6 +438,7 @@ fn adapt_wire_inputs(
                         metadata,
                         diagnostic: None,
                         check_integer_zero_divisor: true,
+                        signed_remainder: false,
                         decimal_arithmetic: None,
                     }),
                 ));
@@ -610,6 +624,10 @@ fn compile(
                         metadata,
                         diagnostic,
                         check_integer_zero_divisor,
+                        signed_remainder: sig == ScalarFuncSig::ModIntSignedSigned
+                            || sig == ScalarFuncSig::ModInt && tree.get_children().iter().all(|arg| {
+                                !arg.get_field_type().as_accessor().is_unsigned()
+                            }),
                         decimal_arithmetic,
                     };
                     callback(

@@ -167,7 +167,7 @@ fn integer_div_mod(
     ctx: &dyn tidb_exprctx::context::Columns,
 ) -> Result<Datum, EvalError> {
     use tidb_query_expr::impl_arithmetic::{
-        ArithmeticOp, IntDivideInt, IntDivideUint, IntIntMod, IntUintMod, UintDivideInt,
+        ArithmeticOp, IntDivideInt, IntDivideUint, IntUintMod, UintDivideInt,
         UintDivideUint, UintIntMod, UintUintMod,
     };
     if right == 0 {
@@ -183,9 +183,7 @@ fn integer_div_mod(
         }
     } else {
         match unsigned {
-            // Rust remainder overflows for this pair, but Go returns 0.
-            [false, false] if left == i64::MIN && right == -1 => Ok(Some(0)),
-            [false, false] => IntIntMod::calc(&left, &right),
+            [false, false] => signed_remainder(left, right),
             [false, true] => IntUintMod::calc(&left, &right),
             [true, false] => UintIntMod::calc(&left, &right),
             [true, true] => UintUintMod::calc(&left, &right),
@@ -193,6 +191,15 @@ fn integer_div_mod(
     };
     let unsigned_result = unsigned[0] || (op == BinaryOp::IntDiv && unsigned[1]);
     sdk_integer_result(result, unsigned_result)
+}
+
+pub(crate) fn signed_remainder(left: i64, right: i64) -> tidb_query_common::Result<Option<i64>> {
+    use tidb_query_expr::impl_arithmetic::{ArithmeticOp, IntIntMod};
+    // Go returns zero for the one signed pair whose remainder traps in Rust.
+    if left == i64::MIN && right == -1 {
+        return Ok(Some(0));
+    }
+    IntIntMod::calc(&left, &right)
 }
 
 pub(super) fn integer_result(unsigned: bool, bits: u64) -> Datum {

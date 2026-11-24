@@ -368,9 +368,12 @@ pub(crate) fn eval_constant_for_folding(
 ) -> Result<Datum, EvalError> {
     let mut dual = tidb_chunk::chunk::Chunk::new_empty_chunk(&[]);
     dual.set_num_virtual_rows(1);
-    expression
-        .eval_string(ctx, dual.get_row(0))
-        .map(|value| expression.apply_enum_set_as_int(value))
+    let row = dual.get_row(0);
+    let value = match expression {
+        expression::Expression::ScalarFunction(function) => function.eval(ctx, row)?,
+        _ => expression.eval_string(ctx, row)?,
+    };
+    Ok(expression.apply_enum_set_as_int(value))
 }
 
 /// Applies a binary operator to already-evaluated operands. Exposed so callers

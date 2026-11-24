@@ -105,31 +105,27 @@ impl<'a> ExpressionRoot<'a> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoweringMode {
+    Executor,
+    Row,
+    TypedBatch,
+}
+
 impl PreparedExpression {
     pub(crate) fn new(
         expression: &Expression,
         ctx: &dyn Columns,
         column_count: usize,
     ) -> Result<Option<Self>, EvalError> {
-        Self::prepare(expression, ctx, column_count, false)
+        Self::prepare(expression.into(), ctx, column_count, LoweringMode::Executor)
     }
 
     fn prepare(
-        expression: &Expression,
-        ctx: &dyn Columns,
-        column_count: usize,
-        use_statement_seed: bool,
-    ) -> Result<Option<Self>, EvalError> {
-        Self::prepare_with_source(expression.into(), ctx, column_count, use_statement_seed, true, false)
-    }
-
-    fn prepare_with_source(
         expression: ExpressionRoot<'_>,
         ctx: &dyn Columns,
         column_count: usize,
-        use_statement_seed: bool,
-        physical_input: bool,
-        typed_batch: bool,
+        mode: LoweringMode,
     ) -> Result<Option<Self>, EvalError> {
         let Some(columns) = native_schema(expression, column_count) else {
             return Ok(None);
@@ -143,9 +139,8 @@ impl PreparedExpression {
             &columns,
             &mut context,
             ctx,
-            physical_input,
-            use_statement_seed,
-            typed_batch,
+            true,
+            mode,
         )
         .map_err(engine_error)?
         else {
@@ -185,7 +180,7 @@ impl PreparedExpression {
             diagnostics: compiled.diagnostics,
             schema,
             column_paths: Vec::new(),
-            statement_seeds: use_statement_seed.then(|| {
+            statement_seeds: (mode == LoweringMode::Row).then(|| {
                 (0..compiled.seed_keys.len())
                     .map(|_| Default::default())
                     .collect()
@@ -245,7 +240,7 @@ impl PreparedExpression {
         mut emit: impl FnMut(Datum) -> Result<(), EvalError>,
     ) -> Result<bool, EvalError> {
         let Some(mut program) =
-            Self::prepare_with_source(expression.into(), ctx, chunk.num_cols(), false, true, true)?
+            Self::prepare(expression.into(), ctx, chunk.num_cols(), LoweringMode::TypedBatch)?
         else {
             return Ok(false);
         };
@@ -753,8 +748,8 @@ pub(crate) fn try_evaluate_scalar_function(
     ctx: &dyn Columns,
     row: tidb_chunk::row::Row<'_>,
 ) -> Result<Option<Datum>, EvalError> {
-    let Some(mut execution) = PreparedExpression::prepare_with_source(
-        ExpressionRoot::Scalar(function), ctx, row.len(), true, true, false,
+    let Some(mut execution) = PreparedExpression::prepare(
+        ExpressionRoot::Scalar(function), ctx, row.len(), LoweringMode::Row,
     )? else {
         return Ok(None);
     };
@@ -774,7 +769,7 @@ pub(crate) fn try_evaluate_row(
     ctx: &dyn Columns,
     row: tidb_chunk::row::Row<'_>,
 ) -> Result<Option<Datum>, EvalError> {
-    let Some(mut execution) = PreparedExpression::prepare(expression, ctx, row.len(), true)? else {
+    let Some(mut execution) = PreparedExpression::prepare(expression.into(), ctx, row.len(), LoweringMode::Row)? else {
         return Ok(None);
     };
     execution.evaluate_row(ctx, row).map(Some)
@@ -1175,8 +1170,7 @@ struct CompiledExpression {
 struct LoweringEnvironment<'a> {
     input_types: &'a [FieldType],
     host: &'a dyn Columns,
-    direct_row: bool,
-    typed_batch: bool,
+    mode: LoweringMode,
 }
 
 /// Lower the already resolved native expression through the SDK compiler.
@@ -1186,14 +1180,12 @@ fn compile(
     ctx: &mut EvalContext,
     host: &dyn Columns,
     physical_input: bool,
-    direct_row: bool,
-    typed_batch: bool,
+    mode: LoweringMode,
 ) -> Result<Option<CompiledExpression>, String> {
     let environment = LoweringEnvironment {
         input_types,
         host,
-        direct_row,
-        typed_batch,
+        mode,
     };
     let mut bindings = Vec::new();
     let mut host_calls = Vec::new();
@@ -1335,7 +1327,7 @@ fn lower_declared(
     if let Some(constant) = function.binary_literal_source() {
         return lower_leaf(&Expression::Constant(constant.clone()), environment.input_types);
     }
-    if environment.direct_row && !binding::preserves_direct_row_contract(function) {
+    if environment.mode == LoweringMode::Row && !binding::preserves_direct_row_contract(function) {
         return None;
     }
     let name = binding::local_name(function);
@@ -1360,7 +1352,7 @@ fn lower_declared(
         || (matches!(name, "date_add" | "date_sub")
             || name.starts_with("date_add_")
             || name.starts_with("date_sub_"))
-            && (!environment.typed_batch || date_arithmetic.is_none()
+            && (environment.mode != LoweringMode::TypedBatch || date_arithmetic.is_none()
                 || function.args.get(2)?.const_level() < crate::expression::ConstLevel::ONLY_IN_CONTEXT)
     {
         return None;
@@ -1482,7 +1474,7 @@ fn lower_declared(
     }
     let mut call = QueryExpr::new();
     call.set_field_type(field_type);
-    if environment.typed_batch {
+    if environment.mode == LoweringMode::TypedBatch {
         if let Some(generator) = function.captured_random() {
             call.set_tp(QueryExprType::ScalarFunc);
             return bind_host_call(
@@ -1766,7 +1758,7 @@ fn lower_declared(
         }
         call.mut_children().push(lowered);
     }
-    if let Some(subtract) = date_arithmetic.filter(|_| environment.typed_batch) {
+    if let Some(subtract) = date_arithmetic.filter(|_| environment.mode == LoweringMode::TypedBatch) {
         let fields = function.args.iter()
             .map(|arg| arg.static_type().cloned())
             .collect::<Option<Vec<_>>>()?;
@@ -1778,7 +1770,7 @@ fn lower_declared(
         );
     }
     use tidb_proto::tipb::ScalarFuncSig::{CurrentTime1Arg, UtcTimeWithArg};
-    if environment.typed_batch && matches!(signature, Some(CurrentTime1Arg | UtcTimeWithArg)) {
+    if environment.mode == LoweringMode::TypedBatch && matches!(signature, Some(CurrentTime1Arg | UtcTimeWithArg)) {
         return bind_host_call(
             call,
             HostOperation::ClockDuration { utc: signature == Some(UtcTimeWithArg) },
@@ -1786,7 +1778,7 @@ fn lower_declared(
             host_calls,
         );
     }
-    if environment.typed_batch
+    if environment.mode == LoweringMode::TypedBatch
         && signature == Some(tidb_proto::tipb::ScalarFuncSig::LastInsertIdWithId)
     {
         call.set_sig(ScalarFuncSig::Unspecified);
@@ -2865,7 +2857,7 @@ mod tests {
                 Expression::Constant(crate::constant::Constant::new(Datum::Int(1), integer)),
             ],
         ));
-        let mut prepared = PreparedExpression::prepare(&increment, &crate::NoColumns, 1, false)
+        let mut prepared = PreparedExpression::new(&increment, &crate::NoColumns, 1)
             .unwrap()
             .unwrap();
         let mut presence = vec![false];
@@ -2885,6 +2877,35 @@ mod tests {
         input.append_datum(0, &Datum::Null);
         assert!(prepared.append_quiet_int_presence(&crate::NoColumns, &input, &mut presence));
         assert_eq!(presence, [false, true, false]);
+    }
+
+    #[test]
+    fn shared_signed_remainder_handles_minimum_integer() {
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let mut input = Chunk::new_chunk_with_capacity(&[integer.clone(), integer.clone()], 2);
+        input.append_int64(0, i64::MIN);
+        input.append_int64(1, -1);
+        input.append_int64(0, -7);
+        input.append_int64(1, 2);
+        let mut divisor = Column::new(1, integer.clone());
+        divisor.index = 1;
+        let expression = Expression::ScalarFunction(build_function(
+            CiString::new("mod"),
+            integer.clone(),
+            vec![
+                Expression::Column(Column::new(0, integer.clone())),
+                Expression::Column(divisor),
+            ],
+        ));
+        let mut program = PreparedExpression::new(&expression, &crate::NoColumns, 2)
+            .unwrap()
+            .unwrap();
+        let mut actual = Vec::new();
+        program.evaluate_rows(&crate::NoColumns, &input, &[0, 1], false, |value| {
+            actual.push(value);
+            Ok(())
+        }).unwrap();
+        assert_eq!(actual, [Datum::Int(0), Datum::Int(-1)]);
     }
 
     #[test]
@@ -2921,7 +2942,7 @@ mod tests {
             ],
         ));
         let ctx = Warnings(RefCell::new(Vec::new()));
-        let mut prepared = PreparedExpression::prepare(&modulo, &ctx, 1, false)
+        let mut prepared = PreparedExpression::new(&modulo, &ctx, 1)
             .unwrap()
             .unwrap();
         let mut presence = Vec::new();
@@ -3316,8 +3337,7 @@ mod tests {
             &mut ctx,
             &crate::NoColumns,
             false,
-            false,
-            false,
+            LoweringMode::Executor,
         )
         .unwrap()
         .unwrap();
