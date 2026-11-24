@@ -1672,7 +1672,7 @@ mod tests {
     /// evaluator appends, for nested `+`/`-`/`*` over decimal and integer
     /// columns and constants, NULLs included.
     #[test]
-    fn projection_decimal_arithmetic_matches_the_row_evaluator_cell_for_cell() {
+    fn projection_decimal_arithmetic_preserves_values_and_result_scale() {
         let mut price_type = FieldType::new(FieldTypeCode::NewDecimal);
         price_type.set_flen(15);
         price_type.set_decimal(2);
@@ -1747,119 +1747,52 @@ mod tests {
                 &result_type,
             ),
         ];
-        let ctx = NoColumns;
+        let check = |expression: &Expression, input: &Chunk| {
+            let field = expression.static_type().unwrap();
+            let rows = input.num_rows();
+            let mut output = Chunk::new_chunk_with_capacity(std::slice::from_ref(field), rows);
+            assert!(crate::scalar_function::vec_eval::eval_one(
+                expression, &NoColumns, input, &mut output, 0,
+            ).unwrap());
+            assert_eq!(output.num_rows(), rows);
+            for row in 0..rows {
+                let expected = expression.eval(&NoColumns, input.get_row(row)).unwrap();
+                let actual = output.get_row(row);
+                assert_eq!(actual.get_datum(0, field), expected);
+                if let Datum::Decimal(value) = expected {
+                    assert_eq!(actual.get_my_decimal(0).result_frac(), value.to_my_decimal().unwrap().result_frac());
+                }
+            }
+        };
         for expression in &expressions {
-            let Expression::ScalarFunction(function) = expression else {
-                unreachable!()
-            };
-            let mut expected = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &expression.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
-            // A selection on the input is honored.
+            check(expression, &input);
             input.set_sel(Some(vec![1, 3, 6]));
-            let mut expected = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                3,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &expression.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                3,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
+            check(expression, &input);
             input.set_sel(None);
         }
-        // Go `builtinCastIntAsDecimalSig.vecEvalDecimal`: an integer column
-        // cast to a DECIMAL wide enough for every integer is the padded
-        // integer, at scale 0 and at a positive scale.
-        let mut wide = FieldType::new(FieldTypeCode::NewDecimal);
-        wide.set_flen(20);
-        wide.set_decimal(0);
-        let mut wide_scaled = FieldType::new(FieldTypeCode::NewDecimal);
-        wide_scaled.set_flen(22);
-        wide_scaled.set_decimal(2);
-        for target in [&wide, &wide_scaled] {
+
+        // Exercise wide and narrowing integer-to-DECIMAL casts inside the
+        // production batch evaluator, alongside the separate integer domain.
+        for (flen, scale) in [(20, 0), (22, 2), (9, 0)] {
+            let mut target = FieldType::new(FieldTypeCode::NewDecimal);
+            target.set_flen(flen);
+            target.set_decimal(scale);
             let product = typed(
                 "mul",
                 vec![
                     decimal_column(0, &price_type),
                     Expression::ScalarFunction(crate::builtin_cast::cast_function_for_test(
                         input_column(2),
-                        target.clone(),
+                        target,
                     )),
                 ],
                 &result_type,
             );
-            let Expression::ScalarFunction(function) = &product else {
-                unreachable!()
-            };
-            let mut expected = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &product.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
+            check(&product, &input);
         }
-        // A target that can clamp (`ProduceDecWithSpecifiedTp`) keeps the
-        // row path.
-        let mut narrow = FieldType::new(FieldTypeCode::NewDecimal);
-        narrow.set_flen(9);
-        narrow.set_decimal(0);
-        let Expression::ScalarFunction(clamping) = typed(
-            "mul",
-            vec![
-                decimal_column(0, &price_type),
-                Expression::ScalarFunction(crate::builtin_cast::cast_function_for_test(
-                    input_column(2),
-                    narrow.clone(),
-                )),
-            ],
-            &result_type,
-        ) else {
-            unreachable!()
-        };
-        let mut output = Chunk::new_chunk_with_capacity(&[result_type.clone()], 8);
-        assert!(!clamping
-            .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-            .unwrap());
-        assert_eq!(output.num_rows(), 0);
-        // Two integers stay integer arithmetic: not covered.
-        let Expression::ScalarFunction(ints) =
-            typed("plus", vec![input_column(2), int_const(1)], &result_type)
-        else {
-            unreachable!()
-        };
-        let mut output = Chunk::new_chunk_with_capacity(&[result_type.clone()], 8);
-        assert!(!ints
-            .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-            .unwrap());
-        assert_eq!(output.num_rows(), 0);
+        let integers = typed("plus", vec![input_column(2), int_const(1)], &result_type);
+        assert_eq!(integers.static_type().unwrap().eval_type(), tidb_datatype::EvalType::Int);
+        check(&integers, &input);
     }
 
     /// Go `builtinGTDecimalSig.vecEvalInt`: a decimal column against an
