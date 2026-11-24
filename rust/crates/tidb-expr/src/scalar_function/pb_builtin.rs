@@ -633,12 +633,27 @@ pub(crate) struct PbBuiltin {
     pub(super) kernel: Kernel,
 }
 
+macro_rules! rpn_comparison {
+    ($carrier:ty, $domain:ident, $operator:ty) => {
+        Kernel::RpnOnly(
+            tidb_query_expr::impl_compare::compare_fn_meta::<
+                tidb_query_expr::impl_compare::BasicComparer<$carrier, $operator>,
+            >,
+            &[EvalType::$domain; 2],
+        )
+    };
+}
+
 impl PbBuiltin {
     pub(crate) fn signature(self) -> ScalarFuncSig {
         self.signature
     }
 
     pub(crate) fn new(signature: ScalarFuncSig) -> Option<Self> {
+        use tidb_query_datatype::codec::{data_type::Duration as QueryDuration, mysql::Decimal as QueryDecimal};
+        use tidb_query_expr::impl_compare::{
+            CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, compare_vector_float32_fn_meta,
+        };
         use ScalarFuncSig::*;
         let kernel = match signature {
             PlusInt => Kernel::Binary(BinaryOp::Plus, EvalType::Int),
@@ -681,12 +696,12 @@ impl PbBuiltin {
             GeReal => Kernel::Compare(BinaryOp::Ge, EvalType::Real),
             EqReal => Kernel::Compare(BinaryOp::Eq, EvalType::Real),
             NeReal => Kernel::Compare(BinaryOp::Ne, EvalType::Real),
-            LtDecimal => Kernel::Compare(BinaryOp::Lt, EvalType::Decimal),
-            LeDecimal => Kernel::Compare(BinaryOp::Le, EvalType::Decimal),
-            GtDecimal => Kernel::Compare(BinaryOp::Gt, EvalType::Decimal),
-            GeDecimal => Kernel::Compare(BinaryOp::Ge, EvalType::Decimal),
-            EqDecimal => Kernel::Compare(BinaryOp::Eq, EvalType::Decimal),
-            NeDecimal => Kernel::Compare(BinaryOp::Ne, EvalType::Decimal),
+            LtDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpLt),
+            LeDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpLe),
+            GtDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpGt),
+            GeDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpGe),
+            EqDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpEq),
+            NeDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpNe),
             LtString => Kernel::Compare(BinaryOp::Lt, EvalType::String),
             LeString => Kernel::Compare(BinaryOp::Le, EvalType::String),
             GtString => Kernel::Compare(BinaryOp::Gt, EvalType::String),
@@ -701,12 +716,12 @@ impl PbBuiltin {
             NeTime => Kernel::Compare(BinaryOp::Ne, EvalType::Datetime),
             InInt => Kernel::In(EvalType::Int),
             InString => Kernel::In(EvalType::String),
-            LtDuration => Kernel::Compare(BinaryOp::Lt, EvalType::Duration),
-            LeDuration => Kernel::Compare(BinaryOp::Le, EvalType::Duration),
-            GtDuration => Kernel::Compare(BinaryOp::Gt, EvalType::Duration),
-            GeDuration => Kernel::Compare(BinaryOp::Ge, EvalType::Duration),
-            EqDuration => Kernel::Compare(BinaryOp::Eq, EvalType::Duration),
-            NeDuration => Kernel::Compare(BinaryOp::Ne, EvalType::Duration),
+            LtDuration => rpn_comparison!(QueryDuration, Duration, CmpOpLt),
+            LeDuration => rpn_comparison!(QueryDuration, Duration, CmpOpLe),
+            GtDuration => rpn_comparison!(QueryDuration, Duration, CmpOpGt),
+            GeDuration => rpn_comparison!(QueryDuration, Duration, CmpOpGe),
+            EqDuration => rpn_comparison!(QueryDuration, Duration, CmpOpEq),
+            NeDuration => rpn_comparison!(QueryDuration, Duration, CmpOpNe),
             NullEqDuration => Kernel::Compare(BinaryOp::NullEq, EvalType::Duration),
             LtJson => Kernel::Compare(BinaryOp::Lt, EvalType::Json),
             LeJson => Kernel::Compare(BinaryOp::Le, EvalType::Json),
@@ -715,12 +730,12 @@ impl PbBuiltin {
             EqJson => Kernel::Compare(BinaryOp::Eq, EvalType::Json),
             NeJson => Kernel::Compare(BinaryOp::Ne, EvalType::Json),
             NullEqJson => Kernel::Compare(BinaryOp::NullEq, EvalType::Json),
-            LtVectorFloat32 => Kernel::Compare(BinaryOp::Lt, EvalType::VectorFloat32),
-            LeVectorFloat32 => Kernel::Compare(BinaryOp::Le, EvalType::VectorFloat32),
-            GtVectorFloat32 => Kernel::Compare(BinaryOp::Gt, EvalType::VectorFloat32),
-            GeVectorFloat32 => Kernel::Compare(BinaryOp::Ge, EvalType::VectorFloat32),
-            EqVectorFloat32 => Kernel::Compare(BinaryOp::Eq, EvalType::VectorFloat32),
-            NeVectorFloat32 => Kernel::Compare(BinaryOp::Ne, EvalType::VectorFloat32),
+            LtVectorFloat32 => Kernel::RpnOnly(compare_vector_float32_fn_meta::<CmpOpLt>, &[EvalType::VectorFloat32; 2]),
+            LeVectorFloat32 => Kernel::RpnOnly(compare_vector_float32_fn_meta::<CmpOpLe>, &[EvalType::VectorFloat32; 2]),
+            GtVectorFloat32 => Kernel::RpnOnly(compare_vector_float32_fn_meta::<CmpOpGt>, &[EvalType::VectorFloat32; 2]),
+            GeVectorFloat32 => Kernel::RpnOnly(compare_vector_float32_fn_meta::<CmpOpGe>, &[EvalType::VectorFloat32; 2]),
+            EqVectorFloat32 => Kernel::RpnOnly(compare_vector_float32_fn_meta::<CmpOpEq>, &[EvalType::VectorFloat32; 2]),
+            NeVectorFloat32 => Kernel::RpnOnly(compare_vector_float32_fn_meta::<CmpOpNe>, &[EvalType::VectorFloat32; 2]),
             NullEqVectorFloat32 => Kernel::Compare(BinaryOp::NullEq, EvalType::VectorFloat32),
             InReal => Kernel::In(EvalType::Real),
             InDecimal => Kernel::In(EvalType::Decimal),
