@@ -187,8 +187,24 @@ impl PreparedExpression {
         output_index: usize,
     ) -> Result<(), EvalError> {
         let selected: Vec<_> = (0..chunk.num_rows()).collect();
+        if destination.sel().is_some()
+            || self.output.is_hybrid()
+            || self.output.code() == FieldTypeCode::Float
+        {
+            return self.evaluate_rows(ctx, chunk, &selected, false, |datum| {
+                destination.append_datum(output_index, &datum);
+                Ok(())
+            });
+        }
+
+        // Use the same result column sizing as native VecEval.
+        let target = self.output.eval_type();
+        let mut column = destination.column_mut(output_index);
+        crate::chunk_executor::allocate(target, selected.len(), &mut column);
+        let mut row = 0;
         self.evaluate_rows(ctx, chunk, &selected, false, |datum| {
-            destination.append_datum(output_index, &datum);
+            crate::scalar_function::vec_eval::put(&mut column, row, target, &datum)?;
+            row += 1;
             Ok(())
         })
     }
@@ -552,6 +568,9 @@ fn bind_wire_fields(expr: &mut WireExpr, columns: &[FieldType]) -> Option<()> {
     for child in &mut expr.children {
         bind_wire_fields(child, columns)?;
     }
+    if expr.tp() == ExprType::ScalarFunc && !wire_cast_preserves_sql_contract(expr) {
+        return None;
+    }
     if expr
         .field_type
         .as_ref()
@@ -620,6 +639,22 @@ fn bind_wire_fields(expr: &mut WireExpr, columns: &[FieldType]) -> Option<()> {
         }
     }
     Some(())
+}
+
+fn wire_cast_preserves_sql_contract(expr: &WireExpr) -> bool {
+    use tidb_proto::tipb::ScalarFuncSig;
+
+    let source = expr.children.first().and_then(|child| child.field_type.as_ref());
+    match expr.sig() {
+        // The typed request kernels retain SQL diagnostics and row order
+        // when numeric conversions produce warnings.
+        ScalarFuncSig::CastStringAsReal | ScalarFuncSig::CastJsonAsReal => false,
+        // YEAR converts to a partial date that is valid for comparison.
+        ScalarFuncSig::CastIntAsTime => source.is_none_or(|field| {
+            field.tp != Some(i32::from(FieldTypeCode::Year.mysql_type()))
+        }),
+        _ => true,
+    }
 }
 
 /// Go's typed Constant.VecEval forwards a deferred expression of the
@@ -954,7 +989,6 @@ struct HostCall {
 
 enum HostOperation {
     LoadFile,
-    ValidatePasswordStrength,
     LocalBuiltin(Box<PreparedLocalBuiltin>),
     InvalidArity(&'static str),
     BenchmarkCount { body_error: Option<EvalError> },
@@ -1176,6 +1210,58 @@ fn lower_declared(
         return None;
     }
     let name = binding::local_name(function);
+    let result_type = expression.static_type()?;
+    if function.is_cast()
+        && (result_type.code() == FieldTypeCode::Timestamp
+            || function.args.first().and_then(Expression::static_type).is_some_and(|source| {
+                source.is_hybrid() || source.eval_type() == NativeEvalType::VectorFloat32
+            }))
+    {
+        // The declared SQL cast owns temporal assignment, source charset and
+        // numeric diagnostics for BIT, ENUM, SET and VECTOR operands.
+        return None;
+    }
+    if name == "intdiv" && function.numeric_operand_domain() != Some(NativeEvalType::Int) {
+        // Decimal DIV owns its operand-specific overflow message and
+        // scalar/vector conversion diagnostics.
+        return None;
+    }
+    if matches!(name, "addtime" | "subtime" | "date_add" | "date_sub"
+        | "repeat" | "password" | "validate_password_strength")
+        || name.starts_with("date_add_")
+        || name.starts_with("date_sub_")
+    {
+        // These SQL kernels have mode-specific warnings or result precision.
+        return None;
+    }
+    if name == "conv" && function.args.first().is_some_and(crate::scalar_function::conv_reads_bits) {
+        // The SQL class reads the bit pattern before its implicit string cast.
+        return None;
+    }
+    if name == "hex"
+        && function.args.first().and_then(Expression::static_type).is_some_and(FieldType::is_hybrid)
+    {
+        // Read the member in its source charset before obtaining its bytes.
+        return None;
+    }
+    if matches!(name, "greatest" | "least") && result_type.eval_type() == NativeEvalType::String {
+        // SQL's scalar and vector string comparisons pick different values
+        // when two strings compare equal under the collation.
+        return None;
+    }
+    if name == "values" && result_type.is_hybrid() {
+        // A typed VALUES signature reads the original insert value using its
+        // SQL domain, which need not match the declared column carrier.
+        return None;
+    }
+    if function.args.iter().any(|argument| {
+        matches!(argument, Expression::ScalarFunction(child)
+            if child.func_name.lowercase() == "dayname")
+    }) {
+        // Native callers can ask DAYNAME for the weekday index. Its lowered
+        // string result alone does not carry that implicit numeric interface.
+        return None;
+    }
     if matches!(name, "charset" | "collation" | "coercibility") {
         let [argument] = function.args.as_slice() else {
             return None;
@@ -1198,7 +1284,6 @@ fn lower_declared(
             }
         }
     }
-    let result_type = expression.static_type()?;
     let native_call = true;
     if native_call && matches!(name, "cast_signed" | "cast_unsigned") {
         if let [operand] = function.args.as_slice() {
@@ -1214,10 +1299,6 @@ fn lower_declared(
         }
     }
     let signature = binding::function_signature(function);
-    // The native binder stores the interval unit in the function name.
-    // Rehydrate the third argument consumed by the SDK metadata builder.
-    let native_date_arithmetic =
-        native_call && (name.starts_with("date_add_") || name.starts_with("date_sub_"));
     let lock = native_call
         .then(|| crate::scalar_function::advisory_lock_spec(name))
         .flatten();
@@ -1227,40 +1308,6 @@ fn lower_declared(
         _ => None,
     };
     let candidates = match name {
-        "addtime" if native_call => match function.args.as_slice() {
-            [left, right] => {
-                let (left, right) = left.static_type().zip(right.static_type())?;
-                match (left.code(), right.code(), right.eval_type()) {
-                    (
-                        FieldTypeCode::Datetime | FieldTypeCode::Timestamp,
-                        _,
-                        NativeEvalType::String,
-                    ) => Some(&[ScalarFuncSig::AddDatetimeAndString][..]),
-                    (FieldTypeCode::Duration, FieldTypeCode::Date, _) => {
-                        Some(&[ScalarFuncSig::AddDurationAndString][..])
-                    }
-                    (FieldTypeCode::Date, _, _) => None,
-                    _ if !matches!(
-                        left.eval_type(),
-                        NativeEvalType::Datetime
-                            | NativeEvalType::Timestamp
-                            | NativeEvalType::Duration
-                    ) && right.eval_type() != NativeEvalType::Duration =>
-                    {
-                        // These source overloads have no registered callback.
-                        None
-                    }
-                    _ => registered_candidates(name, 2),
-                }
-            }
-            _ => None,
-        },
-        "subtime"
-            if native_call
-                && function.args.first()?.static_type()?.code() == FieldTypeCode::Date =>
-        {
-            None
-        }
         "json_merge_preserve" => registered_candidates("json_merge", function.args.len()),
         _ if trim_direction.is_some() => registered_candidates("trim", function.args.len() + 1),
         "json_member_of" => registered_candidates("json_memberof", function.args.len()),
@@ -1307,23 +1354,6 @@ fn lower_declared(
             Vec::new(),
             host_calls,
         );
-    }
-    if native_call
-        && matches!(name, "addtime" | "subtime")
-        && function
-            .args
-            .get(1)
-            .and_then(Expression::static_type)
-            .is_some_and(|field| {
-                matches!(
-                    field.code(),
-                    FieldTypeCode::Datetime | FieldTypeCode::Timestamp
-                )
-            })
-    {
-        // The original no-read overload has no operand demand.
-        call.set_tp(QueryExprType::Null);
-        return Some(call);
     }
     let convert_using_metadata = native_call
         && name == "convert_using"
@@ -1409,6 +1439,11 @@ fn lower_declared(
         .flatten();
     let comparison_domain =
         if native_call && matches!(name, "eq" | "ne" | "nulleq" | "lt" | "le" | "gt" | "ge") {
+            if function.args.iter().filter_map(Expression::static_type).any(FieldType::is_hybrid) {
+                // Compare the SQL member name and its collation, including
+                // original bytes for transient ENUM/SET columns.
+                return None;
+            }
             comparison_domain(&function.args)
         } else {
             None
@@ -1567,6 +1602,15 @@ fn lower_declared(
                 _ => false,
             };
             if condition {
+                if eval_type(&lowered) == Some(EvalType::Json) {
+                    lowered = bind_host_operand(
+                        lowered,
+                        HostOperation::NumericCast(NativeEvalType::Real),
+                        field.clone(),
+                        &FieldType::new(FieldTypeCode::Double),
+                        host_calls,
+                    )?;
+                }
                 lowered = truth_operand(lowered)?;
             } else if matches!(name, "if" | "case" | "coalesce" | "ifnull") {
                 lowered = bind_selection_result(lowered, result_type)?;
@@ -1740,7 +1784,6 @@ fn lower_declared(
     let execution_seed = seed_source.is_some();
     let local_kernel = needs_sql_value_kernel(name)
         || (environment.direct_row && binding::uses_native_real_math(name))
-        || native_date_arithmetic
         || (name == "minus"
             && native_call
             && environment.host.no_unsigned_subtraction()
@@ -1837,10 +1880,6 @@ fn lower_declared(
         }
         [value] if native_call && name == "cast_vector" => (
             HostOperation::RejectVectorCast,
-            vec![value.static_type()?.clone()],
-        ),
-        [value] if native_call && name == "validate_password_strength" => (
-            HostOperation::ValidatePasswordStrength,
             vec![value.static_type()?.clone()],
         ),
         args if weight_input == Some(true)
@@ -1960,7 +1999,6 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "insert_func"
             | "lpad"
             | "rpad"
-            | "repeat"
             | "space"
             | "to_base64"
             | "from_base64"
@@ -1976,7 +2014,6 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_merge_patch"
             | "is_ipv4"
             | "is_ipv6"
-            | "password"
             | "conv"
             | "sin"
             | "cos"
@@ -1984,8 +2021,7 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "pow"
             | "power"
             | "cot"
-            | "addtime"
-            | "subtime"
+            | "exp"
             | "date"
             | "instr"
             | "uuid"
@@ -2000,6 +2036,7 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_contains"
             | "json_type"
             | "json_quote"
+            | "json_unquote"
             | "json_object"
             | "json_merge_preserve"
             | "json_merge"
@@ -2009,6 +2046,7 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "year"
             | "yearweek"
             | "month"
+            | "monthname"
             | "quarter"
             | "unix_timestamp"
             | "makedate"

@@ -282,10 +282,6 @@ impl NativeRows<'_> {
                         )))
                     }
                 }
-                (HostOperation::ValidatePasswordStrength, [value], [field]) => {
-                    let value = from_query_value(value.get_logical_scalar_ref(row), field)?;
-                    crate::builtin_ext::crypto::validate_password_strength(&value, self.context)
-                }
                 (HostOperation::LocalBuiltin(function), _, fields)
                     if args.len() == fields.len() =>
                 {

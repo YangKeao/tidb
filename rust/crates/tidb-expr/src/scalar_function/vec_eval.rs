@@ -433,7 +433,7 @@ pub(crate) fn value(
 }
 
 /// Go typed result writes: fixed cells are updated in place, variable cells appended.
-pub(super) fn put(
+pub(crate) fn put(
     column: &mut Column,
     index: usize,
     target: EvalType,
