@@ -1050,17 +1050,13 @@ impl PbBuiltin {
             LastDay => Kernel::Method(class_kernels::last_day),
             // builtin_miscellaneous.go
             InetAton => Kernel::Values(|values, _| crate::builtin_ext::compare2::inet_aton(&values[0])),
-            InetNtoa => Kernel::Values(|values, ctx| crate::builtin_ext::compare2::inet_ntoa(&values[0], ctx)),
+            InetNtoa => Kernel::RpnOnly(None, &[EvalType::Int]),
             Inet6Aton => Kernel::Values(|values, _| crate::builtin_ext::compare2::inet6_aton(&values[0])),
-            Inet6Ntoa => Kernel::Values(|values, _| crate::builtin_ext::compare2::inet6_ntoa(&values[0])),
+            Inet6Ntoa => Kernel::RpnOnly(None, &[EvalType::String]),
             IsIPv4 => Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv4_value(&values[0])),
-            IsIPv4Compat => {
-                Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv4_compat_value(&values[0]))
-            }
-            IsIPv4Mapped => {
-                Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv4_mapped_value(&values[0]))
-            }
-            IsIPv6 => Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv6_value(&values[0])),
+            IsIPv4Compat => Kernel::RpnOnly(None, &[EvalType::String]),
+            IsIPv4Mapped => Kernel::RpnOnly(None, &[EvalType::String]),
+            IsIPv6 => Kernel::RpnOnly(None, &[EvalType::String]),
             UuiDv4 => Kernel::Method(|_, _, _| crate::builtin_ext::misc::uuid_v4()),
             UuiDv7 => Kernel::Method(|_, _, _| crate::builtin_ext::misc::uuid_v7()),
             DecimalAnyValue | DurationAnyValue | IntAnyValue | JsonAnyValue | RealAnyValue

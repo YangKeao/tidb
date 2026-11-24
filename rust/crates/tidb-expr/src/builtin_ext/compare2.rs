@@ -723,8 +723,8 @@ pub(crate) fn inet_aton(value: &Datum) -> Result<Datum, EvalError> {
     let Some(text) = coerce_str(value)? else {
         return Ok(Datum::Null);
     };
-    match inet_aton_text(&text) {
-        Some(address) => Ok(Datum::UInt(address)),
+    match sdk::inet_aton(text.as_bytes()).map_err(crate::rpn::query_error)? {
+        Some(address) => Ok(Datum::UInt(address as u64)),
         // Go `evalInt`: `errWrongValueForType("string", val, "inet_aton")`
         // (1411); its `vecEvalInt` is `builtin_miscellaneous_vec.rs`'s.
         None => Err(EvalError::WrongValueForType {
@@ -733,66 +733,6 @@ pub(crate) fn inet_aton(value: &Datum) -> Result<Datum, EvalError> {
             function: "inet_aton",
         }),
     }
-}
-
-/// The address, or `None` where Go answers `errWrongValueForType`.
-fn inet_aton_text(text: &str) -> Option<u64> {
-    if text.is_empty() || text.ends_with('.') {
-        return None;
-    }
-    let mut result = 0_u64;
-    let mut byte_result = 0_u64;
-    let mut dots = 0_u8;
-    for byte in text.bytes() {
-        match byte {
-            b'0'..=b'9' => {
-                byte_result = byte_result * 10 + u64::from(byte - b'0');
-                if byte_result > 255 {
-                    return None;
-                }
-            }
-            b'.' => {
-                dots += 1;
-                if dots > 3 {
-                    return None;
-                }
-                result = (result << 8) + byte_result;
-                byte_result = 0;
-            }
-            _ => return None,
-        }
-    }
-    if dots == 1 {
-        result <<= 8;
-    }
-    if dots <= 2 {
-        result <<= 8;
-    }
-    Some((result << 8) + byte_result)
-}
-
-/// `INET_NTOA(expr)`: unsigned 32-bit integer to canonical dotted IPv4.
-/// Port of `builtinInetNtoaSig.evalString` in
-/// `pkg/expression/builtin_miscellaneous.go`. The scalar domain has no
-/// planning-time `ETInt` cast, so only its already-integer values are
-/// representable faithfully; other types remain honestly unsupported.
-pub(crate) fn inet_ntoa(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let value = match value {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::Int(value) => *value as u64,
-        Datum::UInt(value) => *value,
-        // go's ETInt argument casts any non-NULL value first; the cast is a
-        // real StrToInt, so a non-numeric string raises go's 1292 truncation
-        // warning on its way to 0 ("0.0.0.0") — captured on the oracle for
-        // `INET_NTOA('a')` inside a multi-function statement.
-        other => {
-            crate::cast::report_int_truncation(other, ctx)?;
-            crate::cast::to_i64_signed(other) as u64
-        }
-    };
-    sdk::inet_ntoa(Some(&(value as i64)))
-        .map(|bytes| bytes.map_or(Datum::Null, Datum::new_string_datum))
-        .map_err(crate::rpn::query_error)
 }
 
 /// `INET6_ATON(expr)`: parse an IPv4 or IPv6 spelling into the raw network
@@ -836,27 +776,6 @@ pub(crate) fn inet6_aton_text(text: &str) -> Option<Datum> {
         .map(Datum::new_bytes_datum)
 }
 
-/// `INET6_NTOA(expr)`: render a four- or sixteen-byte binary string as the
-/// canonical textual IPv4/IPv6 spelling.  Go first asks `net.IP.String()` to
-/// format the bytes and then prefixes a sixteen-byte mapped IPv4 result with
-/// `::ffff:`; Rust's `Ipv6Addr` formatter emits that same canonical mapped
-/// spelling.  Any other byte length is SQL `NULL`, matching the source's
-/// `net.ParseIP(ip) == nil` branch.  Port of
-/// `builtinInet6NtoaSig.evalString` in `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn inet6_ntoa(value: &Datum) -> Result<Datum, EvalError> {
-    let bytes = match value {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::String(value) => value.bytes().to_vec(),
-        Datum::Bytes(value) => value.clone(),
-        // The Go function's argument is ETString, so numeric constants are
-        // first rendered by EvalString and then interpreted as raw bytes.
-        _ => coerce_str(value)?.expect("non-NULL scalar").into_bytes(),
-    };
-    sdk::inet6_ntoa(Some(&bytes))
-        .map(|bytes| bytes.map_or(Datum::Null, Datum::new_string_datum))
-        .map_err(crate::rpn::query_error)
-}
-
 /// `IS_IPV4(expr)`: strict four-component decimal IPv4 predicate. Port of
 /// `builtinIsIPv4Sig.evalInt` and its `isIPv4` helper in
 /// `pkg/expression/builtin_miscellaneous.go`.
@@ -894,58 +813,6 @@ fn is_ipv4(value: &str) -> bool {
         }
     }
     dots == 3 && component <= 255 && !previous_dot
-}
-
-/// `IS_IPV4_MAPPED(expr)`: true only for a sixteen-byte binary payload whose
-/// first twelve bytes are the IPv4-mapped prefix (`::ffff:`).  The Go
-/// signature receives an ETString and tests the raw bytes directly; keeping
-/// this helper byte-oriented is important because arbitrary SQL strings are
-/// allowed to contain invalid UTF-8.  Port of
-/// `builtinIsIPv4MappedSig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn is_ipv4_mapped_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    sdk::is_ipv4_mapped(Some(&bytes))
-        .map(|value| value.map_or(Datum::Null, Datum::Int))
-        .map_err(crate::rpn::query_error)
-}
-
-/// `IS_IPV4_COMPAT(expr)`: true only for a sixteen-byte binary payload whose
-/// first twelve bytes are all zero (`::/96`, excluding the mapped `::ffff:`
-/// prefix by construction).  Port of `builtinIsIPv4CompatSig.evalInt` in
-/// `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn is_ipv4_compat_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    sdk::is_ipv4_compat(Some(&bytes))
-        .map(|value| value.map_or(Datum::Null, Datum::Int))
-        .map_err(crate::rpn::query_error)
-}
-
-/// Evaluates the ETString argument used by the Go IPv4 binary predicates
-/// without decoding or replacing arbitrary bytes.  Numeric constants still
-/// follow the normal EvalString coercion used by the source signature.
-fn eval_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
-    match value {
-        Datum::Null => Ok(None),
-        Datum::String(value) => Ok(Some(value.bytes().to_vec())),
-        Datum::Bytes(value) => Ok(Some(value.clone())),
-        _ => Ok(coerce_str(value)?.map(|text| text.into_bytes())),
-    }
-}
-
-/// `IS_IPV6(expr)`: true for a parseable IPv6 address, including an IPv4
-/// mapped spelling, but false for a pure IPv4 address. Port of
-/// `builtinIsIPv6Sig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn is_ipv6_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    sdk::is_ipv6(Some(value.as_bytes()))
-        .map(|value| value.map_or(Datum::Null, Datum::Int))
-        .map_err(crate::rpn::query_error)
 }
 
 #[cfg(test)]
