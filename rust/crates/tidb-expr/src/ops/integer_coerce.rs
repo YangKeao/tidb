@@ -128,9 +128,9 @@ pub(crate) fn integer_binary(
         }
         Mul => return integer_multiply(bits_a as i64, bits_b as i64, unsigned),
         IntDiv | Mod => return integer_div_mod(op, bits_a as i64, bits_b as i64, [lhs_unsigned, rhs_unsigned], ctx),
-        BitAnd | BitOr | BitXor => return integer_bitwise(op, bits_a as i64, bits_b as i64),
-        LeftShift => Datum::UInt(shift_left(bits_a, bits_b)),
-        RightShift => Datum::UInt(shift_right(bits_a, bits_b)),
+        BitAnd | BitOr | BitXor | LeftShift | RightShift => {
+            return integer_bitwise(op, bits_a as i64, bits_b as i64);
+        }
         Eq => bool_int(integer_cmp(a, b).is_eq()),
         Ge => bool_int(integer_cmp(a, b).is_ge()),
         Gt => bool_int(integer_cmp(a, b).is_gt()),
@@ -144,13 +144,19 @@ pub(crate) fn integer_binary(
 
 pub(super) fn integer_bitwise(op: BinaryOp, left: i64, right: i64) -> Result<Datum, EvalError> {
     use tidb_query_expr::impl_op::{bit_and, bit_or, bit_xor};
-    let kernel = match op {
-        BinaryOp::BitAnd => bit_and,
-        BinaryOp::BitOr => bit_or,
-        BinaryOp::BitXor => bit_xor,
+    let result = match op {
+        BinaryOp::BitAnd => bit_and(Some(&left), Some(&right)),
+        BinaryOp::BitOr => bit_or(Some(&left), Some(&right)),
+        BinaryOp::BitXor => bit_xor(Some(&left), Some(&right)),
+        BinaryOp::LeftShift => return Ok(Datum::UInt(shift_left(left as u64, right as u64))),
+        BinaryOp::RightShift => return Ok(Datum::UInt(shift_right(left as u64, right as u64))),
         _ => unreachable!("only bitwise binary operators use the SDK bitwise kernel"),
     };
-    sdk_integer_result(kernel(Some(&left), Some(&right)), true)
+    sdk_integer_result(result, true)
+}
+
+pub(super) fn integer_bit_neg(value: i64) -> Result<Datum, EvalError> {
+    sdk_integer_result(tidb_query_expr::impl_op::bit_neg(Some(&value)), true)
 }
 
 fn integer_div_mod(
@@ -289,7 +295,7 @@ pub(super) fn minus_overflows(
 
 /// MySQL shifts operate on 64-bit unsigned values; a shift amount `>= 64`
 /// yields 0.
-pub(super) fn shift_left(a: u64, b: u64) -> u64 {
+fn shift_left(a: u64, b: u64) -> u64 {
     if b >= 64 {
         0
     } else {
@@ -297,7 +303,7 @@ pub(super) fn shift_left(a: u64, b: u64) -> u64 {
     }
 }
 
-pub(super) fn shift_right(a: u64, b: u64) -> u64 {
+fn shift_right(a: u64, b: u64) -> u64 {
     if b >= 64 {
         0
     } else {

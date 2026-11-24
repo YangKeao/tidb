@@ -74,7 +74,7 @@ pub(crate) fn eval_unary(
             Minus => Ok(Datum::Real(-to_f64_with_mysql_string(&v, ctx)?)),
             BitNeg => {
                 crate::cast::report_int_truncation(&v, ctx)?;
-                Ok(Datum::UInt(!(crate::cast::to_i64_signed(&v) as u64)))
+                integer_bit_neg(crate::cast::to_i64_signed(&v))
             }
             Not | NotKeyword => unreachable!("handled above"),
         },
@@ -83,7 +83,7 @@ pub(crate) fn eval_unary(
             Minus => Ok(Datum::Decimal(d.negate())),
             // `~x` rounds to the nearest integer first (ties away from zero),
             // then flips the bits exactly like the `Int` case.
-            BitNeg => Ok(Datum::UInt(!(decimal_bit_operand(&d, ctx)? as u64))),
+            BitNeg => integer_bit_neg(decimal_bit_operand(&d, ctx)?),
             Not | NotKeyword => unreachable!("handled above"),
         },
         // Negating a finite f64 is always finite, so no overflow check is
@@ -98,16 +98,16 @@ pub(crate) fn eval_unary(
             // rounds to the even 2, `~2` is `-3`), not `-4` (which
             // away-from-zero rounding to 3 would give).
             BitNeg => f64_to_i64(f.round_ties_even())
-                .map(|i| Datum::UInt(!(i as u64)))
-                .ok_or(EvalError::IntOverflow),
+                .ok_or(EvalError::IntOverflow)
+                .and_then(integer_bit_neg),
             Not | NotKeyword => unreachable!("handled above"),
         },
         Datum::Float32(f) => match op {
             Plus => Ok(Datum::Float32(f)),
             Minus => Ok(Datum::Float32(-f)),
             BitNeg => f64_to_i64(f.round_ties_even())
-                .map(|i| Datum::UInt(!(i as u64)))
-                .ok_or(EvalError::IntOverflow),
+                .ok_or(EvalError::IntOverflow)
+                .and_then(integer_bit_neg),
             Not | NotKeyword => unreachable!("handled above"),
         },
         // A unary minus over the integer domain is ONE rule, and its
@@ -120,13 +120,13 @@ pub(crate) fn eval_unary(
         Datum::Int(i) => Ok(match op {
             Plus => Datum::Int(i),
             Minus => return unary_minus_integer(i as u64, arg.is_unsigned(), arg),
-            BitNeg => Datum::UInt(!(i as u64)),
+            BitNeg => return integer_bit_neg(i),
             Not | NotKeyword => unreachable!("handled above"),
         }),
         Datum::UInt(i) => Ok(match op {
             Plus => Datum::UInt(i),
             Minus => return unary_minus_integer(i, true, arg),
-            BitNeg => Datum::UInt(!i),
+            BitNeg => return integer_bit_neg(i as i64),
             Not | NotKeyword => unreachable!("handled above"),
         }),
         // Go's unary-minus type inference promotes hybrid values to ETReal;
@@ -148,8 +148,8 @@ pub(crate) fn eval_unary(
                 Minus => Ok(Datum::Decimal(decimal.negate())),
                 BitNeg => decimal
                     .round_to_i64()
-                    .map(|i| Datum::UInt(!(i as u64)))
-                    .ok_or(EvalError::IntOverflow),
+                    .ok_or(EvalError::IntOverflow)
+                    .and_then(integer_bit_neg),
                 Not | NotKeyword => unreachable!("handled above"),
             }
         }
@@ -1036,12 +1036,7 @@ fn decimal_binary(
         // same as unary `~` above -- and SATURATES there rather than failing.
         BitAnd | BitOr | BitXor | LeftShift | RightShift => {
             let (ai, bi) = (decimal_bit_operand(&a, ctx)?, decimal_bit_operand(&b, ctx)?);
-            match op {
-                BitAnd | BitOr | BitXor => return integer_bitwise(op, ai, bi),
-                LeftShift => Datum::UInt(shift_left(ai as u64, bi as u64)),
-                RightShift => Datum::UInt(shift_right(ai as u64, bi as u64)),
-                _ => unreachable!("guarded by outer match"),
-            }
+            return integer_bitwise(op, ai, bi);
         }
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled by caller"),
     })

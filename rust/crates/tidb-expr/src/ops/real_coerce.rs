@@ -90,14 +90,7 @@ pub(super) fn float_binary(
                 (Some(x), Some(y)) => (x, y),
                 _ => return Err(EvalError::IntOverflow),
             };
-            match op {
-                BitAnd => Datum::UInt((ai as u64) & (bi as u64)),
-                BitOr => Datum::UInt((ai as u64) | (bi as u64)),
-                BitXor => Datum::UInt((ai as u64) ^ (bi as u64)),
-                LeftShift => Datum::UInt(shift_left(ai as u64, bi as u64)),
-                RightShift => Datum::UInt(shift_right(ai as u64, bi as u64)),
-                _ => unreachable!("guarded by outer match"),
-            }
+            return integer_bitwise(op, ai, bi);
         }
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled by caller"),
     })

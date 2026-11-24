@@ -8781,7 +8781,6 @@ dependencies = [
  "fluent-uri 0.3.2",
  "getrandom 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "jsonschema",
- "md-5",
  "prost 0.14.4",
  "protobuf",
  "regex",
