@@ -1330,12 +1330,12 @@ impl ScalarFunction {
         &self,
         domain: &'static str,
         ctx: &dyn Columns,
-        _scalar: bool,
-        _decimals: [Option<&tidb_datatype::Decimal>; 2],
+        scalar: bool,
     ) -> Option<EvalError> {
         let operation = binary_op_for_name(self.func_name.lowercase())?;
         if operation == BinaryOp::IntDiv {
-            return None;
+            return (scalar && self.numeric_operand_domain() == Some(EvalType::Decimal))
+                .then(|| arithmetic_overflow_error(self, operation, ctx));
         }
         Some(match domain {
             "DOUBLE" => real_arithmetic_overflow_error(self, operation, ctx),

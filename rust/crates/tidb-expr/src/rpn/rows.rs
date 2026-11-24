@@ -78,7 +78,6 @@ impl NativeRows<'_> {
     pub(super) fn kernel_error(
         &self,
         slot: usize,
-        arguments: &[RpnStackNode<'_>],
         error: tidb_query_common::Error,
     ) -> tidb_query_common::Error {
         use tidb_query_common::error::ErrorInner;
@@ -105,27 +104,10 @@ impl NativeRows<'_> {
                 }
                 _ => "BIGINT",
             };
-            let scalar = self.scalar_operand_demand();
-            let decimals = match arguments {
-                [left, right] if scalar => {
-                    let decimal = |value| match value {
-                        ScalarValueRef::Decimal(Some(value)) => {
-                            Some(tidb_datatype::Decimal::parse_mysql(&value.to_string()).0)
-                        }
-                        _ => None,
-                    };
-                    [
-                        decimal(left.get_logical_scalar_ref(0)),
-                        decimal(right.get_logical_scalar_ref(0)),
-                    ]
-                }
-                _ => [None, None],
-            };
             if let Some(diagnostic) = self.diagnostics[slot].shared_arithmetic_error(
                 value,
                 self.context,
-                scalar,
-                decimals.each_ref().map(Option::as_ref),
+                self.scalar_operand_demand(),
             ) {
                 self.binding_error.replace(Some(diagnostic));
             }

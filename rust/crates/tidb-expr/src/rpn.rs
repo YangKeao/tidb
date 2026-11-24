@@ -1890,11 +1890,8 @@ fn lower_declared(
                 );
             }
         }
-        if string_decimal_union
-            || matches!(
-                signature,
-                Some(tidb_proto::tipb::ScalarFuncSig::CastJsonAsDuration | tidb_proto::tipb::ScalarFuncSig::CastDurationAsJson)
-            )
+        use tidb_proto::tipb::ScalarFuncSig::{CastDurationAsJson, CastJsonAsDuration, CastStringAsDecimal};
+        if matches!(signature, Some(CastStringAsDecimal | CastJsonAsDuration | CastDurationAsJson))
         {
             return bind_host_call(
                 call,

@@ -267,7 +267,7 @@ fn decorated_kernel(
         (kernel.upstream.fn_ptr)(ctx, count, args, extra, kernel.metadata.as_ref())
     };
     result.map_err(|error| match kernel.diagnostic {
-        Some(slot) => INPUT.with(|input| input.kernel_error(slot, args, error)),
+        Some(slot) => INPUT.with(|input| input.kernel_error(slot, error)),
         None => error,
     })
 }
