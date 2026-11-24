@@ -96,7 +96,7 @@ impl PreparedExpression {
         column_count: usize,
         use_statement_seed: bool,
     ) -> Result<Option<Self>, EvalError> {
-        Self::prepare_with_source(expression, ctx, column_count, use_statement_seed, true)
+        Self::prepare_with_source(expression, ctx, column_count, use_statement_seed, true, false)
     }
 
     fn prepare_with_source(
@@ -105,6 +105,7 @@ impl PreparedExpression {
         column_count: usize,
         use_statement_seed: bool,
         physical_input: bool,
+        typed_batch: bool,
     ) -> Result<Option<Self>, EvalError> {
         let Some(columns) = native_schema(expression, column_count) else {
             return Ok(None);
@@ -120,6 +121,7 @@ impl PreparedExpression {
             ctx,
             physical_input,
             use_statement_seed,
+            typed_batch,
         )
         .map_err(engine_error)?
         else {
@@ -207,6 +209,22 @@ impl PreparedExpression {
             row += 1;
             Ok(())
         })
+    }
+
+    pub(crate) fn try_eval_typed_batch(
+        expression: &Expression,
+        ctx: &dyn Columns,
+        chunk: &Chunk,
+        mut emit: impl FnMut(Datum) -> Result<(), EvalError>,
+    ) -> Result<bool, EvalError> {
+        let Some(mut program) =
+            Self::prepare_with_source(expression, ctx, chunk.num_cols(), false, true, true)?
+        else {
+            return Ok(false);
+        };
+        let selected = (0..chunk.num_rows()).collect::<Vec<_>>();
+        program.evaluate(ctx, chunk, &selected, rows::ReadMode::TypedBatch, &mut emit)?;
+        Ok(true)
     }
 
     pub(crate) fn evaluate_rows(
@@ -340,19 +358,22 @@ impl PreparedExpression {
             context: ctx,
             block_encryption_mode: self.block_encryption_mode,
             mode: rows::ReadMode::PhysicalBatch,
-            scalar_operands: self.scalar_effects || matches!(mode, rows::ReadMode::Scalar),
+            scalar_operands: !matches!(mode, rows::ReadMode::TypedBatch)
+                && (self.scalar_effects || matches!(mode, rows::ReadMode::Scalar)),
+            typed_batch: matches!(mode, rows::ReadMode::TypedBatch),
         };
         // Finish side effects in a row before another row can draw or fail.
-        let batch_size = if self.row_ordered || matches!(mode, rows::ReadMode::Scalar) {
-            1
-        } else {
-            BATCH_MAX_SIZE
+        let batch_size = match mode {
+            rows::ReadMode::TypedBatch => selected.len().max(1),
+            rows::ReadMode::Scalar => 1,
+            _ if self.row_ordered => 1,
+            _ => BATCH_MAX_SIZE,
         };
         use tidb_query_datatype::codec::data_type::VectorValue;
         let selected_physical;
         let selected = if matches!(
             mode,
-            rows::ReadMode::LogicalBatch | rows::ReadMode::QuietIntBatch
+            rows::ReadMode::LogicalBatch | rows::ReadMode::QuietIntBatch | rows::ReadMode::TypedBatch
         ) && chunk.sel().is_some()
         {
             selected_physical = selected
@@ -994,6 +1015,9 @@ enum HostOperation {
     InvalidArity(&'static str),
     BenchmarkCount { body_error: Option<EvalError> },
     DeferredValue(FieldType),
+    CapturedRandom(Arc<crate::MysqlRng>),
+    ClockDuration { utc: bool },
+    DateArithmetic { subtract: bool, result: FieldType },
     SqlCast(tidb_ast::CastType),
     NumericCast(NativeEvalType),
     JsonCast { parse: bool },
@@ -1020,8 +1044,8 @@ impl HostOperation {
                         | "regexp"
                         | "regexp_like"
                         | "json_set"
-            | "json_insert"
-            | "json_replace"
+                        | "json_insert"
+                        | "json_replace"
                         | "json_merge"
                         | "greatest"
                         | "least"
@@ -1056,6 +1080,7 @@ struct LoweringEnvironment<'a> {
     input_types: &'a [FieldType],
     host: &'a dyn Columns,
     direct_row: bool,
+    typed_batch: bool,
 }
 
 /// Lower the already resolved native expression through the SDK compiler.
@@ -1066,11 +1091,13 @@ fn compile(
     host: &dyn Columns,
     physical_input: bool,
     direct_row: bool,
+    typed_batch: bool,
 ) -> Result<Option<CompiledExpression>, String> {
     let environment = LoweringEnvironment {
         input_types,
         host,
         direct_row,
+        typed_batch,
     };
     let mut bindings = Vec::new();
     let mut host_calls = Vec::new();
@@ -1111,7 +1138,9 @@ fn compile(
 const NATIVE_DIAGNOSTIC_TAG: &[u8] = b"source";
 const NULL_HOST_TAG: &[u8] = b"null";
 const PATH_FIRST_HOST_TAG: &[u8] = b"paths";
+const DATE_ARITHMETIC_TAG: &[u8] = b"date";
 const REPEAT_DECLARATION: &[u8] = b"repeat";
+const LAST_INSERT_ID_DECLARATION: &[u8] = b"last_insert_id";
 const EXECUTION_SEED_DECLARATION: &[u8] = b"seed";
 
 fn lower_leaf(expression: &Expression, input_types: &[FieldType]) -> Option<QueryExpr> {
@@ -1228,19 +1257,16 @@ fn lower_declared(
         // assignment, and the SQL conversion of BIT, ENUM, SET and VECTOR.
         return None;
     }
-    if name == "intdiv" && function.numeric_operand_domain() != Some(NativeEvalType::Int) {
-        // Decimal DIV owns its operand-specific overflow message and
-        // scalar/vector conversion diagnostics.
-        return None;
-    }
     let typed_add_sub = crate::time_fn::add_sub::sign_of_signature(function.pb_code()).is_some();
+    let date_arithmetic = function.date_arithmetic_subtract();
     if ((name == "addtime" || name == "subtime") && !typed_add_sub)
-        || matches!(name, "date_add" | "date_sub"
-        | "validate_password_strength")
-        || name.starts_with("date_add_")
-        || name.starts_with("date_sub_")
+        || name == "validate_password_strength"
+        || (matches!(name, "date_add" | "date_sub")
+            || name.starts_with("date_add_")
+            || name.starts_with("date_sub_"))
+            && (!environment.typed_batch || date_arithmetic.is_none()
+                || function.args.get(2)?.const_level() < crate::expression::ConstLevel::ONLY_IN_CONTEXT)
     {
-        // These SQL kernels have mode-specific warnings or result precision.
         return None;
     }
     if name == "conv" && function.args.first().is_some_and(crate::scalar_function::conv_reads_bits) {
@@ -1360,6 +1386,18 @@ fn lower_declared(
     }
     let mut call = QueryExpr::new();
     call.set_field_type(field_type);
+    if environment.typed_batch {
+        if let Some(generator) = function.captured_random() {
+            call.set_tp(QueryExprType::ScalarFunc);
+            return bind_host_call(
+                call,
+                HostOperation::CapturedRandom(generator),
+                Vec::new(),
+                host_calls,
+            );
+        }
+    }
+
     if native_call && function.rejects_vector_json_cast() {
         call.set_tp(QueryExprType::ScalarFunc);
         return bind_host_call(
@@ -1631,6 +1669,33 @@ fn lower_declared(
             }
         }
         call.mut_children().push(lowered);
+    }
+    if let Some(subtract) = date_arithmetic.filter(|_| environment.typed_batch) {
+        let fields = function.args.iter()
+            .map(|arg| arg.static_type().cloned())
+            .collect::<Option<Vec<_>>>()?;
+        return bind_host_call(
+            call,
+            HostOperation::DateArithmetic { subtract, result: result_type.clone() },
+            fields,
+            host_calls,
+        );
+    }
+    use tidb_proto::tipb::ScalarFuncSig::{CurrentTime1Arg, UtcTimeWithArg};
+    if environment.typed_batch && matches!(signature, Some(CurrentTime1Arg | UtcTimeWithArg)) {
+        return bind_host_call(
+            call,
+            HostOperation::ClockDuration { utc: signature == Some(UtcTimeWithArg) },
+            vec![function.args.first()?.static_type()?.clone()],
+            host_calls,
+        );
+    }
+    if environment.typed_batch
+        && signature == Some(tidb_proto::tipb::ScalarFuncSig::LastInsertIdWithId)
+    {
+        call.set_sig(ScalarFuncSig::Unspecified);
+        call.set_val(LAST_INSERT_ID_DECLARATION.to_vec());
+        return Some(call);
     }
     if native_call && name == "json_schema_valid" {
         let [schema, document] = function.args.as_slice() else {
@@ -2040,6 +2105,8 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "regexp_like"
             | "json_overlaps"
             | "json_set"
+            | "json_insert"
+            | "json_replace"
             | "json_merge_patch"
             | "is_ipv4"
             | "is_ipv4_compat"
@@ -2058,9 +2125,11 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_length"
             | "json_remove"
             | "json_contains"
+            | "json_contains_path"
             | "json_type"
             | "json_pretty"
             | "json_storage_free"
+            | "json_storage_size"
             | "json_quote"
             | "json_unquote"
             | "json_object"
@@ -2083,6 +2152,8 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "from_days"
             | "maketime"
             | "json_array_append"
+            | "json_array_insert"
+            | "json_search"
             | "find_in_set"
     )
 }
@@ -2122,6 +2193,8 @@ fn bind_host_call(
     let operation = &host_calls[slot as usize].operation;
     if matches!(operation, HostOperation::LocalBuiltin(function) if function.reads_json_paths_first()) {
         metadata.extend_from_slice(PATH_FIRST_HOST_TAG);
+    } else if matches!(operation, HostOperation::DateArithmetic { .. }) {
+        metadata.extend_from_slice(DATE_ARITHMETIC_TAG);
     } else if operation.propagates_null_before_next_operand() {
         metadata.extend_from_slice(NULL_HOST_TAG);
     }
@@ -3139,6 +3212,7 @@ mod tests {
             &crate::NoColumns,
             false,
             false,
+            false,
         )
         .unwrap()
         .unwrap();
@@ -3188,6 +3262,7 @@ mod tests {
             block_encryption_mode: Default::default(),
             mode: rows::ReadMode::PhysicalBatch,
             scalar_operands: false,
+            typed_batch: false,
         };
         let schema = [engine::index_field()];
         let physical = LazyBatchColumnVec::from(vec![

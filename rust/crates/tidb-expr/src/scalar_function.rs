@@ -31,26 +31,12 @@
 
 pub(crate) mod class_kernels;
 pub(crate) mod vec_eval;
-mod builtin_arithmetic_vec;
-mod builtin_compare_vec;
-mod builtin_control_vec;
-mod builtin_cast_vec;
-mod builtin_op_vec;
-mod builtin_math_vec;
-mod builtin_string_vec;
-mod builtin_json_vec;
-mod builtin_info_vec;
-mod builtin_vec_vec;
-mod builtin_like_vec;
-mod builtin_encryption_vec;
-mod builtin_time_vec;
-mod builtin_miscellaneous_vec;
-mod builtin_other_vec;
 mod pb_builtin;
 
 pub(crate) use pb_builtin::{greatest_method, least_method, Kernel, PbBuiltin};
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::hash::{Hash, Hasher};
 
 use tidb_exprctx::context::{Columns, EvalError};
@@ -1271,6 +1257,17 @@ impl ScalarFunction {
     pub(crate) fn eval_native(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         let value = self.pb_builtin.eval(self, ctx, row)?;
         self.finish_value(value)
+    }
+
+    pub(crate) fn date_arithmetic_subtract(&self) -> Option<bool> {
+        match self.pb_builtin.kernel {
+            Kernel::DateArithmetic { subtract } => Some(subtract),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn captured_random(&self) -> Option<Arc<crate::MysqlRng>> {
+        self.rand_rng.as_ref().map(|generator| Arc::clone(&generator.0))
     }
 
     pub(crate) fn rand_occurrence(&self) -> Option<usize> {
@@ -4538,6 +4535,10 @@ pub(crate) struct PreparedContextInput(ScalarFunction);
 impl PreparedContextInput {
     pub(crate) fn new(function: &ScalarFunction) -> Self {
         Self(function.clone())
+    }
+
+    pub(crate) fn broadcast_in_typed_batch(&self) -> bool {
+        self.0.args.is_empty() && vec_eval::supports_info(&self.0)
     }
 
     pub(crate) fn read(&self, ctx: &dyn Columns) -> Result<Datum, EvalError> {

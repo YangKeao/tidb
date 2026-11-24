@@ -20,7 +20,7 @@ use tidb_query_expr::{
 use tipb::{Expr, ExprType, FieldType, ScalarFuncSig};
 
 use super::{
-    EXECUTION_SEED_DECLARATION, NATIVE_DIAGNOSTIC_TAG, NULL_HOST_TAG, PATH_FIRST_HOST_TAG, REPEAT_DECLARATION, rows,
+    DATE_ARITHMETIC_TAG, EXECUTION_SEED_DECLARATION, LAST_INSERT_ID_DECLARATION, NATIVE_DIAGNOSTIC_TAG, NULL_HOST_TAG, PATH_FIRST_HOST_TAG, REPEAT_DECLARATION, rows,
 };
 
 pub(super) fn error(message: impl Into<String>) -> tidb_query_common::Error {
@@ -503,12 +503,17 @@ fn compile(
                     sig,
                     fn_ptr: benchmark,
                 })
+            } else if tree.get_val() == LAST_INSERT_ID_DECLARATION {
+                Some(ShortCircuitFnMeta { sig, fn_ptr: last_insert_id })
             } else if let Some(slot) = tree.get_val()
                 .strip_prefix(EXECUTION_SEED_DECLARATION)
                 .or_else(|| tree.get_val().strip_prefix(PATH_FIRST_HOST_TAG))
+                .or_else(|| tree.get_val().strip_prefix(DATE_ARITHMETIC_TAG))
             {
                 let fn_ptr = if tree.get_val().starts_with(PATH_FIRST_HOST_TAG) {
                     json_paths_first
+                } else if tree.get_val().starts_with(DATE_ARITHMETIC_TAG) {
+                    date_arithmetic
                 } else {
                     seeded_rand
                 };
@@ -1272,6 +1277,100 @@ fn json_paths_first(
     })
 }
 
+fn date_arithmetic(
+    ctx: &mut EvalContext,
+    schema: &[FieldType],
+    input: &LazyBatchColumnVec,
+    selected: &[usize],
+    count: usize,
+    args: &[RpnExpression],
+) -> Result<VectorValue> {
+    use crate::time_fn::date_arithmetic as native;
+    let [date, amount, unit, slot] = args else {
+        return Err(error("invalid date arithmetic arguments"));
+    };
+    let slot = slot.eval_decoded(ctx, schema, input, selected, count)?;
+    let ScalarValueRef::Int(Some(slot)) = slot.get_logical_scalar_ref(0) else {
+        return Err(error("date arithmetic slot is invalid"));
+    };
+    INPUT.with(|host| {
+        let call = &host.host_calls[*slot as usize];
+        let super::HostOperation::DateArithmetic { subtract, result } = &call.operation else {
+            return Err(error("date arithmetic operation is missing"));
+        };
+        let [date_field, amount_field, unit_field] = call.arguments.as_slice() else {
+            return Err(error("invalid date arithmetic types"));
+        };
+        let native_error = |err| host.native_error(err);
+        let mut output = rows::output_vector(&call.output, count)?;
+        let unit = unit.eval_decoded(ctx, schema, input, &selected[..1], 1)?;
+        let unit = rows::from_query_value(unit.get_logical_scalar_ref(0), unit_field)?;
+        let Some(unit) = crate::arg_eval_type::eval_string(&unit).map_err(native_error)? else {
+            for _ in 0..count {
+                rows::append(&mut output, tidb_datatype::Datum::Null)?;
+            }
+            return Ok(output);
+        };
+        let unit = tidb_goruntime::GoString::from_bytes(unit).to_utf8_lossy_go();
+        let amounts = amount.eval_decoded(ctx, schema, input, selected, count)?;
+        let mut intervals = Vec::with_capacity(count);
+        let reread = amount_field.eval_type() == tidb_datatype::EvalType::Decimal
+            && !crate::time_fn::calendar::is_composite_unit(&unit)
+            && !unit.eq_ignore_ascii_case("SECOND");
+        for (row, index) in selected.iter().enumerate() {
+            let mut value = rows::from_query_value(amounts.get_logical_scalar_ref(row), amount_field)?;
+            if reread && !value.is_null() {
+                let value_again = amount.eval_decoded(ctx, schema, input, std::slice::from_ref(index), 1)?;
+                value = rows::from_query_value(value_again.get_logical_scalar_ref(0), amount_field)?;
+            }
+            intervals.push(native::interval(&unit, value, amount_field.decimal(), host.context)
+                .map_err(native_error)?);
+        }
+        let dates = date.eval_decoded(ctx, schema, input, selected, count)?;
+        let dates = (0..count).map(|row| {
+            let value = rows::from_query_value(dates.get_logical_scalar_ref(row), date_field)?;
+            native::date(&unit, value, host.context).map_err(native_error)
+        }).collect::<Result<Vec<_>>>()?;
+        for (date, interval) in dates.into_iter().zip(intervals) {
+            let value = native::operation(result, date_field, &unit, *subtract, date, interval, host.context)
+                .map_err(native_error)?;
+            rows::append(&mut output, value)?;
+        }
+        Ok(output)
+    })
+}
+
+fn last_insert_id(
+    ctx: &mut EvalContext,
+    schema: &[FieldType],
+    input: &LazyBatchColumnVec,
+    rows: &[usize],
+    count: usize,
+    args: &[RpnExpression],
+) -> Result<VectorValue> {
+    INPUT.with(|host| {
+        let vars = tidb_expropt::SessionVarsPropReader
+            .get_session_vars(host.context)
+            .map_err(|err| host.native_error(crate::builtin_ext::misc::opt_prop_error(err)))?;
+        let values = args[0].eval_decoded(ctx, schema, input, rows, count)?;
+        let mut result = VectorValue::with_capacity(count, EvalType::Int);
+        let mut last = None;
+        for index in 0..count {
+            let ScalarValueRef::Int(value) = values.get_logical_scalar_ref(index) else {
+                return Err(error("LAST_INSERT_ID argument is not an integer"));
+            };
+            result.push_int(value.copied());
+            if let Some(&value) = value {
+                last = Some(value);
+            }
+        }
+        if let Some(value) = last {
+            vars.set_last_insert_id(value as u64);
+        }
+        Ok(result)
+    })
+}
+
 fn benchmark(
     ctx: &mut EvalContext,
     schema: &[FieldType],
@@ -1280,6 +1379,16 @@ fn benchmark(
     count: usize,
     args: &[RpnExpression],
 ) -> Result<VectorValue> {
+    if INPUT.with(|host| host.typed_batch) {
+        let repetitions = args[0].eval_decoded(ctx, schema, input, rows, count)?;
+        let ScalarValueRef::Int(Some(repetitions)) = repetitions.get_logical_scalar_ref(0) else {
+            return Err(error("typed BENCHMARK count is not an integer"));
+        };
+        for _ in 0..*repetitions {
+            args[1].eval_decoded(ctx, schema, input, rows, count)?;
+        }
+        return Ok(VectorValue::Int(vec![Some(0); count].into()));
+    }
     let mut output = VectorValue::with_capacity(count, EvalType::Int);
     for row in rows.chunks(1) {
         let repetitions = args[0].eval_decoded(ctx, schema, input, row, 1)?;

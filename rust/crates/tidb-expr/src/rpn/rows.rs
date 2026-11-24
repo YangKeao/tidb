@@ -46,6 +46,7 @@ use tidb_query_expr::{RpnStackNode, RpnStackNodeVectorValue};
 #[derive(Clone, Copy)]
 pub(super) enum ReadMode {
     LogicalBatch,
+    TypedBatch,
     QuietIntBatch,
     PhysicalBatch,
     Scalar,
@@ -70,6 +71,7 @@ pub(super) struct NativeRows<'a> {
     pub(super) mode: ReadMode,
     pub(super) block_encryption_mode: crate::context::BlockEncryptionMode,
     pub(super) scalar_operands: bool,
+    pub(super) typed_batch: bool,
 }
 
 impl NativeRows<'_> {
@@ -173,6 +175,20 @@ impl NativeRows<'_> {
             .get(slot)
             .ok_or_else(|| error("unknown native call slot"))?;
         let mut output = output_vector(&call.output, rows)?;
+        if let (HostOperation::ClockDuration { utc }, [precision]) = (&call.operation, args) {
+            let text = crate::time_fn::session_tz::clock_duration_text(*utc, self.context)
+                .map_err(|err| self.native_error(err))?;
+            for row in 0..rows {
+                let ScalarValueRef::Int(fsp) = precision.get_logical_scalar_ref(row) else {
+                    return Err(error("clock precision is not an integer"));
+                };
+                let value = crate::time_fn::session_tz::clock_duration_at(
+                    &text, fsp.copied(), *utc, self.context,
+                ).map_err(|err| self.native_error(err))?;
+                append(&mut output, value)?;
+            }
+            return Ok(output);
+        }
         for row in 0..rows {
             let value = match (&call.operation, args, call.arguments.as_slice()) {
                 (HostOperation::BenchmarkCount { body_error }, [value], [field]) => {
@@ -247,6 +263,9 @@ impl NativeRows<'_> {
                     } else {
                         crate::cast::eval_cast(target, value, Some(field), self.context)
                     }
+                }
+                (HostOperation::CapturedRandom(generator), [], []) => {
+                    Ok(Datum::Real(generator.gen()))
                 }
                 (HostOperation::DeferredValue(target), [value], [field]) => {
                     let value = from_query_value(value.get_logical_scalar_ref(row), field)?;
@@ -370,11 +389,15 @@ impl NativeRows<'_> {
                     append(&mut vector, value)?;
                 }
             } else if let super::InputSource::Context(source) = &binding.source {
-                for _ in rows {
-                    append(
-                        &mut vector,
-                        source.read(self.context).map_err(binding_error)?,
-                    )?;
+                if self.typed_batch && source.broadcast_in_typed_batch() && !rows.is_empty() {
+                    let value = source.read(self.context).map_err(binding_error)?;
+                    for _ in rows {
+                        append(&mut vector, value.clone())?;
+                    }
+                } else {
+                    for _ in rows {
+                        append(&mut vector, source.read(self.context).map_err(binding_error)?)?;
+                    }
                 }
             } else {
                 let value = match &binding.source {
@@ -404,7 +427,7 @@ impl NativeRows<'_> {
 impl NativeRows<'_> {
     fn row(&self, index: usize) -> tidb_chunk::row::Row<'_> {
         match self.mode {
-            ReadMode::LogicalBatch | ReadMode::QuietIntBatch => self.chunk.get_row(index),
+            ReadMode::LogicalBatch | ReadMode::QuietIntBatch | ReadMode::TypedBatch => self.chunk.get_row(index),
             ReadMode::PhysicalBatch | ReadMode::Scalar => self.chunk.physical_row(index),
         }
     }
@@ -415,12 +438,12 @@ impl NativeRows<'_> {
     }
 }
 
-fn output_vector(field: &QueryFieldType, rows: usize) -> Result<VectorValue> {
+pub(super) fn output_vector(field: &QueryFieldType, rows: usize) -> Result<VectorValue> {
     let kind = EvalType::try_from(field.as_accessor().tp()).map_err(error)?;
     Ok(VectorValue::with_capacity(rows, kind))
 }
 
-fn append(vector: &mut VectorValue, value: Datum) -> Result<()> {
+pub(super) fn append(vector: &mut VectorValue, value: Datum) -> Result<()> {
     match (vector, value) {
         (VectorValue::Int(values), Datum::Int(value)) => values.push_data(value),
         (VectorValue::Int(values), Datum::UInt(value)) => values.push_data(value as i64),

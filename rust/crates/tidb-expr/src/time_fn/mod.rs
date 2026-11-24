@@ -25,6 +25,7 @@
 
 pub(crate) mod add_sub;
 pub(crate) mod calendar;
+pub(crate) mod date_arithmetic;
 pub(crate) mod convert_tz;
 pub(crate) mod duration_parse;
 pub(crate) mod extract;

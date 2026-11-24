@@ -445,6 +445,38 @@ pub(crate) fn get_time_from_ts(ts: u64, cols: &dyn Columns) -> Result<Option<Tim
     .map_err(|_| EvalError::Unsupported("TSO datetime exceeds the native temporal domain"))
 }
 
+/// Capture the statement clock once before applying each row's precision.
+pub(crate) fn clock_duration_text(utc: bool, ctx: &dyn crate::Columns) -> Result<String, crate::EvalError> {
+    let (seconds, nanos, offset) = ctx
+        .now()
+        .ok_or(crate::EvalError::Unsupported("no session clock (SET timestamp)"))?;
+    Ok(crate::time_fn::format_time_only(
+        seconds + if utc { 0 } else { i64::from(offset) }, nanos, 6, false,
+    ))
+}
+
+pub(crate) fn clock_duration_at(
+    text: &str,
+    precision: Option<i64>,
+    utc: bool,
+    ctx: &dyn crate::Columns,
+) -> Result<tidb_datatype::Datum, crate::EvalError> {
+    use tidb_datatype::{Datum, MySqlDuration};
+    if utc && precision.is_none() {
+        return Ok(Datum::Null);
+    }
+    let fsp = precision.unwrap_or(0);
+    if utc {
+        crate::time_fn::parse_fsp_for(&[Datum::Int(fsp)], "utc_time")?;
+    }
+    let parsed = tidb_datatype::parse_mysql_duration(
+        text, fsp, &ctx.time_zone(), true, ctx.date_modes().allow_invalid_dates,
+    ).map_err(|error| crate::EvalError::Raw(error.to_string()))?;
+    MySqlDuration::from_nanoseconds(parsed.nanoseconds(), parsed.fsp())
+        .map(Datum::Duration)
+        .map_err(|error| crate::EvalError::Raw(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
