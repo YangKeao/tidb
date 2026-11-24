@@ -116,7 +116,6 @@ pub(super) fn uses_native_real_math(name: &str) -> bool {
             | "atan"
             | "atan2"
             | "degrees"
-            | "radians"
             | "exp"
             | "acos"
             | "asin"

@@ -343,15 +343,7 @@ pub(crate) fn exp(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError>
     }
 }
 
-/// `PI()`: a niladic function returning the constant.
-pub(crate) fn pi(vals: &[Datum]) -> Result<Datum, EvalError> {
-    match vals {
-        [] => Ok(Datum::Real(std::f64::consts::PI)),
-        _ => Err(EvalError::Unsupported("bad function arity")),
-    }
-}
-
-/// The shape shared by every unary trig/`RADIANS`/`DEGREES` function with
+/// The shape shared by every unary trig function with
 /// NO explicit MySQL domain check (unlike `ASIN`/`ACOS` below): `NULL` if
 /// the argument is `NULL`, else `f(x)` wrapped through `finite_float`.
 fn unary_finite(
@@ -402,17 +394,6 @@ pub(crate) fn cot(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError>
             "cot({})",
             tidb_goruntime::go_strconv::format_float(x, b'f', -1, 64)
         ),
-    })
-}
-
-/// Go `builtinRadiansSig.evalReal`: `x * (math.Pi / 180)`, with no range check.
-pub(crate) fn radians(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => Datum::Real(x * (std::f64::consts::PI / 180.0)),
-        None => Datum::Null,
     })
 }
 
@@ -550,72 +531,6 @@ fn rand_string_seed(text: &str, datum: &Datum, cols: &dyn Columns) -> Result<i64
     let seed = crate::cast::str_int_prefix(text);
     crate::cast::report_int_truncation(datum, cols)?;
     Ok(seed)
-}
-
-/// Typed scalar evaluation for `CEIL`/`FLOOR`.
-///
-/// `decimal_result` is Go's build-time `retTp == ETDecimal` decision. The
-/// values-only path can still recover a stored column's declared shape from
-/// [`Decimal::declared_shape`], and uses the payload width only for an
-/// unstamped literal.
-pub(crate) fn ceil_floor_with_result_domain(
-    vals: &[Datum],
-    ceiling: bool,
-    decimal_result: Option<bool>,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        Datum::Int(i) => Datum::Int(*i),
-        Datum::UInt(i) => Datum::UInt(*i),
-        Datum::Decimal(d) => {
-            let r = d.ceil_floor(ceiling);
-            let declared_decimal_result = d
-                .declared_shape()
-                .map(|(flen, decimal)| flen - decimal > 18);
-            let payload_decimal_result = || {
-                d.coefficient_digits()
-                    .len()
-                    .saturating_sub(d.storage_scale() as usize)
-                    .max(1)
-                    > 18
-            };
-            if decimal_result
-                .or(declared_decimal_result)
-                .unwrap_or_else(payload_decimal_result)
-            {
-                Datum::Decimal(r)
-            } else {
-                match r.round_to_i64() {
-                    Some(i) => Datum::Int(i),
-                    None => Datum::Decimal(r),
-                }
-            }
-        }
-        Datum::Real(f) => Datum::Real(if ceiling { f.ceil() } else { f.floor() }),
-        Datum::Float32(f) => Datum::Float32(if ceiling { f.ceil() } else { f.floor() }),
-        // `ceilFunctionClass`/`floorFunctionClass` choose their real
-        // signatures for strings. Preserve the resulting FLOAT type in
-        // addition to the numeric-prefix coercion: CEIL('1.23') is 2.0,
-        // unlike CEIL(Decimal('1.23')) which has a DECIMAL signature.
-        Datum::String(_) | Datum::Bytes(_) => {
-            let f = to_f64_with_mysql_string(v, ctx)?;
-            Datum::Real(if ceiling { f.ceil() } else { f.floor() })
-        }
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel numeric argument"));
-        }
-        other => {
-            let f = other
-                .to_f64()
-                .map_err(|_| EvalError::Unsupported("numeric argument conversion"))?
-                .value;
-            Datum::Real(if ceiling { f.ceil() } else { f.floor() })
-        }
-    })
 }
 
 /// The typed scalar path for decimal `ROUND`/`TRUNCATE`.

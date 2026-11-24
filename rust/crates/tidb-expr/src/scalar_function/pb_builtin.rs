@@ -491,34 +491,6 @@ fn right_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     crate::string_fn::str_take(values, false)
 }
 
-/// Go `builtinCeil*Sig` / `builtinFloor*Sig`: an `*IntToInt` or `*Real`
-/// signature keeps its argument's domain; a `*DecTo*` one answers the
-/// signature's own result domain.
-fn ceil_values(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, true, None, ctx)
-}
-
-fn floor_values(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, false, None, ctx)
-}
-
-fn ceil_dec_to_int(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, true, Some(false), ctx)
-}
-
-fn ceil_dec_to_dec(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, true, Some(true), ctx)
-}
-
-fn floor_dec_to_int(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, false, Some(false), ctx)
-}
-
-fn floor_dec_to_dec(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, false, Some(true), ctx)
-}
-
-
 /// Go `builtinConvSig.evalString`'s first switch: a binary literal, or a
 /// cast over a hybrid-typed or binary-literal argument, is read as its bits.
 fn conv_bit_literal(
@@ -859,7 +831,7 @@ impl PbBuiltin {
             Log1Arg | Log2Args => Kernel::Values(crate::math_fn::log),
             Log2 => Kernel::Values(crate::math_fn::log2),
             Log10 => Kernel::Values(crate::math_fn::log10),
-            Radians => Kernel::Values(crate::math_fn::radians),
+            Radians => Kernel::RpnOnly(None, &[EvalType::Real]),
             Degrees => Kernel::Values(crate::math_fn::degrees),
             Sign => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::sign_fn_meta), &[EvalType::Real]),
             CeilIntToInt => Kernel::RpnOnly(
@@ -870,12 +842,12 @@ impl PbBuiltin {
                 Some(tidb_query_expr::impl_math::floor_fn_meta::<tidb_query_expr::impl_math::FloorIntToInt>),
                 &[EvalType::Int],
             ),
-            CeilReal => Kernel::Values(ceil_values),
-            FloorReal => Kernel::Values(floor_values),
-            CeilDecToInt => Kernel::Values(ceil_dec_to_int),
-            CeilDecToDec => Kernel::Values(ceil_dec_to_dec),
-            FloorDecToInt => Kernel::Values(floor_dec_to_int),
-            FloorDecToDec => Kernel::Values(floor_dec_to_dec),
+            CeilReal => Kernel::RpnOnly(None, &[EvalType::Real]),
+            FloorReal => Kernel::RpnOnly(None, &[EvalType::Real]),
+            CeilDecToInt => Kernel::RpnOnly(None, &[EvalType::Decimal]),
+            CeilDecToDec => Kernel::RpnOnly(None, &[EvalType::Decimal]),
+            FloorDecToInt => Kernel::RpnOnly(None, &[EvalType::Decimal]),
+            FloorDecToDec => Kernel::RpnOnly(None, &[EvalType::Decimal]),
             VecDimsSig => Kernel::RpnOnly(Some(tidb_query_expr::impl_vec::vec_dims_fn_meta), &[EvalType::VectorFloat32]),
             VecL2NormSig => Kernel::Values(|values, _| crate::builtin_ext::vec::l2_norm(&values[0])),
             VecAsTextSig => Kernel::Values(|values, _| crate::builtin_ext::vec::as_text(&values[0])),
@@ -937,7 +909,7 @@ impl PbBuiltin {
             Cot => Kernel::Values(crate::math_fn::cot),
             Sin => Kernel::Values(crate::math_fn::sin),
             Pow => Kernel::Values(crate::math_fn::pow),
-            Pi => Kernel::Values(|values, _| crate::math_fn::pi(values)),
+            Pi => Kernel::RpnOnly(None, &[]),
             Conv => Kernel::Conv,
             RoundInt | RoundReal | RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),
@@ -1305,7 +1277,8 @@ impl PbBuiltin {
                             if value.is_nan() {
                                 match self.signature {
                                     ScalarFuncSig::Sign => return Ok(Datum::Int(0)),
-                                    ScalarFuncSig::Sqrt => return Ok(Datum::Real(*value)),
+                                    ScalarFuncSig::Sqrt | ScalarFuncSig::CeilReal | ScalarFuncSig::FloorReal
+                                    | ScalarFuncSig::Radians => return Ok(Datum::Real(*value)),
                                     ScalarFuncSig::AbsReal => return Ok(Datum::Real(value.abs())),
                                     _ => {}
                                 }
