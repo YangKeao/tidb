@@ -4571,7 +4571,12 @@ impl PreparedLocalBuiltin {
         Self { function, fields }
     }
 
-    pub(crate) fn evaluate(&self, mut values: Vec<Datum>, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+    pub(crate) fn evaluate(
+        &self,
+        mut values: Vec<Datum>,
+        ctx: &dyn Columns,
+        vectorized: bool,
+    ) -> Result<Datum, EvalError> {
         // The SQL builder stores the sequence identifier as NUL-separated
         // bytes. RPN materializes a string column with its declared collation,
         // so restore the identifier's carrier before calling the native kernel.
@@ -4583,9 +4588,19 @@ impl PreparedLocalBuiltin {
         }
         let function = &self.function;
         match function.pb_builtin.kernel {
-            Kernel::RpnOnly => function.finish_value(function.pb_builtin.eval_sdk_values(&values)?),
-            Kernel::Values(kernel) => function.finish_value(kernel(&values, ctx)?),
-            Kernel::Method(kernel) => function.finish_value(kernel(function, &values, ctx)?),
+            Kernel::Cast { .. } => {
+                let [value] = values.as_mut_slice() else {
+                    return Err(EvalError::Unsupported("protobuf cast arity"));
+                };
+                function.finish_value(function.pb_builtin.cast_value_in(
+                    function, std::mem::replace(value, Datum::Null), vectorized, ctx,
+                )?)
+            }
+            Kernel::RpnOnly | Kernel::Values(_) | Kernel::Method(_) | Kernel::Json => {
+                function.finish_value(function.pb_builtin.eval_values_in(
+                    function, values, vectorized, ctx,
+                )?)
+            }
             _ => {
                 let mut input = Chunk::new_chunk_with_capacity(&self.fields, 1);
                 for (i, value) in values.iter().enumerate() {

@@ -194,14 +194,6 @@ pub(super) fn eval(
                 }
             }
         }
-        // Go `builtin{Add,Sub}*Sig.vecEval*`: their own string parsing, not
-        // the row form's (`add_sub_time`'s `row_path`).
-        if matches!(sig, StrToDateDate | StrToDateDatetime | StrToDateDuration) {
-            return super::pb_builtin::str_to_date_of(function, &values, false, ctx);
-        }
-        if let Some(sign) = crate::time_fn::add_sub::sign_of_signature(sig) {
-            return super::pb_builtin::add_sub_time_of(function, &values, sign, false, ctx);
-        }
         if sig == ConvertTz {
             return super::pb_builtin::temporal_of_ret_type(
                 function,
@@ -209,7 +201,7 @@ pub(super) fn eval(
                 ctx,
             );
         }
-        function.pb_builtin.eval_values(function, values, ctx)
+        function.pb_builtin.eval_values_in(function, values, true, ctx)
     })
 }
 

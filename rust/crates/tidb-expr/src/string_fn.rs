@@ -1100,6 +1100,43 @@ pub(crate) fn concat_ws_from(
     Ok(Datum::new_string_datum(out))
 }
 
+/// Go's vector CONCAT_WS accounts for separator bytes by row index.
+pub(crate) fn concat_ws_columns<B: AsRef<[u8]>>(
+    rows: usize,
+    argc: usize,
+    cell: impl Fn(usize, usize) -> Option<B>,
+    ctx: &dyn crate::Columns,
+) -> Result<Vec<Option<Vec<u8>>>, EvalError> {
+    let separators: Vec<_> = (0..rows).map(|row| cell(0, row)).collect();
+    let mut output: Vec<_> = separators
+        .iter()
+        .map(|separator| separator.as_ref().map(|_| Vec::new()))
+        .collect();
+    let mut lengths = vec![0_usize; rows];
+    let mut has_value = vec![false; rows];
+    for column in 1..argc {
+        for row in 0..rows {
+            let (Some(bytes), Some(separator), Some(out)) = (
+                cell(column, row), &separators[row], &mut output[row],
+            ) else { continue };
+            let bytes = bytes.as_ref();
+            let separator = separator.as_ref();
+            lengths[row] += bytes.len() + if row > 1 { separator.len() } else { 0 };
+            if lengths[row] as u64 > ctx.max_allowed_packet() {
+                crate::expression_errors::handle_allowed_packet_overflowed(ctx, "concat_ws")?;
+                output[row] = None;
+                continue;
+            }
+            if has_value[row] {
+                out.extend_from_slice(separator);
+            }
+            out.extend_from_slice(bytes);
+            has_value[row] = true;
+        }
+    }
+    Ok(output)
+}
+
 /// `SUBSTRING_INDEX(str, delim, count)`: the substring before the `count`-th
 /// occurrence of `delim` — from the left for `count > 0`, from the right for
 /// `count < 0` (`SUBSTRING_INDEX('a.b.c.d', '.', -2)` = `c.d`). `count = 0`

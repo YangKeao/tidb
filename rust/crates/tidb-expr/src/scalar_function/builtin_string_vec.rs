@@ -95,7 +95,6 @@ pub(super) fn eval(
         ConcatWs => return concat_ws(function, ctx, input, result),
         FindInSet => return find_in_set(function, ctx, input, result),
         Elt => return elt(function, ctx, input, result),
-        Repeat => return repeat(function, ctx, input, result),
         Convert | Char => return charset(function, ctx, input, result),
         _ => {}
     }
@@ -112,7 +111,7 @@ pub(super) fn eval(
                 &values,
                 function.derived_collation(),
             ),
-            _ => function.pb_builtin.eval_values(function, values, ctx),
+            _ => function.pb_builtin.eval_values_in(function, values, true, ctx),
         }
     })
 }
@@ -311,33 +310,17 @@ fn concat_ws(
         buffers.push(vec_eval::argument(arg, EvalType::String, ctx, input)?);
     }
     let n = input.num_rows();
-    let mut nulls: Vec<bool> = (0..n).map(|i| buffers[0].is_null(i)).collect();
-    let mut lengths = vec![0_usize; n];
-    let mut strings: Vec<Vec<Vec<u8>>> = vec![Vec::new(); n];
-    for buffer in &buffers[1..] {
-        for i in 0..n {
-            if nulls[i] || buffer.is_null(i) {
-                continue;
-            }
-            let text = buffer.get_bytes(i);
-            lengths[i] += text.len();
-            if i > 1 {
-                lengths[i] += buffers[0].get_bytes(i).len();
-            }
-            if lengths[i] as u64 > ctx.max_allowed_packet() {
-                crate::expression_errors::handle_allowed_packet_overflowed(ctx, "concat_ws")?;
-                nulls[i] = true;
-                continue;
-            }
-            strings[i].push(text.as_ref().to_vec());
-        }
-    }
+    let bytes = crate::string_fn::concat_ws_columns(
+        n,
+        buffers.len(),
+        |column, row| (!buffers[column].is_null(row)).then(|| buffers[column].get_bytes(row)),
+        ctx,
+    )?;
     result.reserve_string(n);
-    for i in 0..n {
-        if nulls[i] {
-            result.append_null();
-        } else {
-            result.append_bytes(&strings[i].join(buffers[0].get_bytes(i).as_ref()));
+    for value in bytes {
+        match value {
+            Some(bytes) => result.append_bytes(&bytes),
+            None => result.append_null(),
         }
     }
     Ok(())
@@ -397,34 +380,6 @@ fn find_in_set(
             .collect::<Vec<_>>();
         let value = crate::builtin_ext::find_in_set_with_collation(&values, collation)?;
         vec_eval::put(result, row, EvalType::Int, &value)?;
-    }
-    Ok(())
-}
-
-/// Go `builtinRepeatSig.vecEvalString`: after the packet check a cell longer
-/// than `flen / num` is a silent NULL, a check its row form does not have.
-fn repeat(
-    function: &ScalarFunction,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    result: &mut Column,
-) -> Result<(), EvalError> {
-    let n = input.num_rows();
-    let buf = vec_eval::argument(&function.args[0], EvalType::String, ctx, input)?;
-    let buf2 = vec_eval::argument(&function.args[1], EvalType::Int, ctx, input)?;
-    let flen = function.get_static_type().expect("REPEAT type").flen();
-    result.reserve_string(n);
-    for i in 0..n {
-        if buf.is_null(i) || buf2.is_null(i) {
-            result.append_null();
-            continue;
-        }
-        let values = [
-            vec_eval::value(&buf, i, EvalType::String, function.args[0].static_type()),
-            Datum::Int(buf2.get_int64(i)),
-        ];
-        let value = crate::string_packet::repeat_in_mode(&values, Some(flen), ctx)?;
-        vec_eval::put(result, i, EvalType::String, &value)?;
     }
     Ok(())
 }

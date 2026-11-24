@@ -1227,8 +1227,10 @@ fn lower_declared(
         // scalar/vector conversion diagnostics.
         return None;
     }
-    if matches!(name, "addtime" | "subtime" | "date_add" | "date_sub"
-        | "repeat" | "password" | "validate_password_strength")
+    let typed_add_sub = crate::time_fn::add_sub::sign_of_signature(function.pb_code()).is_some();
+    if ((name == "addtime" || name == "subtime") && !typed_add_sub)
+        || matches!(name, "date_add" | "date_sub"
+        | "validate_password_strength")
         || name.starts_with("date_add_")
         || name.starts_with("date_sub_")
     {
@@ -1756,6 +1758,17 @@ fn lower_declared(
                 );
             }
         }
+        if matches!(
+            signature,
+            Some(tidb_proto::tipb::ScalarFuncSig::CastJsonAsDuration | tidb_proto::tipb::ScalarFuncSig::CastDurationAsJson)
+        ) {
+            return bind_host_call(
+                call,
+                HostOperation::LocalBuiltin(Box::new(PreparedLocalBuiltin::new(function))),
+                vec![source.clone()],
+                host_calls,
+            );
+        }
         if native_call
             && name == "cast_json"
             && (source.eval_type() == NativeEvalType::String
@@ -1783,8 +1796,7 @@ fn lower_declared(
         }
     }
     let execution_seed = seed_source.is_some();
-    let local_kernel = needs_sql_value_kernel(name)
-        || (environment.direct_row && binding::uses_native_real_math(name))
+    let local_kernel = typed_add_sub || needs_sql_value_kernel(name)
         || (name == "minus"
             && native_call
             && environment.host.no_unsigned_subtraction()
@@ -1991,7 +2003,7 @@ fn local_typed_kernel(function: &ScalarFunction) -> bool {
 // The baseline callbacks for these signatures omit TiDB's per-statement
 // packet policy or use different character/NULL conventions.
 fn needs_sql_value_kernel(name: &str) -> bool {
-    matches!(
+    binding::uses_native_real_math(name) || matches!(
         name,
         "aes_encrypt"
             | "aes_decrypt"
@@ -2004,6 +2016,9 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "to_base64"
             | "from_base64"
             | "ord"
+            | "repeat"
+            | "password"
+            | "compress"
             | "uncompress"
             | "extract"
             | "like"
@@ -2014,15 +2029,10 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_set"
             | "json_merge_patch"
             | "is_ipv4"
+            | "is_ipv4_compat"
+            | "is_ipv4_mapped"
             | "is_ipv6"
             | "conv"
-            | "sin"
-            | "cos"
-            | "tan"
-            | "pow"
-            | "power"
-            | "cot"
-            | "exp"
             | "date"
             | "instr"
             | "uuid"
@@ -2036,6 +2046,7 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_remove"
             | "json_contains"
             | "json_type"
+            | "json_pretty"
             | "json_quote"
             | "json_unquote"
             | "json_object"

@@ -101,15 +101,12 @@ pub(super) fn preserves_direct_row_contract(function: &ScalarFunction) -> bool {
         name,
         // Native row parsing/overflow errors and the statement clock.
         "inet_aton" | "inet6_aton" | "intdiv" | "addtime" | "subtime" | "date_add" | "date_sub"
-        // Exact Go compressor output and SQL-specific NULL handling.
-        | "compress" | "is_ipv4_compat" | "is_ipv4_mapped"
         | "json_insert" | "json_replace"
         | "unaryminus"
     )
 }
 
-// Preserve the Go floating-point result, including rounding at each
-// operation, when the direct row API promises exact native parity.
+// The Go builtins retain exact results from their floating-point routines.
 pub(super) fn uses_native_real_math(name: &str) -> bool {
     matches!(
         name,

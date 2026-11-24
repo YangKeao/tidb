@@ -292,7 +292,7 @@ impl NativeRows<'_> {
                             from_query_value(argument.get_logical_scalar_ref(row), field)
                         })
                         .collect::<Result<Vec<_>>>()?;
-                    function.evaluate(values, self.context)
+                    function.evaluate(values, self.context, !self.scalar_operand_demand())
                 }
                 _ => return Err(error("invalid native call operands")),
             }

@@ -1423,7 +1423,30 @@ fn concat_ws(
     count: usize,
     args: &[RpnExpression],
 ) -> Result<VectorValue> {
-    concat_branch(ctx, schema, input, rows, count, args, true)
+    if INPUT.with(|host| host.scalar_operand_demand()) {
+        return concat_branch(ctx, schema, input, rows, count, args, true);
+    }
+    let mut columns = Vec::with_capacity(args.len());
+    for arg in args {
+        columns.push(arg.eval_decoded(ctx, schema, input, rows, count)?);
+    }
+    let output = INPUT.with(|host| {
+        crate::string_fn::concat_ws_columns(
+            count,
+            columns.len(),
+            |column, row| match columns[column].get_logical_scalar_ref(row) {
+                ScalarValueRef::Bytes(value) => value,
+                _ => None,
+            },
+            host.context,
+        )
+        .map_err(|error| host.native_error(error))
+    })?;
+    let mut result = VectorValue::with_capacity(count, EvalType::Bytes);
+    for value in output {
+        result.push_bytes(value);
+    }
+    Ok(result)
 }
 
 fn concat_branch(

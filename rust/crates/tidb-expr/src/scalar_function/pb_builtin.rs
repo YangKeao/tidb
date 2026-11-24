@@ -1303,6 +1303,32 @@ impl PbBuiltin {
     }
 
     /// Go signature value operations shared by `eval*` and `vecEval*`.
+    pub(super) fn eval_values_in(
+        self,
+        function: &ScalarFunction,
+        values: Vec<Datum>,
+        vectorized: bool,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        if vectorized {
+            use ScalarFuncSig::*;
+            if matches!(self.signature, StrToDateDate | StrToDateDatetime | StrToDateDuration) {
+                return str_to_date_of(function, &values, false, ctx);
+            }
+            if self.signature == Repeat {
+                let flen = function.get_static_type().expect("REPEAT type").flen();
+                return crate::string_packet::repeat_in_mode(&values, Some(flen), ctx);
+            }
+            if self.signature == Password && values.first().is_some_and(Datum::is_null) {
+                return Ok(Datum::new_string_datum([]));
+            }
+            if let Some(sign) = crate::time_fn::add_sub::sign_of_signature(self.signature) {
+                return add_sub_time_of(function, &values, sign, false, ctx);
+            }
+        }
+        self.eval_values(function, values, ctx)
+    }
+
     pub(super) fn eval_values(self, function: &ScalarFunction, mut values: Vec<Datum>, ctx: &dyn Columns) -> Result<Datum, EvalError> {
         let args = &function.args;
         let kernel = self.kernel;
