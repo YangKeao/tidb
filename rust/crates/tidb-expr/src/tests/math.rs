@@ -14,8 +14,8 @@
 
 //! Focused tests for translated `pkg/expression/builtin_math.go` behavior.
 
-use super::e;
-use crate::math_fn::{conv, conv_valid_prefix, crc32};
+use super::{builtin, e};
+use crate::math_fn::{conv, conv_valid_prefix};
 use crate::Datum;
 
 fn call_conv(n: Datum, from: i64, to: i64) -> Datum {
@@ -135,9 +135,9 @@ fn crc32_matches_go_utf8_source_vectors() {
         (Datum::new_string_datum("一".to_string()), 2_416_838_398),
     ];
     for (input, want) in cases {
-        assert_eq!(crc32(&[input]), Ok(Datum::UInt(want)));
+        assert_eq!(builtin("crc32", &[input]), Ok(Datum::UInt(want)));
     }
-    assert_eq!(crc32(&[Datum::Null]), Ok(Datum::Null));
+    assert_eq!(builtin("crc32", &[Datum::Null]), Ok(Datum::Null));
 }
 
 /// Full scalar vector from `pkg/expression/builtin_math_test.go:35`

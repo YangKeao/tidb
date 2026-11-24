@@ -183,15 +183,6 @@ fn to_radix_upper(mut value: u64, radix: u32) -> String {
     String::from_utf8(out).unwrap()
 }
 
-/// `CRC32(str)`: the IEEE CRC-32 checksum (polynomial `0xEDB88320`) as an
-/// unsigned integer; `NULL` propagates.
-pub(crate) fn crc32(vals: &[Datum]) -> Result<Datum, EvalError> {
-    match crate::string_fn::eval_sdk_bytes_int(vals, tidb_query_expr::impl_math::crc32)? {
-        Datum::Int(checksum) => Ok(Datum::UInt(checksum as u64)),
-        value => Ok(value),
-    }
-}
-
 /// Coerces one function argument to `f64`: `NULL` propagates (the `Ok(None)`
 /// case, for the caller to turn into `Datum::Null`). This is a port of the
 /// `EvalReal` argument coercion used by the signatures in

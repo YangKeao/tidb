@@ -118,22 +118,6 @@ use tidb_charset::Collation;
     }
 }
 
-/// Adapt a SQL string value to an upstream byte kernel without changing its bytes.
-pub(crate) fn eval_sdk_bytes_int(
-    vals: &[Datum],
-    kernel: fn(&[u8]) -> tidb_query_common::Result<Option<i64>>,
-) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(bytes) = coerce_str_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    kernel(&bytes)
-        .map(|value| value.map_or(Datum::Null, Datum::Int))
-        .map_err(crate::rpn::query_error)
-}
-
 /// `LEFT`/`RIGHT`: the first or last `n` units, where `builtinLeftSig` and
 /// `builtinRightSig` count BYTES for a binary argument (preserving invalid
 /// UTF-8) and their `...UTF8Sig` twins count CHARACTERS. `NULL` if either
@@ -463,25 +447,6 @@ pub(crate) fn instr(
     })))
 }
 
-/// `REPLACE(str, from, to)`: every non-overlapping occurrence of `from` in
-/// `str` replaced by `to`. An empty `from` leaves `str` unchanged (matching
-/// MySQL, and avoiding a pathological empty-pattern replace). `NULL` if any
-/// argument is `NULL`.
-pub(crate) fn replace(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [value, from, to] = vals else {
-        return Err(EvalError::Unsupported("bad REPLACE arity"));
-    };
-    let (Some(s), Some(from), Some(to)) = (
-        coerce_str_bytes(value)?,
-        coerce_str_bytes(from)?,
-        coerce_str_bytes(to)?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    let replaced = sdk_bytes(|writer| tidb_query_expr::impl_string::replace(&s, &from, &to, writer))?;
-    Ok(replaced.map_or(Datum::Null, |bytes| string_result(value, bytes)))
-}
-
 pub(super) fn sdk_bytes(
     operation: impl FnOnce(
         tidb_query_datatype::codec::data_type::BytesWriter,
@@ -636,22 +601,6 @@ pub(crate) fn hex_with_type(
         }
         _ => Err(EvalError::Unsupported("HEX argument eval type")),
     }
-}
-
-/// `UNHEX(s)`: the inverse of `HEX` for a string — each hex pair becomes one
-/// byte in a binary datum (`UNHEX('4D7953514C')` carries `MySQL` bytes). An odd number of
-/// digits gets an implicit leading zero (`UNHEX('126')` = bytes `01 26`), as
-/// `builtinUnHexSig` does. `NULL` only when a digit is invalid; arbitrary
-/// decoded octets remain representable. The source signature is `ETString`,
-/// which is a byte-preserving Go string boundary, so malformed input bytes
-/// also follow the normal invalid-hex `NULL` path rather than becoming a Rust
-/// UTF-8 decoding error.
-pub(crate) fn unhex(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(s) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(sdk_bytes(|writer| tidb_query_expr::impl_string::unhex(&s, writer))?
-        .map_or(Datum::Null, Datum::new_bytes_datum))
 }
 
 /// `BIN(n)`: the base-2 form of an implicitly-cast integer as an unsigned

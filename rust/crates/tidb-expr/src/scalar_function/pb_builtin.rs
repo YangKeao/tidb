@@ -649,7 +649,7 @@ impl PbBuiltin {
         };
         use tidb_query_datatype::codec::{data_type::{DateTime as QueryDateTime, Duration as QueryDuration, Real as QueryReal}, mysql::Decimal as QueryDecimal};
         use tidb_query_expr::impl_compare::{
-            CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq, compare_vector_float32_fn_meta,
+            CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq, compare_json_fn_meta, compare_vector_float32_fn_meta,
         };
         use ScalarFuncSig::*;
         let kernel = match signature {
@@ -720,13 +720,13 @@ impl PbBuiltin {
             EqDuration => rpn_comparison!(QueryDuration, Duration, CmpOpEq),
             NeDuration => rpn_comparison!(QueryDuration, Duration, CmpOpNe),
             NullEqDuration => rpn_comparison!(QueryDuration, Duration, CmpOpNullEq),
-            LtJson => Kernel::Compare(BinaryOp::Lt, EvalType::Json),
-            LeJson => Kernel::Compare(BinaryOp::Le, EvalType::Json),
-            GtJson => Kernel::Compare(BinaryOp::Gt, EvalType::Json),
-            GeJson => Kernel::Compare(BinaryOp::Ge, EvalType::Json),
-            EqJson => Kernel::Compare(BinaryOp::Eq, EvalType::Json),
-            NeJson => Kernel::Compare(BinaryOp::Ne, EvalType::Json),
-            NullEqJson => Kernel::Compare(BinaryOp::NullEq, EvalType::Json),
+            LtJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpLt>), &[EvalType::Json; 2]),
+            LeJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpLe>), &[EvalType::Json; 2]),
+            GtJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpGt>), &[EvalType::Json; 2]),
+            GeJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpGe>), &[EvalType::Json; 2]),
+            EqJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpEq>), &[EvalType::Json; 2]),
+            NeJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpNe>), &[EvalType::Json; 2]),
+            NullEqJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpNullEq>), &[EvalType::Json; 2]),
             LtVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpLt>), &[EvalType::VectorFloat32; 2]),
             LeVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpLe>), &[EvalType::VectorFloat32; 2]),
             GtVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpGt>), &[EvalType::VectorFloat32; 2]),
@@ -1860,6 +1860,16 @@ mod tests {
                 ),
                 FieldTypeCode::Duration,
             ),
+            EvalType::Json => return tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(ScalarFuncSig::CastIntAsJson as i32),
+                children: vec![literal(EvalType::Int)],
+                field_type: Some(tipb::FieldType {
+                    tp: Some(i32::from(FieldTypeCode::Json.mysql_type())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
             EvalType::VectorFloat32 => (
                 Datum::VectorFloat32(VectorFloat32::parse("[1,2]").unwrap()),
                 FieldTypeCode::VectorFloat32,
@@ -1955,7 +1965,7 @@ mod tests {
                     (IntIsNull | RealIsNull | DecimalIsNull | StringIsNull | TimeIsNull
                     | DurationIsNull | JsonIsNull | VectorFloat32IsNull, _) => Datum::Int(1),
                     (NullEqInt | NullEqReal | NullEqDecimal | NullEqTime | NullEqDuration
-                    | NullEqVectorFloat32 | IntIsTrue | RealIsTrue | DecimalIsTrue
+                    | NullEqJson | NullEqJson | NullEqVectorFloat32 | IntIsTrue | RealIsTrue | DecimalIsTrue
                     | IntIsFalse | RealIsFalse | DecimalIsFalse, _) => Datum::Int(0),
                     _ => Datum::Null,
                 };

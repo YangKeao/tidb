@@ -964,7 +964,7 @@ pub(crate) fn evaluate_required_kernel(
 
     let reads_null = matches!(
         signature,
-        NullEqInt | NullEqReal | NullEqTime | NullEqDecimal | NullEqDuration | NullEqVectorFloat32
+        NullEqInt | NullEqReal | NullEqTime | NullEqDecimal | NullEqDuration | NullEqJson | NullEqVectorFloat32
             | IntIsNull | RealIsNull | DecimalIsNull | StringIsNull | TimeIsNull | DurationIsNull
             | JsonIsNull | VectorFloat32IsNull | IntIsTrue | RealIsTrue | DecimalIsTrue
             | IntIsFalse | RealIsFalse | DecimalIsFalse
@@ -1444,8 +1444,7 @@ fn lower_declared(
             }
         }
     }
-    let native_call = true;
-    if native_call && matches!(name, "cast_signed" | "cast_unsigned") {
+    if matches!(name, "cast_signed" | "cast_unsigned") {
         if let [operand] = function.args.as_slice() {
             if let Some(constant) = operand.binary_literal_source() {
                 return bind_value(
@@ -1459,12 +1458,10 @@ fn lower_declared(
         }
     }
     let signature = binding::function_signature(function);
-    let lock = native_call
-        .then(|| crate::scalar_function::advisory_lock_spec(name))
-        .flatten();
+    let lock = crate::scalar_function::advisory_lock_spec(name);
     let trim_direction = match name {
-        "ltrim_with" if native_call => Some(2_i64),
-        "rtrim_with" if native_call => Some(3_i64),
+        "ltrim_with" => Some(2_i64),
+        "rtrim_with" => Some(3_i64),
         _ => None,
     };
     let candidates = match name {
@@ -1518,7 +1515,7 @@ fn lower_declared(
         }
     }
 
-    if native_call && function.rejects_vector_json_cast() {
+    if function.rejects_vector_json_cast() {
         call.set_tp(QueryExprType::ScalarFunc);
         return bind_host_call(
             call,
@@ -1527,8 +1524,7 @@ fn lower_declared(
             host_calls,
         );
     }
-    let convert_using_metadata = native_call
-        && name == "convert_using"
+    let convert_using_metadata = name == "convert_using"
         && (|| {
             let [_, Expression::Constant(target)] = function.args.as_slice() else {
                 return false;
@@ -1539,8 +1535,7 @@ fn lower_declared(
                     .is_ok_and(|name| name.eq_ignore_ascii_case(result_type.charset_name()))
             })
         })();
-    let char_using_metadata = native_call
-        && name == "char_func"
+    let char_using_metadata = name == "char_func"
         && (|| {
             let [numbers @ .., Expression::Constant(charset)] = function.args.as_slice() else {
                 return false;
@@ -1569,7 +1564,7 @@ fn lower_declared(
                     })
                 })
         })();
-    let aes = native_call && matches!(name, "aes_encrypt" | "aes_decrypt");
+    let aes = matches!(name, "aes_encrypt" | "aes_decrypt");
     let operand_count = if let Some((_, arity)) = lock {
         if function.args.len() == arity {
             arity
@@ -1587,7 +1582,7 @@ fn lower_declared(
     } else {
         function.args.len()
     };
-    let weight_input = (native_call && name == "weight_string")
+    let weight_input = (name == "weight_string")
         .then(|| function.weight_string_input_required())
         .flatten();
     if weight_input == Some(false) {
@@ -1598,7 +1593,7 @@ fn lower_declared(
     if let Some(signature) = signature {
         call.set_sig(scalar_func_sig(signature as i32)?);
     }
-    if native_call && function.cast_in_union() && !string_decimal_union {
+    if function.cast_in_union() && !string_decimal_union {
         engine::bind_cast_in_union(&mut call).ok()?;
     }
     let seed_source = if name == "rand" {
@@ -1606,11 +1601,9 @@ fn lower_declared(
     } else {
         None
     };
-    let numeric_domain = native_call
-        .then(|| function.numeric_operand_domain())
-        .flatten();
+    let numeric_domain = function.numeric_operand_domain();
     let comparison_domain =
-        if native_call && matches!(name, "eq" | "ne" | "nulleq" | "lt" | "le" | "gt" | "ge") {
+        if matches!(name, "eq" | "ne" | "nulleq" | "lt" | "le" | "gt" | "ge") {
             if function.args.iter().filter_map(Expression::static_type).any(FieldType::is_hybrid) {
                 // Compare the SQL member name and its collation, including
                 // original bytes for transient ENUM/SET columns.
@@ -1620,7 +1613,7 @@ fn lower_declared(
         } else {
             None
         };
-    let benchmark = native_call && name == "benchmark";
+    let benchmark = name == "benchmark";
     let benchmark_body_error = if benchmark {
         let [_, body] = function.args.as_slice() else {
             return None;
@@ -1629,9 +1622,9 @@ fn lower_declared(
     } else {
         None
     };
-    let vector_extremum = native_call && function.native_vector_extremum().is_some();
+    let vector_extremum = function.native_vector_extremum().is_some();
     let vector_operands =
-        vector_extremum || native_call && function.native_vector_operator().is_some();
+        vector_extremum || function.native_vector_operator().is_some();
     for (index, arg) in function.args.iter().take(operand_count).enumerate() {
         if index == 1 && benchmark_body_error.is_some() {
             let mut body = QueryExpr::new();
@@ -1676,8 +1669,7 @@ fn lower_declared(
                 seed_keys,
             )?
         };
-        if native_call
-            && is_binary_literal(arg)
+        if is_binary_literal(arg)
             && (numeric_domain.is_some()
                 || comparison_domain.is_some_and(|kind| kind != NativeEvalType::String)
                 || matches!(name, "oct" | "abs")
@@ -1714,13 +1706,8 @@ fn lower_declared(
                 lowered = lower_leaf(&constant, environment.input_types)?;
             }
         }
-        let domain = numeric_domain.or(comparison_domain).or_else(|| {
-            native_call
-                .then(|| unary_operand_domain(function))
-                .flatten()
-        });
-        if native_call
-            && field.eval_type() == NativeEvalType::Decimal
+        let domain = numeric_domain.or(comparison_domain).or_else(|| unary_operand_domain(function));
+        if field.eval_type() == NativeEvalType::Decimal
             && matches!(
                 name,
                 "bitand" | "bitor" | "bitxor" | "leftshift" | "rightshift" | "bitneg"
@@ -1766,27 +1753,25 @@ fn lower_declared(
                 }
             }
         }
-        if native_call {
-            let condition = match name {
-                "if" => index == 0,
-                "case" => index % 2 == 0 && index + 1 < function.args.len(),
-                "and" | "or" | "xor" => true,
-                _ => false,
-            };
-            if condition {
-                if eval_type(&lowered) == Some(EvalType::Json) {
-                    lowered = bind_host_operand(
-                        lowered,
-                        HostOperation::NumericCast(NativeEvalType::Real),
-                        field.clone(),
-                        &FieldType::new(FieldTypeCode::Double),
-                        host_calls,
-                    )?;
-                }
-                lowered = truth_operand(lowered)?;
-            } else if matches!(name, "if" | "case" | "coalesce" | "ifnull") {
-                lowered = bind_selection_result(lowered, result_type)?;
+        let condition = match name {
+            "if" => index == 0,
+            "case" => index % 2 == 0 && index + 1 < function.args.len(),
+            "and" | "or" | "xor" => true,
+            _ => false,
+        };
+        if condition {
+            if eval_type(&lowered) == Some(EvalType::Json) {
+                lowered = bind_host_operand(
+                    lowered,
+                    HostOperation::NumericCast(NativeEvalType::Real),
+                    field.clone(),
+                    &FieldType::new(FieldTypeCode::Double),
+                    host_calls,
+                )?;
             }
+            lowered = truth_operand(lowered)?;
+        } else if matches!(name, "if" | "case" | "coalesce" | "ifnull") {
+            lowered = bind_selection_result(lowered, result_type)?;
         }
         call.mut_children().push(lowered);
     }
@@ -1817,7 +1802,7 @@ fn lower_declared(
         call.set_val(LAST_INSERT_ID_DECLARATION.to_vec());
         return Some(call);
     }
-    if native_call && name == "json_schema_valid" {
+    if name == "json_schema_valid" {
         let [schema, document] = function.args.as_slice() else {
             return None;
         };
@@ -1889,7 +1874,7 @@ fn lower_declared(
             call.mut_children().push(ignored);
         }
     }
-    if native_call && name == "interval" && function.args.len() >= 2 {
+    if name == "interval" && function.args.len() >= 2 {
         call.set_sig(ScalarFuncSig::IntervalInt);
         return Some(call);
     }
@@ -1923,7 +1908,7 @@ fn lower_declared(
     }
     if let [argument] = function.args.as_slice() {
         let source = argument.static_type()?;
-        if native_call && matches!(name, "cast_double" | "cast_float") {
+        if matches!(name, "cast_double" | "cast_float") {
             if let Some(literal) = argument
                 .binary_literal_source()
                 .and_then(|literal| literal.literal_value())
@@ -1964,8 +1949,7 @@ fn lower_declared(
                 host_calls,
             );
         }
-        if native_call
-            && name == "cast_json"
+        if name == "cast_json"
             && (source.eval_type() == NativeEvalType::String
                 || source.code() == FieldTypeCode::Year)
         {
@@ -1978,10 +1962,7 @@ fn lower_declared(
                 host_calls,
             );
         }
-        if let Some(target) = native_call
-            .then(|| sql_cast_override(name, source, result_type))
-            .flatten()
-        {
+        if let Some(target) = sql_cast_override(name, source, result_type) {
             return bind_host_call(
                 call,
                 HostOperation::SqlCast(target),
@@ -1993,7 +1974,6 @@ fn lower_declared(
     let execution_seed = seed_source.is_some();
     let local_kernel = typed_add_sub || string_extremum || needs_sql_value_kernel(name)
         || (name == "minus"
-            && native_call
             && environment.host.no_unsigned_subtraction()
             && result_type.eval_type() == NativeEvalType::Int
             && function
@@ -2035,7 +2015,7 @@ fn lower_declared(
             make_cast(seed, kind, EvalType::Int)?
         });
         Some(std::mem::take(&mut call))
-    } else if native_call && local_kernel {
+    } else if local_kernel {
         None
     } else if signature.is_some() {
         // An already decoded native PB expression retains its selected
@@ -2055,15 +2035,14 @@ fn lower_declared(
         candidates.and_then(|candidates| select_call(&mut call, function, candidates))
     };
     if let Some(mut call) = selected {
-        if native_call && numeric_domain.is_some() {
+        if numeric_domain.is_some() {
             let slot = u64::try_from(diagnostic_calls.len()).ok()?;
             let mut metadata = NATIVE_DIAGNOSTIC_TAG.to_vec();
             metadata.extend(slot.to_le_bytes());
             call.set_val(metadata);
             diagnostic_calls.push(function.clone());
         }
-        if native_call
-            && name == "coalesce"
+        if name == "coalesce"
             && matches!(
                 result_type.eval_type(),
                 NativeEvalType::Duration | NativeEvalType::Datetime | NativeEvalType::Timestamp
@@ -2083,10 +2062,10 @@ fn lower_declared(
         return bind_context_input(function, base_columns + bindings.len(), result_type, bindings);
     }
     let (operation, arguments) = match function.args.as_slice() {
-        [value] if native_call && name == "load_file" => {
+        [value] if name == "load_file" => {
             (HostOperation::LoadFile, vec![value.static_type()?.clone()])
         }
-        [value] if native_call && name == "cast_vector" => (
+        [value] if name == "cast_vector" => (
             HostOperation::RejectVectorCast,
             vec![value.static_type()?.clone()],
         ),

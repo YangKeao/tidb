@@ -457,7 +457,7 @@ fn unhex_source_vectors_preserve_odd_digit_left_padding() {
     // therefore an invalid hex payload and returns NULL, rather than leaking
     // a Rust decoding error before `hex.DecodeString` gets to decide.
     assert_eq!(
-        string_fn::unhex(&[Datum::new_bytes_datum(vec![0xff])]),
+        builtin("unhex", &[Datum::new_bytes_datum(vec![0xff])]),
         Ok(Datum::Null)
     );
 }
@@ -483,7 +483,7 @@ fn bit_length_source_vectors_preserve_utf8_byte_count() {
 
     // Go's len(val) counts binary bytes without UTF-8 validation.
     assert_eq!(
-        string_fn::eval_sdk_bytes_int(&[Datum::new_bytes_datum(vec![0xff, 0x00])], tidb_query_expr::impl_string::bit_length).unwrap(),
+        builtin("bit_length", &[Datum::new_bytes_datum(vec![0xff, 0x00])]).unwrap(),
         Datum::Int(16)
     );
 }
@@ -646,7 +646,7 @@ fn ascii_source_vectors_preserve_first_byte_and_string_coercion() {
     // separate from the SQL source table because the parser does not expose
     // an invalid-UTF-8 string literal in this seed value domain.
     assert_eq!(
-        string_fn::eval_sdk_bytes_int(&[Datum::new_bytes_datum(vec![0xff, 0x00])], tidb_query_expr::impl_string::ascii).unwrap(),
+        builtin("ascii", &[Datum::new_bytes_datum(vec![0xff, 0x00])]).unwrap(),
         Datum::Int(255)
     );
 }
@@ -1196,7 +1196,7 @@ fn replace_source_vectors_preserve_byte_coercion() {
         assert_eq!(e(expr), want, "{expr}");
     }
     assert_eq!(
-        string_fn::replace(&[
+        builtin("replace", &[
             Datum::new_bytes_datum(vec![0xff, 0x00, b'a']),
             Datum::new_bytes_datum(vec![0xff]),
             Datum::new_bytes_datum(vec![0xfe, b'b']),
@@ -1204,11 +1204,11 @@ fn replace_source_vectors_preserve_byte_coercion() {
         .unwrap(),
         Datum::new_bytes_datum(vec![0xfe, b'b', 0x00, b'a'])
     );
-    assert!(string_fn::replace(&[
-        Datum::new_string_datum("abc".to_string()),
-        Datum::new_string_datum("a".to_string()),
-    ])
-    .is_err());
+    assert!(eval_builtin_func(
+        "replace",
+        &[Datum::new_string_datum("abc"), Datum::new_string_datum("a")],
+        &NoColumns,
+    ).is_none());
 }
 
 /// Complete representable rows from `TestSubstringIndex` in

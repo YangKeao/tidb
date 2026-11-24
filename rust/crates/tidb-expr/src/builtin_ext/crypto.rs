@@ -23,31 +23,27 @@
 //!
 //! `COMPRESS`, `UNCOMPRESS`, and `UNCOMPRESSED_LENGTH` implement TiDB's binary
 //! framing: a 4-byte little-endian original-length prefix followed by a zlib
-//! stream. The compressed block layout is deliberately left to Rust's zlib
-//! encoder; SQL observes a standards-compliant stream and the framing, not a
-//! particular standard-library DEFLATE strategy. The inverse functions require
-//! a complete checksummed stream, cap inflation at the framed original length,
-//! and append TiDB's corruption warnings to the statement context.
+//! stream. COMPRESS preserves the bytes emitted by Go's encoder. UNCOMPRESS
+//! requires a complete checksummed stream, caps inflation at the framed
+//! length, and appends TiDB's corruption warnings to the statement context.
 //!
 
 use flate2::{Decompress, FlushDecompress, Status};
 use sha1::Sha1;
-use tidb_query_expr::impl_encryption as sdk;
 
 use crate::{BlockEncryptionMode, Columns, Datum, EvalError};
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
 /// `SHA` is a true alias of `SHA1`: `builtin.go`'s `funcs` map registers
 /// both `ast.SHA` and `ast.SHA1` to the same `sha1FunctionClass`.
+#[cfg(test)]
 pub(crate) fn dispatch(
     name: &str,
     vals: &[Datum],
     ctx: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
     match (name, vals.len()) {
-        ("MD5", 1) => Some(md5_hash(&vals[0])),
-        ("SHA" | "SHA1", 1) => Some(sha1_hash(&vals[0])),
-        ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1])),
+        ("MD5" | "SHA" | "SHA1" | "SHA2", _) => crate::tests::eval_builtin_func(name, vals, ctx),
         ("SM3", 1) => Some(sm3_hash(&vals[0])),
         ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
         ("RANDOM_BYTES", _) => Some(Err(EvalError::WrongParameterCount("random_bytes"))),
@@ -521,18 +517,6 @@ pub(crate) fn validate_password_strength_with_user(
     Ok(Datum::Int(100))
 }
 
-pub(crate) fn md5_hash(value: &Datum) -> Result<Datum, EvalError> {
-    sdk::md5(hash_input(value)?.as_deref()).map(digest_datum).map_err(crate::rpn::query_error)
-}
-
-pub(crate) fn sha1_hash(value: &Datum) -> Result<Datum, EvalError> {
-    sdk::sha1(hash_input(value)?.as_deref()).map(digest_datum).map_err(crate::rpn::query_error)
-}
-
-fn digest_datum(bytes: Option<Vec<u8>>) -> Datum {
-    bytes.map_or(Datum::Null, Datum::new_string_datum)
-}
-
 /// `SM3(str)`: the parser-auth SM3 digest rendered as lowercase hex. TiDB's
 /// SQL builtin and password plugin deliberately share this digest owner.
 pub(crate) fn sm3_hash(value: &Datum) -> Result<Datum, EvalError> {
@@ -588,30 +572,6 @@ fn hash_input(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
                 .map_err(|_| EvalError::Unsupported("datum hash argument"))?,
         ),
     })
-}
-
-/// `SHA2(str, n)`: the SHA-2 family digest as lowercase hex. Port of
-/// `builtinSHA2Sig.evalString` (`pkg/expression/builtin_encryption.go`):
-/// `NULL` in either argument propagates; the switch over `n` maps
-/// `SHA0`(0) and `SHA256`(256) to SHA-256, `SHA224`/`SHA384`/`SHA512` to
-/// their hashes, and leaves the hasher nil for EVERY other value — which
-/// the Go code returns as `NULL` (not an error). Its function class declares
-/// the second argument `ETInt`, so [`encryption_int_argument`] ports that implicit cast
-/// before applying the switch.
-pub(crate) fn sha2_hash(arg: &Datum, len: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = hash_input(arg)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(n) = encryption_int_argument(len)? else {
-        return Ok(Datum::Null);
-    };
-    // The SQL builtin returns NULL silently for an invalid hash length.
-    if !matches!(n, 0 | 224 | 256 | 384 | 512) {
-        return Ok(Datum::Null);
-    }
-    sdk::sha2(&mut Default::default(), Some(&bytes), Some(&n))
-        .map(digest_datum)
-        .map_err(crate::rpn::query_error)
 }
 
 /// Ports the `ETInt` coercion requested by the encryption function classes.
