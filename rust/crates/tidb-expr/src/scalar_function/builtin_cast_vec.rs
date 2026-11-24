@@ -17,7 +17,7 @@ pub(super) fn eval(
     let Kernel::Cast {
         source,
         target,
-        in_union,
+        ..
     } = function.pb_builtin.kernel
     else {
         unreachable!()
@@ -54,21 +54,7 @@ pub(super) fn eval(
     for i in 0..input.num_rows() {
         let source_column = if reuse { &*result } else { &buffer };
         let value = vec_eval::value(source_column, i, source, arg.static_type());
-        let value = if source == EvalType::String && target == EvalType::Decimal && !value.is_null()
-        {
-            let field = function.get_static_type().expect("cast type");
-            let bytes = crate::arg_eval_type::eval_string(&value)?.unwrap();
-            if in_union
-                && field.is_unsigned()
-                && bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'-')
-            {
-                Datum::Decimal(tidb_datatype::Decimal::parse_mysql("0").0)
-            } else {
-                super::cast_string_as_decimal(&bytes, field, ctx, true)?
-            }
-        } else {
-            function.pb_builtin.cast_value_in(function, value, true, ctx)?
-        };
+        let value = function.pb_builtin.cast_value_in(function, value, true, ctx)?;
         vec_eval::put(result, i, target, &value)?;
     }
     Ok(())

@@ -1215,8 +1215,10 @@ fn lower_declared(
     }
     let name = binding::local_name(function);
     let result_type = expression.static_type()?;
+    let string_decimal_union = function.cast_in_union()
+        && function.pb_code() == tidb_proto::tipb::ScalarFuncSig::CastStringAsDecimal;
     if function.is_cast()
-        && (function.cast_in_union()
+        && ((function.cast_in_union() && !string_decimal_union)
             || result_type.code() == FieldTypeCode::Timestamp
             || function.args.first().and_then(Expression::static_type).is_some_and(|source| {
                 source.is_hybrid() || source.eval_type() == NativeEvalType::VectorFloat32
@@ -1438,7 +1440,7 @@ fn lower_declared(
     if let Some(signature) = signature {
         call.set_sig(scalar_func_sig(signature as i32)?);
     }
-    if native_call && function.cast_in_union() {
+    if native_call && function.cast_in_union() && !string_decimal_union {
         engine::bind_cast_in_union(&mut call).ok()?;
     }
     let seed_source = if name == "rand" {
@@ -1767,10 +1769,12 @@ fn lower_declared(
                 );
             }
         }
-        if matches!(
-            signature,
-            Some(tidb_proto::tipb::ScalarFuncSig::CastJsonAsDuration | tidb_proto::tipb::ScalarFuncSig::CastDurationAsJson)
-        ) {
+        if string_decimal_union
+            || matches!(
+                signature,
+                Some(tidb_proto::tipb::ScalarFuncSig::CastJsonAsDuration | tidb_proto::tipb::ScalarFuncSig::CastDurationAsJson)
+            )
+        {
             return bind_host_call(
                 call,
                 HostOperation::LocalBuiltin(Box::new(PreparedLocalBuiltin::new(function))),

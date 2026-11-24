@@ -1509,6 +1509,14 @@ impl PbBuiltin {
                 let field = function
                     .get_static_type()
                     .ok_or(EvalError::Unsupported("protobuf cast result type"))?;
+                if vectorized && source == EvalType::String && target == EvalType::Decimal {
+                    let bytes = crate::arg_eval_type::eval_string(&value)?.expect("non-NULL cast input");
+                    let leading = bytes.iter().copied().find(|b| !b.is_ascii_whitespace());
+                    if in_union && field.is_unsigned() && leading == Some(b'-') {
+                        return Ok(Datum::Decimal(tidb_datatype::Decimal::parse_mysql("0").0));
+                    }
+                    return super::cast_string_as_decimal(&bytes, field, ctx, true);
+                }
                 if matches!(target, EvalType::Int | EvalType::Real | EvalType::Decimal) {
                     return crate::cast::eval_numeric_cast_with_type(
                         value,
@@ -1779,7 +1787,7 @@ impl PbBuiltin {
                     .map_err(|_| EvalError::Unsupported("invalid date interval unit"))?;
                 function.eval_date_arithmetic(unit, subtract, ctx, row)
             }
-            Kernel::Cast { source, target, in_union } => {
+            Kernel::Cast { source, target, .. } => {
                 if args.len() != 1 {
                     return Err(EvalError::Unsupported("protobuf cast arity"));
                 }
