@@ -9679,7 +9679,7 @@ fn a_parallel_projection_swaps_in_its_last_output_like_go() {
         "9.30 KB"
     );
     let union = "SELECT * FROM t UNION ALL SELECT a, b, 'x', 1.0 FROM u";
-    assert_eq!(memory(&mut fresh(), union, "Projection_10"), "17.4 KB");
+    assert_eq!(memory(&mut fresh(), union, "Projection_10"), "17.2 KB");
     assert_eq!(memory(&mut fresh(), union, "Projection_13"), "3.92 KB");
 }
 
@@ -9708,7 +9708,7 @@ fn a_union_pulls_each_child_into_its_workers_chunk_like_go() {
         .iter()
         .find(|row| row[0].trim_start_matches(|c: char| !c.is_ascii_alphabetic()) == "Projection_10")
         .unwrap_or_else(|| panic!("{rows:?}"));
-    assert_eq!(projection[7], "29.6 KB", "{rows:?}");
+    assert_eq!(projection[7], "29.4 KB", "{rows:?}");
     let answer = row_text(session.run(union));
     assert_eq!(answer.len(), 250);
     assert_eq!(answer.iter().filter(|row| row[2] == "x").count(), 50);

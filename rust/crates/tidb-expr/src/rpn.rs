@@ -1140,6 +1140,7 @@ enum HostOperation {
     DeferredValue(FieldType),
     CapturedRandom(Arc<crate::MysqlRng>),
     ClockDuration { utc: bool },
+    PasswordStrength,
     DateArithmetic { subtract: bool, result: FieldType },
     SqlCast(tidb_ast::CastType),
     NumericCast(NativeEvalType),
@@ -1259,6 +1260,7 @@ const NATIVE_DIAGNOSTIC_TAG: &[u8] = b"source";
 const NULL_HOST_TAG: &[u8] = b"null";
 const PATH_FIRST_HOST_TAG: &[u8] = b"paths";
 const DATE_ARITHMETIC_TAG: &[u8] = b"date";
+const PASSWORD_STRENGTH_TAG: &[u8] = b"password";
 const REPEAT_DECLARATION: &[u8] = b"repeat";
 const LAST_INSERT_ID_DECLARATION: &[u8] = b"last_insert_id";
 const EXECUTION_SEED_DECLARATION: &[u8] = b"seed";
@@ -1380,7 +1382,7 @@ fn lower_declared(
     let typed_add_sub = crate::time_fn::add_sub::sign_of_signature(function.pb_code()).is_some();
     let date_arithmetic = function.date_arithmetic_subtract();
     if ((name == "addtime" || name == "subtime") && !typed_add_sub)
-        || name == "validate_password_strength"
+        || (name == "validate_password_strength" && environment.mode != LoweringMode::TypedBatch)
         || (matches!(name, "date_add" | "date_sub")
             || name.starts_with("date_add_")
             || name.starts_with("date_sub_"))
@@ -1774,6 +1776,14 @@ fn lower_declared(
             lowered = bind_selection_result(lowered, result_type)?;
         }
         call.mut_children().push(lowered);
+    }
+    if name == "validate_password_strength" {
+        return bind_host_call(
+            call,
+            HostOperation::PasswordStrength,
+            vec![function.args.first()?.static_type()?.clone()],
+            host_calls,
+        );
     }
     if let Some(subtract) = date_arithmetic.filter(|_| environment.mode == LoweringMode::TypedBatch) {
         let fields = function.args.iter()
@@ -2291,6 +2301,8 @@ fn bind_host_call(
         metadata.extend_from_slice(PATH_FIRST_HOST_TAG);
     } else if matches!(operation, HostOperation::DateArithmetic { .. }) {
         metadata.extend_from_slice(DATE_ARITHMETIC_TAG);
+    } else if matches!(operation, HostOperation::PasswordStrength) {
+        metadata.extend_from_slice(PASSWORD_STRENGTH_TAG);
     } else if operation.propagates_null_before_next_operand() {
         metadata.extend_from_slice(NULL_HOST_TAG);
     }

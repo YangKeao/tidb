@@ -20,7 +20,7 @@ use tidb_query_expr::{
 use tipb::{Expr, ExprType, FieldType, ScalarFuncSig};
 
 use super::{
-    DATE_ARITHMETIC_TAG, EXECUTION_SEED_DECLARATION, LAST_INSERT_ID_DECLARATION, NATIVE_DIAGNOSTIC_TAG, NULL_HOST_TAG, PATH_FIRST_HOST_TAG, REPEAT_DECLARATION, rows,
+    DATE_ARITHMETIC_TAG, EXECUTION_SEED_DECLARATION, LAST_INSERT_ID_DECLARATION, NATIVE_DIAGNOSTIC_TAG, NULL_HOST_TAG, PASSWORD_STRENGTH_TAG, PATH_FIRST_HOST_TAG, REPEAT_DECLARATION, rows,
 };
 
 pub(super) fn error(message: impl Into<String>) -> tidb_query_common::Error {
@@ -523,11 +523,14 @@ fn compile(
                 .strip_prefix(EXECUTION_SEED_DECLARATION)
                 .or_else(|| tree.get_val().strip_prefix(PATH_FIRST_HOST_TAG))
                 .or_else(|| tree.get_val().strip_prefix(DATE_ARITHMETIC_TAG))
+                .or_else(|| tree.get_val().strip_prefix(PASSWORD_STRENGTH_TAG))
             {
                 let fn_ptr = if tree.get_val().starts_with(PATH_FIRST_HOST_TAG) {
                     json_paths_first
                 } else if tree.get_val().starts_with(DATE_ARITHMETIC_TAG) {
                     date_arithmetic
+                } else if tree.get_val().starts_with(PASSWORD_STRENGTH_TAG) {
+                    password_strength
                 } else {
                     seeded_rand
                 };
@@ -1348,6 +1351,51 @@ fn date_arithmetic(
         for (date, interval) in dates.into_iter().zip(intervals) {
             let value = native::operation(result, date_field, &unit, *subtract, date, interval, host.context)
                 .map_err(native_error)?;
+            rows::append(&mut output, value)?;
+        }
+        Ok(output)
+    })
+}
+
+fn password_strength(
+    ctx: &mut EvalContext,
+    schema: &[FieldType],
+    input: &LazyBatchColumnVec,
+    selected: &[usize],
+    count: usize,
+    args: &[RpnExpression],
+) -> Result<VectorValue> {
+    use crate::builtin_ext::{crypto, misc::opt_prop_error};
+    let [passwords, slot] = args else {
+        return Err(error("invalid password strength arguments"));
+    };
+    let slot = slot.eval_decoded(ctx, schema, input, selected, count)?;
+    let ScalarValueRef::Int(Some(slot)) = slot.get_logical_scalar_ref(0) else {
+        return Err(error("password strength slot is invalid"));
+    };
+    INPUT.with(|host| {
+        let call = &host.host_calls[*slot as usize];
+        let native_error = |err| host.native_error(err);
+        // Go's vector entry acquires both properties before reading the
+        // password column, and applies the policy even to short strings.
+        let user = crypto::password_validation_user(host.context).map_err(native_error)?;
+        let vars = tidb_expropt::SessionVarsPropReader
+            .get_session_vars(host.context)
+            .map_err(|err| host.native_error(opt_prop_error(err)))?;
+        let passwords = passwords.eval_decoded(ctx, schema, input, selected, count)?;
+        let globals = crypto::EvalGlobalVars(&*vars);
+        let enabled = crypto::password_validation_enabled(&globals).map_err(native_error)?;
+        let mut output = rows::output_vector(&call.output, count)?;
+        for index in 0..count {
+            let password = rows::from_query_value(passwords.get_logical_scalar_ref(index), &call.arguments[0])?;
+            let value = if password.is_null() {
+                tidb_datatype::Datum::Null
+            } else if enabled {
+                crypto::validate_password_strength_with_user(&password, &globals, user.as_ref())
+                    .map_err(native_error)?
+            } else {
+                tidb_datatype::Datum::Int(0)
+            };
             rows::append(&mut output, value)?;
         }
         Ok(output)
