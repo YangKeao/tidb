@@ -801,7 +801,7 @@ impl Expression {
                 .eval_on_row_with_error_value(ctx, row)
                 .map_err(|(_, error)| error),
             Expression::CorrelatedColumn(c) => Ok(c.eval()),
-            Expression::ScalarFunction(c) => c.eval(ctx, row),
+            Expression::ScalarFunction(c) => c.eval_native(ctx, row),
             Expression::ScalarSubQuery(c) => c.eval(),
         }
     }
@@ -847,15 +847,7 @@ impl Expression {
     pub(crate) fn binary_literal_source(&self) -> Option<&crate::constant::Constant> {
         let constant = match self {
             Expression::Constant(constant) => constant,
-            Expression::ScalarFunction(function) if function.func_name.lowercase() == "ifnull" => {
-                let [Expression::Constant(first), second] = function.args.as_slice() else {
-                    return None;
-                };
-                if first.literal_value()?.is_null() {
-                    return second.binary_literal_source();
-                }
-                first
-            }
+            Expression::ScalarFunction(function) => return function.binary_literal_source(),
             _ => return None,
         };
         matches!(

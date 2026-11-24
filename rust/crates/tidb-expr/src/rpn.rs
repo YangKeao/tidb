@@ -81,6 +81,30 @@ pub(crate) struct PreparedExpression {
     block_encryption_mode: BlockEncryptionMode,
 }
 
+#[derive(Clone, Copy)]
+enum ExpressionRoot<'a> {
+    Scalar(&'a ScalarFunction),
+    Leaf(&'a Expression),
+}
+
+impl<'a> From<&'a Expression> for ExpressionRoot<'a> {
+    fn from(expression: &'a Expression) -> Self {
+        match expression {
+            Expression::ScalarFunction(function) => Self::Scalar(function),
+            _ => Self::Leaf(expression),
+        }
+    }
+}
+
+impl<'a> ExpressionRoot<'a> {
+    fn static_type(self) -> Option<&'a FieldType> {
+        match self {
+            Self::Scalar(function) => function.get_static_type(),
+            Self::Leaf(expression) => expression.static_type(),
+        }
+    }
+}
+
 impl PreparedExpression {
     pub(crate) fn new(
         expression: &Expression,
@@ -96,11 +120,11 @@ impl PreparedExpression {
         column_count: usize,
         use_statement_seed: bool,
     ) -> Result<Option<Self>, EvalError> {
-        Self::prepare_with_source(expression, ctx, column_count, use_statement_seed, true, false)
+        Self::prepare_with_source(expression.into(), ctx, column_count, use_statement_seed, true, false)
     }
 
     fn prepare_with_source(
-        expression: &Expression,
+        expression: ExpressionRoot<'_>,
         ctx: &dyn Columns,
         column_count: usize,
         use_statement_seed: bool,
@@ -135,7 +159,10 @@ impl PreparedExpression {
         else {
             return Ok(None);
         };
-        let scalar_effects = crate::evaluator::has_scalar_effects(expression);
+        let scalar_effects = match expression {
+            ExpressionRoot::Scalar(function) => crate::evaluator::scalar_has_effects(function),
+            ExpressionRoot::Leaf(expression) => crate::evaluator::has_scalar_effects(expression),
+        };
         let row_ordered = scalar_effects
             || compiled
                 .host_calls
@@ -218,7 +245,7 @@ impl PreparedExpression {
         mut emit: impl FnMut(Datum) -> Result<(), EvalError>,
     ) -> Result<bool, EvalError> {
         let Some(mut program) =
-            Self::prepare_with_source(expression, ctx, chunk.num_cols(), false, true, true)?
+            Self::prepare_with_source(expression.into(), ctx, chunk.num_cols(), false, true, true)?
         else {
             return Ok(false);
         };
@@ -715,10 +742,20 @@ pub(crate) fn try_evaluate_direct_row(
     ctx: &dyn Columns,
     row: tidb_chunk::row::Row<'_>,
 ) -> Result<Option<Datum>, EvalError> {
-    if !matches!(expression, Expression::ScalarFunction(_)) {
+    let Expression::ScalarFunction(function) = expression else {
         return Ok(None);
-    }
-    let Some(mut execution) = PreparedExpression::prepare(expression, ctx, row.len(), true)? else {
+    };
+    try_evaluate_scalar_function(function, ctx, row)
+}
+
+pub(crate) fn try_evaluate_scalar_function(
+    function: &ScalarFunction,
+    ctx: &dyn Columns,
+    row: tidb_chunk::row::Row<'_>,
+) -> Result<Option<Datum>, EvalError> {
+    let Some(mut execution) = PreparedExpression::prepare_with_source(
+        ExpressionRoot::Scalar(function), ctx, row.len(), true, true, false,
+    )? else {
         return Ok(None);
     };
     #[cfg(test)]
@@ -793,9 +830,12 @@ fn is_statement_seed(seed: &crate::constant::Constant) -> bool {
     true
 }
 
-fn native_schema(expression: &Expression, count: usize) -> Option<Vec<FieldType>> {
+fn native_schema(expression: ExpressionRoot<'_>, count: usize) -> Option<Vec<FieldType>> {
     let mut fields = vec![None; count];
-    let mut pending = vec![expression];
+    let mut pending: Vec<_> = match expression {
+        ExpressionRoot::Scalar(function) => function.args.iter().collect(),
+        ExpressionRoot::Leaf(expression) => vec![expression],
+    };
     while let Some(expression) = pending.pop() {
         match expression {
             Expression::ScalarFunction(call) => pending.extend(&call.args),
@@ -1141,7 +1181,7 @@ struct LoweringEnvironment<'a> {
 
 /// Lower the already resolved native expression through the SDK compiler.
 fn compile(
-    expression: &Expression,
+    expression: ExpressionRoot<'_>,
     input_types: &[FieldType],
     ctx: &mut EvalContext,
     host: &dyn Columns,
@@ -1237,7 +1277,7 @@ fn lower_leaf(expression: &Expression, input_types: &[FieldType]) -> Option<Quer
 }
 
 fn lower_declared(
-    expression: &Expression,
+    root: ExpressionRoot<'_>,
     environment: &LoweringEnvironment<'_>,
     bindings: &mut Vec<InputBinding>,
     host_calls: &mut Vec<HostCall>,
@@ -1245,61 +1285,61 @@ fn lower_declared(
     seed_keys: &mut Vec<usize>,
 ) -> Option<QueryExpr> {
     let base_columns = environment.input_types.len();
-    if matches!(expression, Expression::ScalarFunction(_)) {
-        if let Some(constant) = expression.binary_literal_source() {
-            let literal = Expression::Constant(constant.clone());
-            return lower_leaf(&literal, environment.input_types);
+    let function = match root {
+        ExpressionRoot::Scalar(function) => function,
+        ExpressionRoot::Leaf(expression) => {
+            match expression {
+                Expression::Constant(constant)
+                    if constant.param_marker.is_some()
+                        || matches!(
+                            constant.literal_value(),
+                            Some(Datum::Duration(_) | Datum::Time(_))
+                        ) =>
+                {
+                    return bound_input(expression, base_columns + bindings.len(), bindings);
+                }
+                Expression::Constant(constant) if constant.deferred_expr.is_some() => {
+                    let child = constant.deferred_expr.as_deref()?;
+                    let output = expression.static_type()?.clone();
+                    let mut call = QueryExpr::new();
+                    call.set_tp(QueryExprType::ScalarFunc);
+                    call.set_field_type(rows::query_field_type(&output)?);
+                    call.mut_children().push(lower_declared(
+                        child.into(),
+                        environment,
+                        bindings,
+                        host_calls,
+                        diagnostic_calls,
+                        seed_keys,
+                    )?);
+                    return bind_host_call(
+                        call,
+                        HostOperation::DeferredValue(output),
+                        vec![child.static_type()?.clone()],
+                        host_calls,
+                    );
+                }
+                Expression::CorrelatedColumn(_) => {
+                    return bound_input(expression, base_columns + bindings.len(), bindings);
+                }
+                _ => {}
+            }
+            if let Expression::Column(column) = expression {
+                let offset = usize::try_from(column.index).ok()?;
+                return column_input(offset, column.get_static_type()?);
+            }
+            return lower_leaf(expression, environment.input_types)
+                .or_else(|| bound_input(expression, base_columns + bindings.len(), bindings));
         }
-    }
-    match expression {
-        Expression::Constant(constant)
-            if constant.param_marker.is_some()
-                || matches!(
-                    constant.literal_value(),
-                    Some(Datum::Duration(_) | Datum::Time(_))
-                ) =>
-        {
-            return bound_input(expression, base_columns + bindings.len(), bindings);
-        }
-        Expression::Constant(constant) if constant.deferred_expr.is_some() => {
-            let child = constant.deferred_expr.as_deref()?;
-            let output = expression.static_type()?.clone();
-            let mut call = QueryExpr::new();
-            call.set_tp(QueryExprType::ScalarFunc);
-            call.set_field_type(rows::query_field_type(&output)?);
-            call.mut_children().push(lower_declared(
-                child,
-                environment,
-                bindings,
-                host_calls,
-                diagnostic_calls,
-                seed_keys,
-            )?);
-            return bind_host_call(
-                call,
-                HostOperation::DeferredValue(output),
-                vec![child.static_type()?.clone()],
-                host_calls,
-            );
-        }
-        Expression::CorrelatedColumn(_) => {
-            return bound_input(expression, base_columns + bindings.len(), bindings);
-        }
-        _ => {}
-    }
-    if let Expression::Column(column) = expression {
-        let offset = usize::try_from(column.index).ok()?;
-        return column_input(offset, column.get_static_type()?);
-    }
-    let Expression::ScalarFunction(function) = expression else {
-        return lower_leaf(expression, environment.input_types)
-            .or_else(|| bound_input(expression, base_columns + bindings.len(), bindings));
     };
+    if let Some(constant) = function.binary_literal_source() {
+        return lower_leaf(&Expression::Constant(constant.clone()), environment.input_types);
+    }
     if environment.direct_row && !binding::preserves_direct_row_contract(function) {
         return None;
     }
     let name = binding::local_name(function);
-    let result_type = expression.static_type()?;
+    let result_type = function.get_static_type()?;
     let string_decimal_union = function.cast_in_union()
         && function.pb_code() == tidb_proto::tipb::ScalarFuncSig::CastStringAsDecimal;
     if function.is_cast()
@@ -1368,9 +1408,9 @@ fn lower_declared(
     }
     if name == "name_const" && binding::function_signature(function).is_none() {
         if let [Expression::Constant(label), value] = function.args.as_slice() {
-            if label.literal_value().is_some() && value.static_type() == expression.static_type() {
+            if label.literal_value().is_some() && value.static_type() == Some(result_type) {
                 return lower_declared(
-                    value,
+                    value.into(),
                     environment,
                     bindings,
                     host_calls,
@@ -1428,7 +1468,7 @@ fn lower_declared(
                     if precision.literal_value().is_some())))
     {
         // Read session values, including the statement clock, on demand.
-        return bound_input(expression, base_columns + bindings.len(), bindings);
+        return bind_context_input(function, base_columns + bindings.len(), result_type, bindings);
     }
     let mut field_type = rows::query_field_type(result_type)?;
     let (charset, collation) = function.collation.charset_and_collation();
@@ -1604,7 +1644,7 @@ fn lower_declared(
             bind_value(arg, base_columns + bindings.len(), field, true, bindings)?
         } else {
             lower_declared(
-                arg,
+                arg.into(),
                 environment,
                 bindings,
                 host_calls,
@@ -2016,7 +2056,7 @@ fn lower_declared(
         return Some(call);
     }
     if function.args.is_empty() && !local_kernel {
-        return bound_input(expression, base_columns + bindings.len(), bindings);
+        return bind_context_input(function, base_columns + bindings.len(), result_type, bindings);
     }
     let (operation, arguments) = match function.args.as_slice() {
         [value] if native_call && name == "load_file" => {
@@ -2335,6 +2375,18 @@ fn query_eval_type(kind: NativeEvalType) -> EvalType {
     }
 }
 
+fn bind_context_input(
+    function: &ScalarFunction,
+    offset: usize,
+    field: &FieldType,
+    bindings: &mut Vec<InputBinding>,
+) -> Option<QueryExpr> {
+    let column = column_input(offset, field)?;
+    let source = InputSource::Context(Box::new(PreparedContextInput::new(function)));
+    bindings.push(InputBinding { source, field: field.clone() });
+    Some(column)
+}
+
 fn bound_input(
     expression: &Expression,
     offset: usize,
@@ -2359,7 +2411,7 @@ fn bind_value(
     let column = column_input(offset, &field)?;
     let source = match expression {
         Expression::ScalarFunction(function) => {
-            InputSource::Context(Box::new(PreparedContextInput::new(function)))
+            return bind_context_input(function, offset, &field, bindings);
         }
         _ if hybrid_integer => InputSource::HybridInteger(expression.clone()),
         _ => InputSource::Expression(expression.clone()),
@@ -3259,7 +3311,7 @@ mod tests {
 
         let mut ctx = EvalContext::default();
         let program = compile(
-            &expression,
+            (&expression).into(),
             &native_types,
             &mut ctx,
             &crate::NoColumns,

@@ -1251,7 +1251,39 @@ impl ScalarFunction {
     /// type -- see [`Self::coerce_to_ret_type`] for why that is the whole
     /// point of Go's `Eval` and not an afterthought.
     pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
+        if self.can_use_shared_row_program() {
+            if let Some(value) = crate::rpn::try_evaluate_scalar_function(self, ctx, row)? {
+                return Ok(value);
+            }
+        }
         self.eval_native(ctx, row)
+    }
+
+    fn can_use_shared_row_program(&self) -> bool {
+        let kernel = self.pb_builtin.kernel;
+        // The selected SQL signature owns coercion when its operands are
+        // polymorphic or retain an input domain different from the output.
+        matches!(kernel, Kernel::Binary(..) | Kernel::Compare(..)
+            | Kernel::IntegerMod { .. } | Kernel::IntegerMultiply { .. })
+            && self.args.iter().all(|arg| {
+                arg.static_type().is_some_and(|field| {
+                    matches!(field.eval_type(), EvalType::Int | EvalType::Decimal | EvalType::Real)
+                        && !field.is_hybrid()
+                })
+            })
+    }
+
+    pub(crate) fn binary_literal_source(&self) -> Option<&crate::constant::Constant> {
+        if self.func_name.lowercase() != "ifnull" {
+            return None;
+        }
+        let [Expression::Constant(first), second] = self.args.as_slice() else {
+            return None;
+        };
+        if first.literal_value()?.is_null() {
+            return second.binary_literal_source();
+        }
+        matches!(first.literal_value(), Some(Datum::BinaryLiteral(_))).then_some(first)
     }
 
     pub(crate) fn eval_native(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {

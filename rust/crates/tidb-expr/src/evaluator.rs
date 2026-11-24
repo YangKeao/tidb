@@ -2024,13 +2024,19 @@ mod tests {
 }
 
 
+fn scalar_requires_order(function: &crate::scalar_function::ScalarFunction) -> bool {
+    // Seeded streams belong to the program. Preserve the established
+    // per-mode demand order when NULLIF shares a seeded occurrence.
+    function.requires_row_order()
+        && (function.func_name.lowercase() != "rand" || function.args.is_empty())
+}
+
 pub(crate) fn has_scalar_effects(expression: &Expression) -> bool {
-    contains_effect(expression, &|function| {
-        // Seeded streams belong to the program. Preserve the established
-        // per-mode demand order when NULLIF shares a seeded occurrence.
-        function.requires_row_order()
-            && (function.func_name.lowercase() != "rand" || function.args.is_empty())
-    })
+    contains_effect(expression, &scalar_requires_order)
+}
+
+pub(crate) fn scalar_has_effects(function: &crate::scalar_function::ScalarFunction) -> bool {
+    scalar_requires_order(function) || function.args.iter().any(has_scalar_effects)
 }
 
 pub(crate) fn has_mutable_effects(expression: &Expression) -> bool {
