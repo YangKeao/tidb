@@ -732,20 +732,6 @@ impl EvaluatorSuite {
                         }
                     }
                 }
-                if let Expression::Constant(constant) = expression {
-                    // Go Constant.VecEval* broadcasts only non-deferred
-                    // constants. Deferred expressions still consume rows;
-                    // parameter values are read anew for every chunk.
-                    if constant.deferred_expr.is_none() {
-                        if rows != 0 {
-                            let value = constant.eval_in(ctx)?;
-                            for _ in 0..rows {
-                                output.append_datum(*output_index, &value);
-                            }
-                        }
-                        continue;
-                    }
-                }
                 if ctx.enable_vectorized_expression()
                     && crate::chunk_executor::vectorized(expression)
                     && crate::scalar_function::vec_eval::eval_one(
