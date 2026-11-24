@@ -39,8 +39,6 @@ pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
             | Kernel::Cast { .. }
             | Kernel::Logic(_)
             | Kernel::Unary(_)
-            | Kernel::IsNull(_)
-            | Kernel::Truth { .. }
     ) || supports_math(function.pb_code())
         || supports_string(function)
         || supports_other(function)

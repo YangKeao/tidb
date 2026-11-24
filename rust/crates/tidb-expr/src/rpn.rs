@@ -40,7 +40,7 @@ mod signatures;
 use tidb_exprctx::context::StatementSeededRandom;
 
 use crate::{
-    context::{BlockEncryptionMode, Columns, EvalError},
+    context::{Columns, EvalError},
     expression::Expression,
     scalar_function::{PreparedContextInput, PreparedLocalBuiltin, ScalarFunction},
 };
@@ -78,7 +78,6 @@ pub(crate) struct PreparedExpression {
     output: FieldType,
     context: EvalContext,
     datum_row: Option<Box<DatumRowScratch>>,
-    block_encryption_mode: BlockEncryptionMode,
 }
 
 #[derive(Clone, Copy)]
@@ -194,15 +193,10 @@ impl PreparedExpression {
             output,
             context,
             datum_row: None,
-            block_encryption_mode: ctx.block_encryption_mode(),
         }))
     }
 
     #[cfg(test)]
-    pub(crate) fn requires_execution_state(&self) -> bool {
-        !self.seed_keys.is_empty()
-    }
-
     pub(crate) fn append_projection(
         &mut self,
         ctx: &dyn Columns,
@@ -378,7 +372,6 @@ impl PreparedExpression {
             binding_error: RefCell::new(None),
             decimals: RefCell::default(),
             context: ctx,
-            block_encryption_mode: self.block_encryption_mode,
             mode: rows::ReadMode::PhysicalBatch,
             scalar_operands: !matches!(mode, rows::ReadMode::TypedBatch)
                 && (self.scalar_effects || matches!(mode, rows::ReadMode::Scalar)),
@@ -565,7 +558,6 @@ impl WireExpressionExecution {
             output,
             context,
             datum_row: None,
-            block_encryption_mode: Default::default(),
         })))
     }
 
@@ -958,7 +950,8 @@ pub(crate) fn evaluate_value_kernel<T>(
 /// Invoke the same SDK kernel on already evaluated SQL operands.
 pub(crate) fn evaluate_required_kernel(
     function: &ScalarFunction,
-    metadata: tidb_query_expr::RpnFnMeta,
+    signature: tidb_proto::tipb::ScalarFuncSig,
+    metadata: Option<fn() -> tidb_query_expr::RpnFnMeta>,
     inputs: &[NativeEvalType],
     values: Vec<Datum>,
     ctx: &dyn Columns,
@@ -968,19 +961,40 @@ pub(crate) fn evaluate_required_kernel(
     if values.len() != inputs.len() {
         return Err(EvalError::Unsupported("RPN kernel arity"));
     }
-    // These signatures propagate NULL and have no metadata derived from
-    // protobuf literals.
-    if values.iter().any(Datum::is_null) {
+    use tidb_proto::tipb::ScalarFuncSig::*;
+
+    let reads_null = matches!(
+        signature,
+        NullEqInt | NullEqReal | NullEqTime | NullEqDecimal | NullEqDuration | NullEqVectorFloat32
+            | IntIsNull | RealIsNull | DecimalIsNull | StringIsNull | TimeIsNull | DurationIsNull
+            | JsonIsNull | VectorFloat32IsNull | IntIsTrue | RealIsTrue | DecimalIsTrue
+            | IntIsFalse | RealIsFalse | DecimalIsFalse
+    );
+    if !reads_null && values.iter().any(Datum::is_null) {
         return Ok(Datum::Null);
+    }
+    if values.iter().any(|value| matches!(value,
+        Datum::Real(value) | Datum::Float32(value) if value.is_nan()))
+    {
+        match signature {
+            NeReal | RealIsTrue | RealIsTrueWithNull => return Ok(Datum::Int(1)),
+            LtReal | LeReal | GtReal | GeReal | EqReal | NullEqReal | RealIsFalse
+            | RealIsFalseWithNull | UnaryNotReal | RealIsNull => return Ok(Datum::Int(0)),
+            _ => {}
+        }
     }
     let output = function.get_static_type().ok_or(EvalError::Unsupported("RPN kernel output type"))?;
     let output_type = rows::query_field_type(output)
         .ok_or(EvalError::Unsupported("RPN kernel output carrier"))?;
     let mut input_types = Vec::with_capacity(inputs.len());
-    for (argument, &domain) in function.args.iter().zip(inputs) {
+    for ((argument, &domain), value) in function.args.iter().zip(inputs).zip(&values) {
         let actual = argument.static_type().ok_or(EvalError::Unsupported("RPN kernel input type"))?;
-        let carrier = if domain == NativeEvalType::String
-            && (actual.eval_type() != domain || actual.is_hybrid()) {
+        let carrier = if value.is_null() && actual.eval_type() != domain {
+            FieldType::new(native_type(query_eval_type(domain))
+                .ok_or(EvalError::Unsupported("RPN NULL carrier"))?.1)
+        } else if domain == NativeEvalType::String
+            && (actual.eval_type() != domain || actual.is_hybrid())
+        {
             FieldType::new(FieldTypeCode::VarString)
         } else {
             actual.clone()
@@ -990,7 +1004,7 @@ pub(crate) fn evaluate_required_kernel(
     }
     let arguments = values.into_iter().zip(inputs).zip(&input_types)
         .map(|((value, domain), field)| {
-            let value = if *domain == NativeEvalType::String {
+            let value = if *domain == NativeEvalType::String && !value.is_null() {
                 Datum::Bytes(crate::arg_eval_type::eval_string(&value)?
                     .expect("non-NULL kernel argument"))
             } else {
@@ -1006,7 +1020,26 @@ pub(crate) fn evaluate_required_kernel(
         .collect::<Result<Vec<_>, EvalError>>()?;
     let result = evaluate_value_kernel(ctx, |context| {
         let mut extra = RpnFnCallExtra { ret_field_type: &output_type };
-        (metadata.fn_ptr)(context, 1, &arguments, &mut extra, &())
+        if let Some(metadata) = metadata {
+            return (metadata().fn_ptr)(context, 1, &arguments, &mut extra, &());
+        }
+        let mut call = QueryExpr::new();
+        call.set_tp(QueryExprType::ScalarFunc);
+        call.set_sig(engine::scalar_func_sig(signature as i32)
+            .ok_or_else(|| engine::error("unknown SDK signature"))?);
+        call.set_field_type(output_type.clone());
+        for field in &input_types {
+            let mut argument = QueryExpr::new();
+            argument.set_tp(QueryExprType::ColumnRef);
+            argument.set_field_type(field.clone());
+            call.mut_children().push(argument);
+        }
+        let tidb_query_expr::RpnExpressionNode::FnCall { func_meta, metadata, .. } =
+            engine::root_kernel(&call, context)?
+        else {
+            return Err(engine::error("expected an eager SDK kernel"));
+        };
+        (func_meta.fn_ptr)(context, 1, &arguments, &mut extra, metadata.as_ref())
     })?;
     rows::from_query_value(result.get_scalar_ref(0), output).map_err(query_error)
 }
@@ -3384,7 +3417,6 @@ mod tests {
             binding_error: RefCell::new(None),
             decimals: RefCell::default(),
             context: &crate::NoColumns,
-            block_encryption_mode: Default::default(),
             mode: rows::ReadMode::PhysicalBatch,
             scalar_operands: false,
             typed_batch: false,

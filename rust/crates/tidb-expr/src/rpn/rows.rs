@@ -69,7 +69,6 @@ pub(super) struct NativeRows<'a> {
     pub(super) decimals: RefCell<HashMap<(usize, usize), Option<QueryDecimal>>>,
     pub(super) context: &'a dyn crate::Columns,
     pub(super) mode: ReadMode,
-    pub(super) block_encryption_mode: crate::context::BlockEncryptionMode,
     pub(super) scalar_operands: bool,
     pub(super) typed_batch: bool,
 }
@@ -117,10 +116,6 @@ impl NativeRows<'_> {
 
     pub(super) fn scalar_operand_demand(&self) -> bool {
         self.scalar_operands
-    }
-
-    fn block_encryption_mode(&self) -> crate::context::BlockEncryptionMode {
-        self.block_encryption_mode
     }
 
     pub(super) fn next_random(&self) -> Option<Result<f64>> {

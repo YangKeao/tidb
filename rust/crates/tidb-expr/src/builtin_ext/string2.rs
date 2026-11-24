@@ -133,54 +133,6 @@ fn translate_binary(vals: &[Datum]) -> Result<Datum, EvalError> {
     Ok(Datum::new_string_datum(out))
 }
 
-/// `LTRIM(str)`, ported from `builtinLTrimSig.evalString` in
-/// `pkg/expression/builtin_string.go`.
-///
-/// TiDB passes the argument through ETString (`builtin_string.go:2029`, now
-/// `crate::arg_eval_type`'s cast), then calls Go's `strings.TrimLeft(str,
-/// " ")`: it removes only U+0020 SPACE, not general Unicode whitespace.
-/// Keeping the pattern literal prevents Rust from accidentally accepting
-/// tabs, CR, or LF as trimmable input.
-///
-/// The scan is over BYTES because Go's is: `strings.TrimLeft` works on a Go
-/// string, which is not UTF-8 validated, and U+0020 is a single byte that
-/// cannot occur inside a multi-byte UTF-8 sequence, so a byte scan and a
-/// character scan strip exactly the same prefix. Captured from real TiDB
-/// (`gorun`), `hex(ltrim(v))` over a `varbinary` holding `0xFF` is `FF` and
-/// `hex(ltrim(b))` over a `bit(8)` holding `b'11111111'` is `FF`; both were
-/// hard errors under the previous UTF-8 coercion.
-pub(crate) fn ltrim(value: &Datum) -> Result<Datum, EvalError> {
-    trimmed(value, tidb_query_expr::impl_string::ltrim)
-}
-
-/// `RTRIM(str)`, ported from `builtinRTrimSig.evalString` in
-/// `pkg/expression/builtin_string.go`; it has the same ETString and
-/// U+0020-only contract as [`ltrim`].
-pub(crate) fn rtrim(value: &Datum) -> Result<Datum, EvalError> {
-    trimmed(value, tidb_query_expr::impl_string::rtrim)
-}
-
-/// The shared half of [`ltrim`] and [`rtrim`]: read the `types.ETString`
-/// argument's bytes, strip, and hand the result back under the argument's own
-/// charset -- Go's `SetBinFlagOrBinStr(argType, bf.tp)`, which both function
-/// classes call on `args[0]`.
-fn trimmed(value: &Datum, strip: fn(
-    &[u8],
-    tidb_query_datatype::codec::data_type::BytesWriter,
-) -> tidb_query_common::Result<tidb_query_datatype::codec::data_type::BytesGuard>) -> Result<Datum, EvalError> {
-    let Some(bytes) = crate::arg_eval_type::eval_string(value)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(stripped) = crate::string_fn::sdk_bytes(|writer| strip(&bytes, writer))? else {
-        return Ok(Datum::Null);
-    };
-    Ok(if crate::string_signature::is_binary_str(value) {
-        Datum::new_bytes_datum(stripped)
-    } else {
-        Datum::new_string_datum(stripped)
-    })
-}
-
 /// `FORMAT(x, d, locale)`, ported from `builtinFormatWithLocaleSig` in
 /// `pkg/expression/builtin_string.go`. A `NULL` locale warns 1649 naming the
 /// literal text `NULL` and then falls back to `en_US`; an unrecognized one

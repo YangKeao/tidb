@@ -568,7 +568,7 @@ pub(crate) fn hex(vals: &[Datum]) -> Result<Datum, EvalError> {
         | Datum::Float32(_)
         | Datum::Bit(_) => {
             let bits = radix_integer_bits(&vals[0])?.expect("non-NULL numeric HEX input");
-            Ok(Datum::new_string_datum(format!("{bits:X}")))
+            sdk_hex(|writer| tidb_query_expr::impl_string::hex_int_arg(&(bits as i64), writer))
         }
         Datum::String(_)
         | Datum::Bytes(_)
@@ -578,12 +578,7 @@ pub(crate) fn hex(vals: &[Datum]) -> Result<Datum, EvalError> {
         | Datum::Set(_, _)
         | Datum::Time(_)
         | Datum::Json(_) => hex_string_value(&vals[0]),
-        Datum::Raw(value) => Ok(Datum::new_string_datum(
-            value
-                .iter()
-                .map(|byte| format!("{byte:02X}"))
-                .collect::<String>(),
-        )),
+        Datum::Raw(value) => sdk_hex(|writer| tidb_query_expr::impl_string::hex_str_arg(value, writer)),
         Datum::MinNotNull | Datum::MaxValue => {
             Err(EvalError::Unsupported("range sentinel HEX argument"))
         }
@@ -591,12 +586,7 @@ pub(crate) fn hex(vals: &[Datum]) -> Result<Datum, EvalError> {
             let bytes = other
                 .to_bytes()
                 .map_err(|_| EvalError::Unsupported("HEX argument conversion"))?;
-            Ok(Datum::new_string_datum(
-                bytes
-                    .iter()
-                    .map(|byte| format!("{byte:02X}"))
-                    .collect::<String>(),
-            ))
+            sdk_hex(|writer| tidb_query_expr::impl_string::hex_str_arg(&bytes, writer))
         }
     }
 }
@@ -605,12 +595,14 @@ fn hex_string_value(value: &Datum) -> Result<Datum, EvalError> {
     let Some(bytes) = coerce_str_bytes(value)? else {
         return Ok(Datum::Null);
     };
-    Ok(Datum::new_string_datum(
-        bytes
-            .iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect::<String>(),
-    ))
+    sdk_hex(|writer| tidb_query_expr::impl_string::hex_str_arg(&bytes, writer))
+}
+
+fn sdk_hex(
+    encode: impl FnOnce(tidb_query_datatype::codec::data_type::BytesWriter)
+        -> tidb_query_common::Result<tidb_query_datatype::codec::data_type::BytesGuard>,
+) -> Result<Datum, EvalError> {
+    Ok(sdk_bytes(encode)?.map_or(Datum::Null, Datum::new_string_datum))
 }
 
 /// Go `hexFunctionClass.getFunction`: select the string or integer signature

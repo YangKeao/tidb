@@ -192,40 +192,6 @@ pub(crate) fn crc32(vals: &[Datum]) -> Result<Datum, EvalError> {
     }
 }
 
-/// `ABS(x)`. `absFunctionClass.getFunction` picks the signature from the
-/// argument's EVAL TYPE, not from a fixed list of kinds: `ETInt`, `ETDecimal`
-/// and `ETReal` each get their own sig, and EVERY remaining kind — string,
-/// enum, set, bit, temporal, json, `FLOAT` — evaluates as `ETReal` and lands
-/// on `builtinAbsRealSig`. So the last arm is a genuine signature, not a
-/// fallback: `ABS('12abc')` is 12, `ABS(<enum>)` its ordinal, and `ABS(f)`
-/// for a `FLOAT` column is the WIDENED double (captured: `ABS(0.1e0::float)`
-/// is `0.10000000149011612`, not `0.1`), which is why `Float32` produces
-/// `Real` here rather than staying `Float32` the way `CEIL` does.
-pub(crate) fn abs(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        // `builtinAbsIntSig` returns TiDB's BIGINT overflow error for the
-        // one signed value that cannot be represented by its positive
-        // counterpart.  Do not use `wrapping_abs`: that would silently turn
-        // ABS(MININT) back into MININT and diverge from the source contract.
-        // The message quotes the evaluated value (`abs(%d)`), not the source.
-        Datum::Int(value) => value
-            .checked_abs()
-            .map(Datum::Int)
-            .ok_or_else(|| EvalError::DataOutOfRange {
-                value: "BIGINT",
-                expression: format!("abs({value})"),
-            })?,
-        Datum::UInt(value) => Datum::UInt(*value),
-        Datum::Decimal(value) => Datum::Decimal(value.abs()),
-        Datum::Real(value) => Datum::Real(value.abs()),
-        other => Datum::Real(numeric_arg(other, ctx)?.expect("NULL handled above").abs()),
-    })
-}
-
 /// Coerces one function argument to `f64`: `NULL` propagates (the `Ok(None)`
 /// case, for the caller to turn into `Datum::Null`). This is a port of the
 /// `EvalReal` argument coercion used by the signatures in

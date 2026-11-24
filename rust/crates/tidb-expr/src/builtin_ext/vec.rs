@@ -36,10 +36,6 @@ fn vector(value: &Datum) -> Result<Option<VectorFloat32>, EvalError> {
     }
 }
 
-pub(crate) fn dims(value: &Datum) -> Result<Datum, EvalError> {
-    Ok(vector(value)?.map_or(Datum::Null, |value| Datum::Int(value.len() as i64)))
-}
-
 pub(crate) fn distance(
     left: &Datum,
     right: &Datum,

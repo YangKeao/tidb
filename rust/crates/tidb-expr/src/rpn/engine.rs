@@ -1109,10 +1109,6 @@ pub(super) enum RpnArgTypes {
         prefix_json_values: bool,
         json_values: bool,
     },
-    Repeat,
-    NullPropagation,
-    ExecutionSeed,
-    OrderedPacket,
     Unused,
     Custom,
 }
