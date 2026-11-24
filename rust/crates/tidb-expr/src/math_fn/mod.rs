@@ -21,8 +21,6 @@
 mod go_exp_log;
 mod go_trig;
 
-use std::cmp::Ordering;
-
 
 use crate::coerce::{coerce_str, coerce_str_bytes};
 use crate::ops::{finite_float, to_f64, to_f64_with_mysql_string};
@@ -228,25 +226,6 @@ pub(crate) fn abs(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError>
     })
 }
 
-/// `SIGN(x)`. Like [`abs`], `signFunctionClass` selects per eval type and
-/// every kind outside `ETInt`/`ETDecimal` reaches `builtinSignSig`'s real
-/// form, so the catch-all is the ETReal signature (captured: `SIGN(b'11')`
-/// is 1, `SIGN(<enum>)` is 1).
-pub(crate) fn sign(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        Datum::Int(value) => Datum::Int(value.signum()),
-        Datum::UInt(value) => Datum::Int(i64::from(*value != 0)),
-        Datum::Decimal(value) => Datum::Int(value.signum()),
-        other => Datum::Int(sign_of_real(
-            numeric_arg(other, ctx)?.expect("NULL handled above"),
-        )),
-    })
-}
-
 /// Coerces one function argument to `f64`: `NULL` propagates (the `Ok(None)`
 /// case, for the caller to turn into `Datum::Null`). This is a port of the
 /// `EvalReal` argument coercion used by the signatures in
@@ -279,20 +258,6 @@ fn checked_ln(x: f64) -> Datum {
     } else {
         Datum::Real(x.ln())
     }
-}
-
-pub(crate) fn sqrt(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        // MySQL's own domain check: NULL for a negative argument, not an
-        // error (the OPPOSITE convention from POW/EXP's NaN-is-an-error
-        // rule below).
-        Some(x) if x < 0.0 => Datum::Null,
-        Some(x) => Datum::Real(x.sqrt()),
-        None => Datum::Null,
-    })
 }
 
 pub(crate) fn ln(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
@@ -696,14 +661,6 @@ pub(crate) fn ceil_floor_with_result_domain(
     })
 }
 
-fn sign_of_real(value: f64) -> i64 {
-    match value.partial_cmp(&0.0) {
-        Some(Ordering::Greater) => 1,
-        Some(Ordering::Less) => -1,
-        _ => 0,
-    }
-}
-
 /// The typed scalar path for decimal `ROUND`/`TRUNCATE`.
 ///
 /// Go's decimal signatures cap the row's requested scale by `b.tp.Decimal`,
@@ -951,7 +908,7 @@ fn go_truncate_uint(val: u64, dec: i64) -> u64 {
 mod tests {
     use std::cell::Cell;
 
-    use super::{cot, log2, sin, sqrt};
+    use super::{cot, log2, sin};
     use crate::{Columns, Datum, EvalError};
 
     struct RandColumns {
@@ -1006,7 +963,7 @@ mod tests {
     #[test]
     fn real_math_signatures_coerce_mysql_string_prefixes() {
         assert_eq!(
-            sqrt(&[Datum::new_string_datum("4".to_owned())], &crate::NoColumns),
+            crate::tests::builtin("sqrt", &[Datum::new_string_datum("4")]),
             Ok(Datum::Real(2.0))
         );
         assert_eq!(

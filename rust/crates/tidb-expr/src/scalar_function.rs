@@ -1282,7 +1282,7 @@ impl ScalarFunction {
     }
 
     pub(crate) fn accepts_eager_values(&self) -> bool {
-        matches!(self.pb_builtin.kernel, Kernel::RpnOnly | Kernel::Values(_) | Kernel::Method(_))
+        matches!(self.pb_builtin.kernel, Kernel::RpnOnly(..) | Kernel::Values(_) | Kernel::Method(_))
     }
 
     pub(crate) fn weight_string_input_required(&self) -> Option<bool> {
@@ -4602,7 +4602,7 @@ impl PreparedLocalBuiltin {
                     function, std::mem::replace(value, Datum::Null), vectorized, ctx,
                 )?)
             }
-            Kernel::RpnOnly | Kernel::Values(_) | Kernel::Method(_) | Kernel::Json => {
+            Kernel::RpnOnly(..) | Kernel::Values(_) | Kernel::Method(_) | Kernel::Json => {
                 function.finish_value(function.pb_builtin.eval_values_in(
                     function, values, vectorized, ctx,
                 )?)

@@ -553,7 +553,7 @@ fn conv_bit_literal(
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Kernel {
     /// A TiKV-owned computation. TiDB only adapts the typed SQL values.
-    RpnOnly,
+    RpnOnly(fn() -> tidb_query_expr::RpnFnMeta, &'static [EvalType]),
     Binary(BinaryOp, EvalType),
     /// Go comparisons evaluate both typed operands before applying NULL semantics.
     Compare(BinaryOp, EvalType),
@@ -873,11 +873,18 @@ impl PbBuiltin {
             CoalesceJson => Kernel::Coalesce(EvalType::Json),
             // Go `builtinLengthSig`: the argument's byte length, whatever its
             // collation -- `CharLength`'s binary spelling.
-            Length | Ascii | BitLength | Crc32 | Md5 | Sha1 | Sha2 | Replace | UnHex | LTrim | RTrim => Kernel::RpnOnly,
-            CharLength => Kernel::String {
-                operation: StringOp::Length,
-                binary: true,
-            },
+            Length => Kernel::RpnOnly(tidb_query_expr::impl_string::length_fn_meta, &[EvalType::String]),
+            CharLength => Kernel::RpnOnly(tidb_query_expr::impl_string::char_length_fn_meta, &[EvalType::String]),
+            Ascii => Kernel::RpnOnly(tidb_query_expr::impl_string::ascii_fn_meta, &[EvalType::String]),
+            BitLength => Kernel::RpnOnly(tidb_query_expr::impl_string::bit_length_fn_meta, &[EvalType::String]),
+            Crc32 => Kernel::RpnOnly(tidb_query_expr::impl_math::crc32_fn_meta, &[EvalType::String]),
+            Md5 => Kernel::RpnOnly(tidb_query_expr::impl_encryption::md5_fn_meta, &[EvalType::String]),
+            Sha1 => Kernel::RpnOnly(tidb_query_expr::impl_encryption::sha1_fn_meta, &[EvalType::String]),
+            Sha2 => Kernel::RpnOnly(tidb_query_expr::impl_encryption::sha2_fn_meta, &[EvalType::String, EvalType::Int]),
+            Replace => Kernel::RpnOnly(tidb_query_expr::impl_string::replace_fn_meta, &[EvalType::String; 3]),
+            UnHex => Kernel::RpnOnly(tidb_query_expr::impl_string::unhex_fn_meta, &[EvalType::String]),
+            LTrim => Kernel::RpnOnly(tidb_query_expr::impl_string::ltrim_fn_meta, &[EvalType::String]),
+            RTrim => Kernel::RpnOnly(tidb_query_expr::impl_string::rtrim_fn_meta, &[EvalType::String]),
             CharLengthUtf8 => Kernel::String {
                 operation: StringOp::Length,
                 binary: false,
@@ -913,21 +920,21 @@ impl PbBuiltin {
             AbsInt | AbsUInt | AbsReal | AbsDecimal => Kernel::Values(crate::math_fn::abs),
             // Go `builtinMD5Sig`, `builtinCRC32Sig`, `builtinConcatWSSig`:
             // the root tier's evaluators over the argument values.
-            Sqrt => Kernel::Values(crate::math_fn::sqrt),
+            Sqrt => Kernel::RpnOnly(tidb_query_expr::impl_math::sqrt_fn_meta, &[EvalType::Real]),
             Exp => Kernel::Values(crate::math_fn::exp),
             Log1Arg | Log2Args => Kernel::Values(crate::math_fn::log),
             Log2 => Kernel::Values(crate::math_fn::log2),
             Log10 => Kernel::Values(crate::math_fn::log10),
             Radians => Kernel::Values(crate::math_fn::radians),
             Degrees => Kernel::Values(crate::math_fn::degrees),
-            Sign => Kernel::Values(crate::math_fn::sign),
+            Sign => Kernel::RpnOnly(tidb_query_expr::impl_math::sign_fn_meta, &[EvalType::Real]),
             CeilIntToInt | CeilReal => Kernel::Values(ceil_values),
             FloorIntToInt | FloorReal => Kernel::Values(floor_values),
             CeilDecToInt => Kernel::Values(ceil_dec_to_int),
             CeilDecToDec => Kernel::Values(ceil_dec_to_dec),
             FloorDecToInt => Kernel::Values(floor_dec_to_int),
             FloorDecToDec => Kernel::Values(floor_dec_to_dec),
-            VecDimsSig => Kernel::Values(|values, _| crate::builtin_ext::vec::dims(&values[0])),
+            VecDimsSig => Kernel::RpnOnly(tidb_query_expr::impl_vec::vec_dims_fn_meta, &[EvalType::VectorFloat32]),
             VecL2NormSig => Kernel::Values(|values, _| crate::builtin_ext::vec::l2_norm(&values[0])),
             VecAsTextSig => Kernel::Values(|values, _| crate::builtin_ext::vec::as_text(&values[0])),
             VecL1DistanceSig => Kernel::Values(|values, _| {
@@ -967,12 +974,14 @@ impl PbBuiltin {
             TimeToSec => Kernel::Values(|values, _| crate::time_fn::time_to_sec(values)),
 
 
-            Reverse | ReverseUtf8 => Kernel::Values(|values, _| crate::string_fn::reverse(values)),
+            Reverse => Kernel::RpnOnly(tidb_query_expr::impl_string::reverse_fn_meta, &[EvalType::String]),
+            ReverseUtf8 => Kernel::Values(|values, _| crate::string_fn::reverse(values)),
             Strcmp => Kernel::Method(strcmp_method),
             Elt => Kernel::Values(|values, _| crate::string_fn::elt(values)),
             FieldInt | FieldReal | FieldString => Kernel::Method(field_method),
             HexStrArg | HexIntArg => Kernel::Method(hex_method),
-            Right | RightUtf8 => Kernel::Values(right_values),
+            Right => Kernel::RpnOnly(tidb_query_expr::impl_string::right_fn_meta, &[EvalType::String, EvalType::Int]),
+            RightUtf8 => Kernel::Values(right_values),
             Space => Kernel::Values(crate::string_packet::space),
 
 
@@ -1181,7 +1190,8 @@ impl PbBuiltin {
             Encode => Kernel::Values(|values, _| crate::builtin_ext::crypto::sql_encode(&values[0], &values[1])),
             Decode => Kernel::Values(|values, _| crate::builtin_ext::crypto::sql_decode(&values[0], &values[1])),
             // builtin_string.go
-            Left | LeftUtf8 => Kernel::Values(left_values),
+            Left => Kernel::RpnOnly(tidb_query_expr::impl_string::left_fn_meta, &[EvalType::String, EvalType::Int]),
+            LeftUtf8 => Kernel::Values(left_values),
             Lpad | LpadUtf8 => Kernel::Values(lpad_values),
             Rpad | RpadUtf8 => Kernel::Values(rpad_values),
             Locate2Args | Locate2ArgsUtf8 => Kernel::Method(locate_2_args_method),
@@ -1283,25 +1293,6 @@ impl PbBuiltin {
         matches!(self.kernel, Kernel::DateArithmetic { .. })
     }
 
-    pub(super) fn eval_sdk_values(self, values: &[Datum]) -> Result<Datum, EvalError> {
-        use crate::{builtin_ext::crypto, string_fn::eval_sdk_bytes_int};
-        use tidb_query_expr::impl_string as sdk;
-        match self.signature {
-            ScalarFuncSig::Length => eval_sdk_bytes_int(values, sdk::length),
-            ScalarFuncSig::Ascii => eval_sdk_bytes_int(values, sdk::ascii),
-            ScalarFuncSig::BitLength => eval_sdk_bytes_int(values, sdk::bit_length),
-            ScalarFuncSig::Crc32 => crate::math_fn::crc32(values),
-            ScalarFuncSig::Md5 => crypto::md5_hash(&values[0]),
-            ScalarFuncSig::Sha1 => crypto::sha1_hash(&values[0]),
-            ScalarFuncSig::Sha2 => crypto::sha2_hash(&values[0], &values[1]),
-            ScalarFuncSig::Replace => crate::string_fn::replace(values),
-            ScalarFuncSig::UnHex => crate::string_fn::unhex(values),
-            ScalarFuncSig::LTrim => crate::builtin_ext::string2::ltrim(&values[0]),
-            ScalarFuncSig::RTrim => crate::builtin_ext::string2::rtrim(&values[0]),
-            _ => unreachable!("RpnOnly signature has no SQL carrier adapter"),
-        }
-    }
-
     /// Go signature value operations shared by `eval*` and `vecEval*`.
     pub(super) fn eval_values_in(
         self,
@@ -1363,11 +1354,30 @@ impl PbBuiltin {
     pub(super) fn eval_values(self, function: &ScalarFunction, mut values: Vec<Datum>, ctx: &dyn Columns) -> Result<Datum, EvalError> {
         let args = &function.args;
         let kernel = self.kernel;
-        if values.iter().any(Datum::is_null) && !matches!(kernel, Kernel::Json | Kernel::RpnOnly | Kernel::Values(_) | Kernel::Method(_)) {
+        if values.iter().any(Datum::is_null) && !matches!(kernel, Kernel::Json | Kernel::RpnOnly(..) | Kernel::Values(_) | Kernel::Method(_)) {
             return Ok(Datum::Null);
         }
                 match kernel {
-                    Kernel::RpnOnly => self.eval_sdk_values(&values),
+                    Kernel::RpnOnly(meta, inputs) => {
+                        if let [Datum::Real(value) | Datum::Float32(value)] = values.as_slice() {
+                            if value.is_nan() {
+                                match self.signature {
+                                    ScalarFuncSig::Sign => return Ok(Datum::Int(0)),
+                                    ScalarFuncSig::Sqrt => return Ok(Datum::Real(*value)),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        let value = crate::rpn::evaluate_required_kernel(function, meta(), inputs, values, ctx)?;
+                        Ok(match value {
+                            Datum::String(value)
+                                if matches!(self.signature, ScalarFuncSig::Md5 | ScalarFuncSig::Sha1 | ScalarFuncSig::Sha2) =>
+                            {
+                                Datum::new_string_datum(value.into_bytes())
+                            }
+                            value => value,
+                        })
+                    },
                     Kernel::Values(eval) => eval(&values, ctx),
                     Kernel::Method(eval) => eval(function, &values, ctx),
                     Kernel::RegexpFamily(name) => function.eval_regexp_family(name, &values, ctx),
@@ -1814,7 +1824,7 @@ impl PbBuiltin {
                     // The root tier's evaluators read a NULL argument
                     // themselves: Go `builtinConcatWSSig` skips a NULL member
                     // and `builtinWeekWithModeSig` reads a NULL mode as 0.
-                    if value.is_null() && !matches!(kernel, Kernel::Json | Kernel::RpnOnly | Kernel::Values(_) | Kernel::Method(_)) {
+                    if value.is_null() && !matches!(kernel, Kernel::Json | Kernel::RpnOnly(..) | Kernel::Values(_) | Kernel::Method(_)) {
                         return Ok(Datum::Null);
                     }
                     values.push(value);
@@ -1985,7 +1995,7 @@ mod tests {
             .map(|(sig, domains)| (*sig, &domains[..]))
             .chain(rounding.iter().map(|(sig, domains)| (*sig, &domains[..])));
         for (sig, arg_types) in rows {
-            let Some(Kernel::Values(_) | Kernel::RpnOnly) = PbBuiltin::new(sig).map(|builtin| builtin.kernel) else {
+            let Some(Kernel::Values(_) | Kernel::RpnOnly(..)) = PbBuiltin::new(sig).map(|builtin| builtin.kernel) else {
                 continue;
             };
             swept.insert(sig);

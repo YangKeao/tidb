@@ -920,6 +920,62 @@ pub(crate) fn evaluate_value_kernel<T>(
     result.map_err(query_error)
 }
 
+/// Invoke the same SDK kernel on already evaluated SQL operands.
+pub(crate) fn evaluate_required_kernel(
+    function: &ScalarFunction,
+    metadata: tidb_query_expr::RpnFnMeta,
+    inputs: &[NativeEvalType],
+    values: Vec<Datum>,
+    ctx: &dyn Columns,
+) -> Result<Datum, EvalError> {
+    use tidb_query_expr::{RpnFnCallExtra, RpnStackNode, RpnStackNodeVectorValue};
+
+    if values.len() != inputs.len() {
+        return Err(EvalError::Unsupported("RPN kernel arity"));
+    }
+    // These signatures propagate NULL and have no metadata derived from
+    // protobuf literals.
+    if values.iter().any(Datum::is_null) {
+        return Ok(Datum::Null);
+    }
+    let output = function.get_static_type().ok_or(EvalError::Unsupported("RPN kernel output type"))?;
+    let output_type = rows::query_field_type(output)
+        .ok_or(EvalError::Unsupported("RPN kernel output carrier"))?;
+    let mut input_types = Vec::with_capacity(inputs.len());
+    for (argument, &domain) in function.args.iter().zip(inputs) {
+        let actual = argument.static_type().ok_or(EvalError::Unsupported("RPN kernel input type"))?;
+        let carrier = if domain == NativeEvalType::String
+            && (actual.eval_type() != domain || actual.is_hybrid()) {
+            FieldType::new(FieldTypeCode::VarString)
+        } else {
+            actual.clone()
+        };
+        input_types.push(rows::query_field_type(&carrier)
+            .ok_or(EvalError::Unsupported("RPN kernel input carrier"))?);
+    }
+    let arguments = values.into_iter().zip(inputs).zip(&input_types)
+        .map(|((value, domain), field)| {
+            let value = if *domain == NativeEvalType::String {
+                Datum::Bytes(crate::arg_eval_type::eval_string(&value)?
+                    .expect("non-NULL kernel argument"))
+            } else {
+                value
+            };
+            let mut vector = rows::output_vector(field, 1).map_err(query_error)?;
+            rows::append(&mut vector, value).map_err(query_error)?;
+            Ok(RpnStackNode::Vector {
+                value: RpnStackNodeVectorValue::Generated { physical_value: vector },
+                field_type: field,
+            })
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    let result = evaluate_value_kernel(ctx, |context| {
+        let mut extra = RpnFnCallExtra { ret_field_type: &output_type };
+        (metadata.fn_ptr)(context, 1, &arguments, &mut extra, &())
+    })?;
+    rows::from_query_value(result.get_scalar_ref(0), output).map_err(query_error)
+}
+
 pub(crate) fn query_error(error: tidb_query_common::Error) -> EvalError {
     match *error.0 {
         ErrorInner::Evaluate(error)

@@ -26,7 +26,7 @@ pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
     }
     matches!(
         function.pb_builtin.kernel,
-        Kernel::RpnOnly
+        Kernel::RpnOnly(..)
             | Kernel::Binary(..)
             | Kernel::IntegerMultiply { .. }
             | Kernel::IntegerMod { .. }
