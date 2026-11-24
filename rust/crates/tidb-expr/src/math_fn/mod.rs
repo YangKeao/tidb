@@ -236,51 +236,6 @@ pub(crate) fn ln(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> 
     })
 }
 
-/// `LOG(x)` (1 argument, natural log — identical to `LN`) or `LOG(base,
-/// x)` (2 arguments, log base `base` of `x`).
-pub(crate) fn log(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    match vals {
-        [_] => ln(vals, ctx),
-        [b, x] => {
-            let (Some(base), Some(x)) = (numeric_arg(b, ctx)?, numeric_arg(x, ctx)?) else {
-                return Ok(Datum::Null);
-            };
-            if base <= 0.0 || base == 1.0 || x <= 0.0 {
-                // go `builtinLog2ArgSig`: the invalid base/argument warns
-                // ErrInvalidArgumentForLogarithm (3020) on its way to NULL.
-                ctx.append_go_warning(
-                    &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                    "Invalid argument for logarithm",
-                );
-                return Ok(Datum::Null);
-            }
-            Ok(Datum::Real(x.log(base)))
-        }
-        _ => Err(EvalError::Unsupported("bad function arity")),
-    }
-}
-
-pub(crate) fn log2(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog2Sig.evalReal`: a non-positive argument warns
-        // ErrInvalidArgumentForLogarithm (3020) on its way to NULL, exactly
-        // like the 1-arg ln/log10 signatures (oracle g-err3: log2('x')
-        // answers NULL with 1292 + 3020).
-        Some(x) if x <= 0.0 => {
-            ctx.append_go_warning(
-                &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                "Invalid argument for logarithm",
-            );
-            Datum::Null
-        }
-        Some(x) => Datum::Real(x.log2()),
-        None => Datum::Null,
-    })
-}
-
 pub(crate) fn log10(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let [v] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
@@ -406,36 +361,6 @@ pub(crate) fn degrees(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalEr
     };
     Ok(match numeric_arg(v, ctx)? {
         Some(x) => Datum::Real(x * 180.0 / std::f64::consts::PI),
-        None => Datum::Null,
-    })
-}
-
-/// `NULL` if `x` isn't in `[-1, 1]` (MySQL's own domain check for
-/// `ASIN`/`ACOS`, mirroring `SQRT`'s), else `Ok(f(x))`.
-fn asin_acos_domain(x: f64, f: impl FnOnce(f64) -> f64) -> Datum {
-    if (-1.0..=1.0).contains(&x) {
-        Datum::Real(f(x))
-    } else {
-        Datum::Null
-    }
-}
-
-pub(crate) fn asin(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => asin_acos_domain(x, f64::asin),
-        None => Datum::Null,
-    })
-}
-
-pub(crate) fn acos(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => asin_acos_domain(x, f64::acos),
         None => Datum::Null,
     })
 }
@@ -780,7 +705,7 @@ fn go_truncate_uint(val: u64, dec: i64) -> u64 {
 mod tests {
     use std::cell::Cell;
 
-    use super::{cot, log2, sin};
+    use super::{cot, sin};
     use crate::{Columns, Datum, EvalError};
 
     struct RandColumns {
@@ -846,11 +771,11 @@ mod tests {
             Ok(Datum::Real(0.0))
         );
         assert_eq!(
-            log2(&[Datum::new_string_datum("4abc".to_owned())], &crate::NoColumns),
+            crate::tests::builtin("log2", &[Datum::new_string_datum("4abc")]),
             Ok(Datum::Real(2.0))
         );
         assert_eq!(
-            log2(&[Datum::new_string_datum("abc".to_owned())], &crate::NoColumns),
+            crate::tests::builtin("log2", &[Datum::new_string_datum("abc")]),
             Ok(Datum::Null)
         );
     }

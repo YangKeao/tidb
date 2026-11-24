@@ -828,8 +828,9 @@ impl PbBuiltin {
             // the root tier's evaluators over the argument values.
             Sqrt => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::sqrt_fn_meta), &[EvalType::Real]),
             Exp => Kernel::Values(crate::math_fn::exp),
-            Log1Arg | Log2Args => Kernel::Values(crate::math_fn::log),
-            Log2 => Kernel::Values(crate::math_fn::log2),
+            Log1Arg => Kernel::Values(crate::math_fn::ln),
+            Log2Args => Kernel::RpnOnly(None, &[EvalType::Real; 2]),
+            Log2 => Kernel::RpnOnly(None, &[EvalType::Real]),
             Log10 => Kernel::Values(crate::math_fn::log10),
             Radians => Kernel::RpnOnly(None, &[EvalType::Real]),
             Degrees => Kernel::Values(crate::math_fn::degrees),
@@ -901,8 +902,8 @@ impl PbBuiltin {
 
             Concat => Kernel::Values(crate::string_fn::concat_with_context),
             ConcatWs => Kernel::Values(crate::string_fn::concat_ws_with_context),
-            Acos => Kernel::Values(crate::math_fn::acos),
-            Asin => Kernel::Values(crate::math_fn::asin),
+            Acos => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Asin => Kernel::RpnOnly(None, &[EvalType::Real]),
             Atan1Arg => Kernel::Values(crate::math_fn::atan),
             Atan2Args => Kernel::Values(crate::math_fn::atan2),
             Cos => Kernel::Values(crate::math_fn::cos),
@@ -1269,10 +1270,34 @@ impl PbBuiltin {
         }
                 match kernel {
                     Kernel::RpnOnly(meta, inputs) => {
+                        let logarithm = match (self.signature, values.as_slice()) {
+                            (ScalarFuncSig::Log2, [Datum::Real(x) | Datum::Float32(x)]) => {
+                                Some((*x, 2.0))
+                            }
+                            (ScalarFuncSig::Log2Args, [
+                                Datum::Real(base) | Datum::Float32(base),
+                                Datum::Real(x) | Datum::Float32(x),
+                            ]) => Some((*x, *base)),
+                            _ => None,
+                        };
+                        if let Some((x, base)) = logarithm {
+                            if x <= 0.0 || base <= 0.0 || base == 1.0 {
+                                ctx.append_go_warning(
+                                    &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
+                                    "Invalid argument for logarithm",
+                                );
+                                return Ok(Datum::Null);
+                            }
+                            // The SDK filters nonfinite results to NULL.
+                            if !x.is_finite() || !base.is_finite() {
+                                return Ok(Datum::Real(x.log(base)));
+                            }
+                        }
                         if let [Datum::Real(value) | Datum::Float32(value)] = values.as_slice() {
                             if value.is_nan() {
                                 match self.signature {
                                     ScalarFuncSig::Sign => return Ok(Datum::Int(0)),
+                                    ScalarFuncSig::Asin | ScalarFuncSig::Acos => return Ok(Datum::Null),
                                     ScalarFuncSig::Sqrt | ScalarFuncSig::CeilReal | ScalarFuncSig::FloorReal
                                     | ScalarFuncSig::Radians => return Ok(Datum::Real(*value)),
                                     ScalarFuncSig::AbsReal => return Ok(Datum::Real(value.abs())),
