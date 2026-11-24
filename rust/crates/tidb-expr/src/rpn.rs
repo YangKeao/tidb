@@ -196,7 +196,6 @@ impl PreparedExpression {
         }))
     }
 
-    #[cfg(test)]
     pub(crate) fn append_projection(
         &mut self,
         ctx: &dyn Columns,
