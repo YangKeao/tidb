@@ -388,14 +388,6 @@ fn grouping_method(function: &ScalarFunction, values: &[Datum], _: &dyn Columns)
     Ok(Datum::UInt(metadata.eval(grouping_id as u64)))
 }
 
-fn ltrim_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::builtin_ext::string2::ltrim(&values[0])
-}
-
-fn rtrim_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::builtin_ext::string2::rtrim(&values[0])
-}
-
 fn left_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     crate::string_fn::str_take(values, true)
 }
@@ -881,7 +873,7 @@ impl PbBuiltin {
             CoalesceJson => Kernel::Coalesce(EvalType::Json),
             // Go `builtinLengthSig`: the argument's byte length, whatever its
             // collation -- `CharLength`'s binary spelling.
-            Length | Ascii | BitLength | Crc32 | Md5 | Sha1 | Sha2 | Replace | UnHex => Kernel::RpnOnly,
+            Length | Ascii | BitLength | Crc32 | Md5 | Sha1 | Sha2 | Replace | UnHex | LTrim | RTrim => Kernel::RpnOnly,
             CharLength => Kernel::String {
                 operation: StringOp::Length,
                 binary: true,
@@ -980,8 +972,6 @@ impl PbBuiltin {
             Elt => Kernel::Values(|values, _| crate::string_fn::elt(values)),
             FieldInt | FieldReal | FieldString => Kernel::Method(field_method),
             HexStrArg | HexIntArg => Kernel::Method(hex_method),
-            LTrim => Kernel::Values(ltrim_values),
-            RTrim => Kernel::Values(rtrim_values),
             Right | RightUtf8 => Kernel::Values(right_values),
             Space => Kernel::Values(crate::string_packet::space),
 
@@ -1306,6 +1296,8 @@ impl PbBuiltin {
             ScalarFuncSig::Sha2 => crypto::sha2_hash(&values[0], &values[1]),
             ScalarFuncSig::Replace => crate::string_fn::replace(values),
             ScalarFuncSig::UnHex => crate::string_fn::unhex(values),
+            ScalarFuncSig::LTrim => crate::builtin_ext::string2::ltrim(&values[0]),
+            ScalarFuncSig::RTrim => crate::builtin_ext::string2::rtrim(&values[0]),
             _ => unreachable!("RpnOnly signature has no SQL carrier adapter"),
         }
     }

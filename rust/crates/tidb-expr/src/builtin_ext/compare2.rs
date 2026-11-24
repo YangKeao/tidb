@@ -15,7 +15,7 @@
 //! implementation in `pkg/expression/builtin_*.go`, cited per function.
 
 use std::cmp::Ordering;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use tidb_query_expr::impl_miscellaneous as sdk;
 use std::str::FromStr;
 
 use tidb_ast::BinaryOp;
@@ -790,16 +790,9 @@ pub(crate) fn inet_ntoa(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum
             crate::cast::to_i64_signed(other) as u64
         }
     };
-    let Ok(value) = u32::try_from(value) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string_datum(format!(
-        "{}.{}.{}.{}",
-        value >> 24,
-        (value >> 16) & 0xff,
-        (value >> 8) & 0xff,
-        value & 0xff
-    )))
+    sdk::inet_ntoa(Some(&(value as i64)))
+        .map(|bytes| bytes.map_or(Datum::Null, Datum::new_string_datum))
+        .map_err(crate::rpn::query_error)
 }
 
 /// `INET6_ATON(expr)`: parse an IPv4 or IPv6 spelling into the raw network
@@ -837,18 +830,10 @@ pub(crate) fn inet6_aton(value: &Datum) -> Result<Datum, EvalError> {
 /// The address bytes, or `None` where Go's `net.ParseIP` is nil (the empty
 /// string included).
 pub(crate) fn inet6_aton_text(text: &str) -> Option<Datum> {
-    // Keep the source's four-byte result only when the original spelling is
-    // plain IPv4.  `Ipv6Addr::from_str` handles all colon-containing forms,
-    // including embedded IPv4 and mapped IPv4, and its octets are exactly the
-    // bytes Go copies from `ip.To16()`/`ip.To4()`.
-    if !text.contains(':') {
-        if let Ok(ip) = Ipv4Addr::from_str(text) {
-            return Some(Datum::new_bytes_datum(ip.octets()));
-        }
-    }
-    Ipv6Addr::from_str(text)
+    sdk::inet6_aton(Some(text.as_bytes()))
         .ok()
-        .map(|ip| Datum::new_bytes_datum(ip.octets()))
+        .flatten()
+        .map(Datum::new_bytes_datum)
 }
 
 /// `INET6_NTOA(expr)`: render a four- or sixteen-byte binary string as the
@@ -867,15 +852,9 @@ pub(crate) fn inet6_ntoa(value: &Datum) -> Result<Datum, EvalError> {
         // first rendered by EvalString and then interpreted as raw bytes.
         _ => coerce_str(value)?.expect("non-NULL scalar").into_bytes(),
     };
-    match bytes.len() {
-        4 => Ok(Datum::new_string_datum(
-            Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
-        )),
-        16 => Ok(Datum::new_string_datum(
-            Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap()).to_string(),
-        )),
-        _ => Ok(Datum::Null),
-    }
+    sdk::inet6_ntoa(Some(&bytes))
+        .map(|bytes| bytes.map_or(Datum::Null, Datum::new_string_datum))
+        .map_err(crate::rpn::query_error)
 }
 
 /// `IS_IPV4(expr)`: strict four-component decimal IPv4 predicate. Port of
@@ -927,8 +906,9 @@ pub(crate) fn is_ipv4_mapped_value(value: &Datum) -> Result<Datum, EvalError> {
     let Some(bytes) = eval_string_bytes(value)? else {
         return Ok(Datum::Null);
     };
-    let mapped = bytes.len() == 16 && bytes[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff];
-    Ok(Datum::Int(i64::from(mapped)))
+    sdk::is_ipv4_mapped(Some(&bytes))
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 /// `IS_IPV4_COMPAT(expr)`: true only for a sixteen-byte binary payload whose
@@ -939,8 +919,9 @@ pub(crate) fn is_ipv4_compat_value(value: &Datum) -> Result<Datum, EvalError> {
     let Some(bytes) = eval_string_bytes(value)? else {
         return Ok(Datum::Null);
     };
-    let compat = bytes.len() == 16 && bytes[..12] == [0; 12];
-    Ok(Datum::Int(i64::from(compat)))
+    sdk::is_ipv4_compat(Some(&bytes))
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 /// Evaluates the ETString argument used by the Go IPv4 binary predicates
@@ -962,9 +943,9 @@ pub(crate) fn is_ipv6_value(value: &Datum) -> Result<Datum, EvalError> {
     let Some(value) = coerce_str(value)? else {
         return Ok(Datum::Null);
     };
-    Ok(Datum::Int(i64::from(
-        Ipv6Addr::from_str(&value).is_ok() && !is_ipv4(&value),
-    )))
+    sdk::is_ipv6(Some(value.as_bytes()))
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 #[cfg(test)]

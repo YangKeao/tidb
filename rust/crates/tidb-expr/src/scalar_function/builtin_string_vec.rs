@@ -34,8 +34,6 @@ pub(super) fn supported(function: &ScalarFunction) -> bool {
             | FieldString
             | HexStrArg
             | HexIntArg
-            | LTrim
-            | RTrim
             | Right
             | RightUtf8
             | Space
