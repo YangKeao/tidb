@@ -483,7 +483,7 @@ fn bit_length_source_vectors_preserve_utf8_byte_count() {
 
     // Go's len(val) counts binary bytes without UTF-8 validation.
     assert_eq!(
-        string_fn::bit_length(&[Datum::new_bytes_datum(vec![0xff, 0x00])]).unwrap(),
+        string_fn::eval_sdk_bytes_int(&[Datum::new_bytes_datum(vec![0xff, 0x00])], tidb_query_expr::impl_string::bit_length).unwrap(),
         Datum::Int(16)
     );
 }
@@ -646,7 +646,7 @@ fn ascii_source_vectors_preserve_first_byte_and_string_coercion() {
     // separate from the SQL source table because the parser does not expose
     // an invalid-UTF-8 string literal in this seed value domain.
     assert_eq!(
-        string_fn::ascii(&[Datum::new_bytes_datum(vec![0xff, 0x00])]).unwrap(),
+        string_fn::eval_sdk_bytes_int(&[Datum::new_bytes_datum(vec![0xff, 0x00])], tidb_query_expr::impl_string::ascii).unwrap(),
         Datum::Int(255)
     );
 }

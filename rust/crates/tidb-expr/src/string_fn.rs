@@ -118,29 +118,20 @@ use tidb_charset::Collation;
     }
 }
 
-/// `ASCII(s)`: return the first byte of the evaluated string, not the first
-/// Unicode scalar value. Go's `EvalString` preserves binary arguments, so
-/// this uses byte-preserving coercion instead of a UTF-8-checked one.
-pub(crate) fn ascii(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
+/// Adapt a SQL string value to an upstream byte kernel without changing its bytes.
+pub(crate) fn eval_sdk_bytes_int(
+    vals: &[Datum],
+    kernel: fn(&[u8]) -> tidb_query_common::Result<Option<i64>>,
+) -> Result<Datum, EvalError> {
+    let [value] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
+    };
+    let Some(bytes) = coerce_str_bytes(value)? else {
         return Ok(Datum::Null);
     };
-    Ok(Datum::Int(i64::from(bytes.first().copied().unwrap_or(0))))
-}
-
-/// `BIT_LENGTH(s)`: count evaluated bytes and multiply by eight. This follows
-/// Go's `len(val)` contract for ordinary UTF-8 and binary values alike.
-pub(crate) fn bit_length(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int((bytes.len() as i64) * 8))
+    kernel(&bytes)
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 /// `LEFT`/`RIGHT`: the first or last `n` units, where `builtinLeftSig` and

@@ -150,8 +150,8 @@ pub(super) fn eval(
             continue;
         }
         let value = match function.pb_code() {
-            Md5 => crypto::hash_unary::<md5::Md5>(&cell(0, i))?,
-            Sha1 => crypto::hash_unary::<sha1::Sha1>(&cell(0, i))?,
+            Md5 => crypto::md5_hash(&cell(0, i))?,
+            Sha1 => crypto::sha1_hash(&cell(0, i))?,
             Sha2 => crypto::sha2_hash(&cell(0, i), &cell(1, i))?,
             Compress => crypto::compress(&cell(0, i))?,
             Uncompress => crypto::uncompress(&cell(0, i), ctx)?,

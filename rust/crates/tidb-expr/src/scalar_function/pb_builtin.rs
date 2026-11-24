@@ -562,11 +562,6 @@ fn conv_bit_literal(
     }
 }
 
-fn md5_values(values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::builtin_ext::crypto::dispatch("MD5", values, ctx)
-        .unwrap_or(Err(EvalError::Unsupported("protobuf MD5 arity")))
-}
-
 fn crc32_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     crate::math_fn::crc32(values)
 }
@@ -892,10 +887,9 @@ impl PbBuiltin {
             CoalesceJson => Kernel::Coalesce(EvalType::Json),
             // Go `builtinLengthSig`: the argument's byte length, whatever its
             // collation -- `CharLength`'s binary spelling.
-            Length => Kernel::String {
-                operation: StringOp::Length,
-                binary: true,
-            },
+            Length => Kernel::Values(|values, _| {
+                crate::string_fn::eval_sdk_bytes_int(values, tidb_query_expr::impl_string::length)
+            }),
             CharLength => Kernel::String {
                 operation: StringOp::Length,
                 binary: true,
@@ -969,7 +963,7 @@ impl PbBuiltin {
             UuidVersion => Kernel::Values(|values, _| crate::builtin_ext::misc::uuid_version(&values[0])),
             SysDateWithoutFsp | SysDateWithFsp => Kernel::Method(sys_date_method),
             RandWithSeedFirstGen => Kernel::Row(rand_row),
-            Sha1 => Kernel::Values(|values, _| crate::builtin_ext::crypto::hash_unary::<sha1::Sha1>(&values[0])),
+            Sha1 => Kernel::Values(|values, _| crate::builtin_ext::crypto::sha1_hash(&values[0])),
             Sha2 => Kernel::Values(|values, _| crate::builtin_ext::crypto::sha2_hash(&values[0], &values[1])),
             UncompressedLength => Kernel::Values(|values, ctx| {
                 crate::builtin_ext::crypto::uncompressed_length(&values[0], ctx)
@@ -987,8 +981,12 @@ impl PbBuiltin {
             MakeDate => Kernel::Values(make_date_values),
             MakeTime => Kernel::Method(make_time_method),
             TimeToSec => Kernel::Values(|values, _| crate::time_fn::time_to_sec(values)),
-            Ascii => Kernel::Values(|values, _| crate::string_fn::ascii(values)),
-            BitLength => Kernel::Values(|values, _| crate::string_fn::bit_length(values)),
+            Ascii => Kernel::Values(|values, _| {
+                crate::string_fn::eval_sdk_bytes_int(values, tidb_query_expr::impl_string::ascii)
+            }),
+            BitLength => Kernel::Values(|values, _| {
+                crate::string_fn::eval_sdk_bytes_int(values, tidb_query_expr::impl_string::bit_length)
+            }),
             Reverse | ReverseUtf8 => Kernel::Values(|values, _| crate::string_fn::reverse(values)),
             Replace => Kernel::Values(|values, _| crate::string_fn::replace(values)),
             Strcmp => Kernel::Method(strcmp_method),
@@ -999,7 +997,7 @@ impl PbBuiltin {
             RTrim => Kernel::Values(rtrim_values),
             Right | RightUtf8 => Kernel::Values(right_values),
             Space => Kernel::Values(crate::string_packet::space),
-            Md5 => Kernel::Values(md5_values),
+            Md5 => Kernel::Values(|values, _| crate::builtin_ext::crypto::md5_hash(&values[0])),
             Crc32 => Kernel::Values(crc32_values),
             Concat => Kernel::Values(crate::string_fn::concat_with_context),
             ConcatWs => Kernel::Values(crate::string_fn::concat_ws_with_context),

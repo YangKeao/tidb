@@ -31,9 +31,8 @@
 //!
 
 use flate2::{Decompress, FlushDecompress, Status};
-use md5::{Digest, Md5};
-use sha1::Sha1;
-use sha2::{Sha224, Sha256, Sha384, Sha512};
+use sha1::{Digest, Sha1};
+use tidb_query_expr::impl_encryption as sdk;
 
 use crate::{BlockEncryptionMode, Columns, Datum, EvalError};
 
@@ -46,8 +45,8 @@ pub(crate) fn dispatch(
     ctx: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
     match (name, vals.len()) {
-        ("MD5", 1) => Some(hash_unary::<Md5>(&vals[0])),
-        ("SHA" | "SHA1", 1) => Some(hash_unary::<Sha1>(&vals[0])),
+        ("MD5", 1) => Some(md5_hash(&vals[0])),
+        ("SHA" | "SHA1", 1) => Some(sha1_hash(&vals[0])),
         ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1])),
         ("SM3", 1) => Some(sm3_hash(&vals[0])),
         ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
@@ -522,19 +521,16 @@ pub(crate) fn validate_password_strength_with_user(
     Ok(Datum::Int(100))
 }
 
-/// `MD5(str)` / `SHA(str)` / `SHA1(str)`: the digest of the argument's
-/// string bytes as lowercase hex (32 chars for MD5, 40 for SHA-1); `NULL`
-/// argument propagates to `NULL`. Port of `builtinMD5Sig.evalString` and
-/// `builtinSHA1Sig.evalString` (`pkg/expression/builtin_encryption.go`),
-/// which differ only in the hash used — both eval the argument as a string
-/// (numbers arrive as their decimal text) and hex-encode the sum.
-pub(crate) fn hash_unary<D: Digest>(v: &Datum) -> Result<Datum, EvalError> {
-    match hash_input(v)? {
-        Some(bytes) => Ok(Datum::new_string_datum(hex_lower(
-            D::digest(bytes.as_slice()).as_slice(),
-        ))),
-        None => Ok(Datum::Null),
-    }
+pub(crate) fn md5_hash(value: &Datum) -> Result<Datum, EvalError> {
+    sdk::md5(hash_input(value)?.as_deref()).map(digest_datum).map_err(crate::rpn::query_error)
+}
+
+pub(crate) fn sha1_hash(value: &Datum) -> Result<Datum, EvalError> {
+    sdk::sha1(hash_input(value)?.as_deref()).map(digest_datum).map_err(crate::rpn::query_error)
+}
+
+fn digest_datum(bytes: Option<Vec<u8>>) -> Datum {
+    bytes.map_or(Datum::Null, Datum::new_string_datum)
 }
 
 /// `SM3(str)`: the parser-auth SM3 digest rendered as lowercase hex. TiDB's
@@ -609,14 +605,13 @@ pub(crate) fn sha2_hash(arg: &Datum, len: &Datum) -> Result<Datum, EvalError> {
     let Some(n) = encryption_int_argument(len)? else {
         return Ok(Datum::Null);
     };
-    let hex = match n {
-        0 | 256 => hex_lower(Sha256::digest(bytes.as_slice()).as_slice()),
-        224 => hex_lower(Sha224::digest(bytes.as_slice()).as_slice()),
-        384 => hex_lower(Sha384::digest(bytes.as_slice()).as_slice()),
-        512 => hex_lower(Sha512::digest(bytes.as_slice()).as_slice()),
-        _ => return Ok(Datum::Null),
-    };
-    Ok(Datum::new_string_datum(hex))
+    // The SQL builtin returns NULL silently for an invalid hash length.
+    if !matches!(n, 0 | 224 | 256 | 384 | 512) {
+        return Ok(Datum::Null);
+    }
+    sdk::sha2(&mut Default::default(), Some(&bytes), Some(&n))
+        .map(digest_datum)
+        .map_err(crate::rpn::query_error)
 }
 
 /// Ports the `ETInt` coercion requested by the encryption function classes.
