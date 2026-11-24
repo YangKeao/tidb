@@ -1344,7 +1344,7 @@ fn lower_declared(
                     if constant.param_marker.is_some()
                         || matches!(
                             constant.literal_value(),
-                            Some(Datum::Duration(_) | Datum::Time(_))
+                            Some(Datum::Duration(_) | Datum::Time(_) | Datum::Enum(..) | Datum::Set(..))
                         ) =>
                 {
                     return bound_input(expression, base_columns + bindings.len(), bindings);
@@ -2960,6 +2960,25 @@ mod tests {
             Ok(Datum::Int(9))
         );
         DIRECT_ROW_EXECUTIONS.with(|count| assert_eq!(count.get(), 2));
+    }
+
+    #[test]
+    fn prepared_enum_literal_reads_the_native_member_name() {
+        let value = Datum::new_enum(
+            tidb_datatype::MysqlEnum::new("member", 1),
+            tidb_charset::Collation::Binary,
+        );
+        let field = FieldType::new(FieldTypeCode::Enum)
+            .with_charset_name("binary")
+            .with_collation_name("binary");
+        let expression = Expression::Constant(crate::constant::Constant::new(value.clone(), field));
+        let mut program = PreparedExpression::new(&expression, &crate::NoColumns, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            program.evaluate_row(&crate::NoColumns, tidb_chunk::row::Row::empty()),
+            Ok(value),
+        );
     }
 
     #[test]
