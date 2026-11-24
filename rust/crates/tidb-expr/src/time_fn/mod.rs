@@ -485,17 +485,6 @@ fn zero_or_invalid_zero(time: tidb_datatype::Time) -> bool {
     time.is_zero() || time.invalid_zero()
 }
 
-/// `builtinMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
-///
-/// The source returns the stored month field directly with no zero
-/// rejection, because `monthFunctionClass` declares its argument
-/// `types.ETDatetime` (`builtin_time.go:1116`) and so receives a value
-/// `EvalTime` already produced non-NULL — see [`calendar::component_date`].
-pub(crate) fn month(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(calendar::component_date(vals)?
-        .map_or(Datum::Null, |(_, month, _)| Datum::Int(i64::from(month))))
-}
-
 /// `builtinDayOfMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
 ///
 /// The source returns the stored day field directly with no zero rejection,
@@ -967,14 +956,6 @@ fn format_time_diff(micros: i64, fsp: usize) -> String {
         "{sign}{hours:02}:{minutes:02}:{seconds:02}.{fraction:0width$}",
         width = fsp
     )
-}
-
-/// `builtinTimeToSecSig` in `pkg/expression/builtin_time.go`.
-pub(crate) fn time_to_sec(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    Ok(duration(&vals[0])?.map_or(Datum::Null, |(seconds, _)| Datum::Int(seconds)))
 }
 
 /// `builtinSecToTimeSig` in `pkg/expression/builtin_time.go`.

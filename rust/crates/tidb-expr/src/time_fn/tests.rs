@@ -297,7 +297,7 @@ fn zero_datetime_column_matches_recorded_tidb() {
         Datum::Int(0),
         "YEAR(zero-datetime)"
     );
-    assert_eq!(month(std::slice::from_ref(&zero)).unwrap(), Datum::Int(0));
+    assert_eq!(crate::tests::builtin("month", std::slice::from_ref(&zero)).unwrap(), Datum::Int(0));
     assert_eq!(
         day_of_month(std::slice::from_ref(&zero)).unwrap(),
         Datum::Int(0)
@@ -338,7 +338,7 @@ fn zero_datetime_column_matches_recorded_tidb() {
         Datum::Null,
         "YEAR(\"0000-00-00\")"
     );
-    assert_eq!(month(&datetime_str_arg("0000-00-00")).unwrap(), Datum::Null);
+    assert_eq!(crate::tests::builtin("month", &datetime_str_arg("0000-00-00")).unwrap(), Datum::Null);
     assert_eq!(
         quarter(&datetime_str_arg("0000-00-00")).unwrap(),
         Datum::Null
@@ -357,7 +357,7 @@ fn zero_datetime_column_matches_recorded_tidb() {
         calendar::date_part(std::slice::from_ref(&valid), |d| d.0).unwrap(),
         Datum::Int(2024)
     );
-    assert_eq!(month(std::slice::from_ref(&valid)).unwrap(), Datum::Int(3));
+    assert_eq!(crate::tests::builtin("month", std::slice::from_ref(&valid)).unwrap(), Datum::Int(3));
     assert_eq!(
         day_of_month(std::slice::from_ref(&valid)).unwrap(),
         Datum::Int(15)
@@ -380,7 +380,7 @@ fn month_and_monthname_source_vectors() {
         ("2008-13-01", Datum::Null),
     ];
     for (input, want) in month_cases {
-        assert_eq!(month(&datetime_str_arg(input)).unwrap(), want, "{input}");
+        assert_eq!(crate::tests::builtin("month", &datetime_str_arg(input)).unwrap(), want, "{input}");
     }
 
     let monthname_cases = [
@@ -402,20 +402,24 @@ fn month_and_monthname_source_vectors() {
         );
     }
 
-    assert_eq!(month(&datetime_arg(Datum::Null)).unwrap(), Datum::Null);
+    assert_eq!(crate::tests::builtin("month", &datetime_arg(Datum::Null)).unwrap(), Datum::Null);
     assert_eq!(
         monthname(&datetime_arg(Datum::Null), &crate::NoColumns).unwrap(),
         Datum::Null
     );
     assert_eq!(
-        month(&datetime_arg(Datum::Int(20_240_315))).unwrap(),
+        crate::tests::builtin("month", &datetime_arg(Datum::Int(20_240_315))).unwrap(),
         Datum::Int(3)
     );
     assert_eq!(
         monthname(&datetime_arg(Datum::Int(20_240_315)), &crate::NoColumns).unwrap(),
         Datum::new_string_datum("March".to_string())
     );
-    assert!(month(&[]).is_err());
+    assert!(crate::simple_expr::parse_simple_expr(
+        &crate::rewriter::NoResolver,
+        "MONTH()",
+        &crate::simple_expr::BuildOptions::new(),
+    ).is_err());
     assert!(monthname(
         &[string_datum("2008-01-01"), Datum::Int(1)],
         &crate::NoColumns
@@ -543,12 +547,12 @@ fn time_to_sec_source_vectors() {
         ("020005", 7_205),
     ] {
         assert_eq!(
-            time_to_sec(&[string_datum(input)]).unwrap(),
+            crate::tests::builtin("time_to_sec", &[string_datum(input)]).unwrap(),
             Datum::Int(want),
             "TIME_TO_SEC({input:?})"
         );
     }
-    assert_eq!(time_to_sec(&[Datum::Null]).unwrap(), Datum::Null);
+    assert_eq!(crate::tests::builtin("time_to_sec", &[Datum::Null]).unwrap(), Datum::Null);
 }
 
 /// Exact value-domain rows from `TestSecToTime` at
@@ -1076,7 +1080,7 @@ fn date_diff_source_vectors() {
         (("1010-11-30", "2210-11-01"), -438_262),
     ] {
         assert_eq!(
-            calendar::date_diff(&[string_datum(left), string_datum(right)]).unwrap(),
+            crate::tests::builtin("datediff", &[string_datum(left), string_datum(right)]).unwrap(),
             Datum::Int(want),
             "DATEDIFF({left:?}, {right:?})"
         );
@@ -1089,13 +1093,13 @@ fn date_diff_source_vectors() {
         ("2007-10-31 23:59:59", "99999999-01-00"),
     ] {
         assert_eq!(
-            calendar::date_diff(&[string_datum(left), string_datum(right)]).unwrap(),
+            crate::tests::builtin("datediff", &[string_datum(left), string_datum(right)]).unwrap(),
             Datum::Null,
             "DATEDIFF({left:?}, {right:?})"
         );
     }
     assert_eq!(
-        calendar::date_diff(&[Datum::Null, string_datum("2004-01-01")]).unwrap(),
+        crate::tests::builtin("datediff", &[Datum::Null, string_datum("2004-01-01")]).unwrap(),
         Datum::Null
     );
 }

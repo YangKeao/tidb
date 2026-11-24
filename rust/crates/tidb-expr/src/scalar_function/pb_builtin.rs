@@ -886,7 +886,7 @@ impl PbBuiltin {
             FromDays => Kernel::Values(from_days_values),
             MakeDate => Kernel::Values(make_date_values),
             MakeTime => Kernel::Method(make_time_method),
-            TimeToSec => Kernel::Values(|values, _| crate::time_fn::time_to_sec(values)),
+            TimeToSec => Kernel::RpnOnly(None, &[EvalType::Duration]),
 
 
             Reverse => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::reverse_fn_meta), &[EvalType::String]),
@@ -914,7 +914,7 @@ impl PbBuiltin {
             Conv => Kernel::Conv,
             RoundInt | RoundReal | RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),
-            DateDiff => Kernel::Values(|values, _| crate::time_fn::calendar::date_diff(values)),
+            DateDiff => Kernel::RpnOnly(None, &[EvalType::Datetime; 2]),
             DateFormatSig => Kernel::Values(|values, cols| {
                 let [date, format] = values else {
                     return Err(EvalError::WrongParameterCount("date_format"));
@@ -931,7 +931,7 @@ impl PbBuiltin {
                 crate::time_fn::calendar::time_part(values, |time| i64::from(time.2))
             }),
             MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
-            Month => Kernel::Values(|values, _| crate::time_fn::month(values)),
+            Month => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             WeekWithMode | WeekWithoutMode => Kernel::Values(|values, ctx| {
                 crate::time_fn::week(values, ctx.default_week_format(), ctx)
             }),

@@ -1471,19 +1471,10 @@ pub(crate) fn ord_with_type(
 /// Go `expression.Quote`: `str` wrapped in single quotes with `'`, `\`, NUL
 /// and Ctrl-Z backslash-escaped.
 pub fn quote_str(str: &str) -> String {
-    let mut out = String::with_capacity(str.len() + 2);
-    out.push('\'');
-    for c in str.chars() {
-        match c {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\0' => out.push_str("\\0"),
-            '\x1a' => out.push_str("\\Z"),
-            _ => out.push(c),
-        }
-    }
-    out.push('\'');
-    out
+    let bytes = tidb_query_expr::impl_string::quote(Some(str.as_bytes()))
+        .expect("QUOTE accepts any byte string")
+        .expect("QUOTE returns quoted bytes");
+    String::from_utf8(bytes).expect("quoting UTF-8 preserves UTF-8")
 }
 
 /// `QUOTE(s)`: `s` wrapped in single quotes with `'`, `\`, NUL and Ctrl-Z

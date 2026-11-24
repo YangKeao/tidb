@@ -404,28 +404,6 @@ pub(crate) fn from_days(vals: &[Datum]) -> Result<Datum, EvalError> {
     Ok(Datum::new_time(ret))
 }
 
-/// `DATEDIFF(date1, date2)`, ported from `builtinDateDiffSig.evalInt` in
-/// `pkg/expression/builtin_time.go`.  Both arguments are parsed as calendar
-/// dates; any time-of-day suffix is deliberately ignored, matching TiDB's
-/// `types.DateDiff` contract.  The value-only boundary returns `NULL` for a
-/// failed temporal conversion and has no warning/SQLMode state.
-pub(crate) fn date_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(left), Some(right)) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    let (Some((ly, lm, ld)), Some((ry, rm, rd))) = (parse_date_ymd(&left), parse_date_ymd(&right))
-    else {
-        return Ok(Datum::Null);
-    };
-    // Go `types.DateDiff`: `calcDaynr(t1) - calcDaynr(t2)`.
-    Ok(Datum::Int(
-        time_diff_daynr(ly, lm, ld) - time_diff_daynr(ry, rm, rd),
-    ))
-}
-
 #[derive(Clone, Copy)]
 struct TimestampDiffDateTime {
     year: i64,

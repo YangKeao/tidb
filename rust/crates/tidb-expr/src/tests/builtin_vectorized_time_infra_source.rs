@@ -127,11 +127,10 @@ fn vectorized_time_harness_representative_cases_match_scalar_answers() {
         ["DUR:838:59:59.000000", "DUR:-838:59:59.000000", "NULL"]
     );
 
-    // ast.DateDiff (calendar::date_diff; DATEDIFF is not in the time-family
-    // dispatch): master's valid pair and an invalid-zero pair.
+    // ast.DateDiff: master's valid pair and an invalid-zero pair.
     assert_eq!(
         binary_vec(
-            crate::time_fn::calendar::date_diff,
+            |args| crate::tests::builtin("datediff", args),
             &[
                 ("2004-05-21", "2004:01:02"),
                 ("2007-00-31 23:59:59", "2016-01-13"),
