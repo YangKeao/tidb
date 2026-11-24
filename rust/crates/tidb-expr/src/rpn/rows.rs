@@ -355,7 +355,14 @@ impl NativeRows<'_> {
             let binding = &self.bindings[offset - self.fields.len()];
             let binding_error = |native| self.native_error(native);
             if let super::InputSource::HybridInteger(expression) = &binding.source {
+                let broadcast = self.typed_batch && matches!(expression, Expression::Constant(constant)
+                    if constant.literal_value().is_some());
+                let mut cached = None;
                 for &row in rows {
+                    if let Some(value) = &cached {
+                        append(&mut vector, Datum::clone(value))?;
+                        continue;
+                    }
                     let value = crate::scalar_function::eval_numeric_row(
                         expression,
                         self.context,
@@ -363,6 +370,9 @@ impl NativeRows<'_> {
                         tidb_datatype::EvalType::Int,
                     )
                     .map_err(binding_error)?;
+                    if broadcast {
+                        cached = Some(value.clone());
+                    }
                     append(&mut vector, value)?;
                 }
             } else if let super::InputSource::Context(source) = &binding.source {

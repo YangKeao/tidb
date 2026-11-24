@@ -1548,6 +1548,16 @@ impl PbBuiltin {
                     Ok(value)
                 }
             }
+            Kernel::RpnOnly(_, [domain]) if matches!(
+                self.signature,
+                ScalarFuncSig::IntIsNull | ScalarFuncSig::RealIsNull | ScalarFuncSig::DecimalIsNull
+                    | ScalarFuncSig::StringIsNull | ScalarFuncSig::TimeIsNull
+                    | ScalarFuncSig::DurationIsNull | ScalarFuncSig::VectorFloat32IsNull
+            ) => {
+                // Decoded coprocessor requests use the signature's typed
+                // read, which can emit conversion warnings before IS NULL.
+                self.eval_values(function, vec![typed_argument(0, *domain)?], ctx)
+            }
             Kernel::VectorTruth { keep_null, falsity } => {
                 let value = typed_argument(0, EvalType::VectorFloat32)?;
                 Ok(match crate::truthy_of(&value)? {

@@ -126,7 +126,7 @@ impl PreparedExpression {
         column_count: usize,
         mode: LoweringMode,
     ) -> Result<Option<Self>, EvalError> {
-        let Some(columns) = native_schema(expression, column_count) else {
+        let Some(columns) = native_schema(expression, column_count, mode) else {
             return Ok(None);
         };
         let Some(output) = expression.static_type().cloned() else {
@@ -816,7 +816,11 @@ fn is_statement_seed(seed: &crate::constant::Constant) -> bool {
     true
 }
 
-fn native_schema(expression: ExpressionRoot<'_>, count: usize) -> Option<Vec<FieldType>> {
+fn native_schema(
+    expression: ExpressionRoot<'_>,
+    count: usize,
+    mode: LoweringMode,
+) -> Option<Vec<FieldType>> {
     let mut fields = vec![None; count];
     let mut pending: Vec<_> = match expression {
         ExpressionRoot::Scalar(function) => function.args.iter().collect(),
@@ -827,7 +831,8 @@ fn native_schema(expression: ExpressionRoot<'_>, count: usize) -> Option<Vec<Fie
             Expression::ScalarFunction(call) => pending.extend(&call.args),
             Expression::Column(column) => {
                 let field = column.get_static_type()?;
-                if matches!(field.code(), FieldTypeCode::Enum | FieldTypeCode::Set)
+                if mode != LoweringMode::TypedBatch
+                    && matches!(field.code(), FieldTypeCode::Enum | FieldTypeCode::Set)
                     && field.elems().is_empty()
                 {
                     return None;
@@ -988,7 +993,14 @@ pub(crate) fn evaluate_required_kernel(
     let mut input_types = Vec::with_capacity(inputs.len());
     for ((argument, &domain), value) in function.args.iter().zip(inputs).zip(&values) {
         let actual = argument.static_type().ok_or(EvalError::Unsupported("RPN kernel input type"))?;
-        let carrier = if value.is_null() && actual.eval_type() != domain {
+        let carrier = if actual.eval_type() != domain
+            && (value.is_null() || matches!(
+                (domain, value),
+                (NativeEvalType::Int, Datum::Int(_) | Datum::UInt(_))
+                    | (NativeEvalType::Real, Datum::Real(_) | Datum::Float32(_))
+                    | (NativeEvalType::Decimal, Datum::Decimal(_))
+            ))
+        {
             FieldType::new(native_type(query_eval_type(domain))
                 .ok_or(EvalError::Unsupported("RPN NULL carrier"))?.1)
         } else if domain == NativeEvalType::String
@@ -1316,6 +1328,19 @@ fn lower_declared(
         ExpressionRoot::Leaf(expression) => {
             match expression {
                 Expression::Constant(constant)
+                    if environment.mode == LoweringMode::TypedBatch
+                        && matches!(constant.literal_value(), Some(Datum::String(_)))
+                        && expression.static_type()?.eval_type() == NativeEvalType::Int =>
+                {
+                    return bind_value(
+                        expression,
+                        base_columns + bindings.len(),
+                        expression.static_type()?.clone(),
+                        true,
+                        bindings,
+                    );
+                }
+                Expression::Constant(constant)
                     if constant.param_marker.is_some()
                         || matches!(
                             constant.literal_value(),
@@ -1366,13 +1391,49 @@ fn lower_declared(
     }
     let name = binding::local_name(function);
     let result_type = function.get_static_type()?;
+    if environment.mode == LoweringMode::TypedBatch {
+        use tidb_proto::tipb::ScalarFuncSig::{CastIntAsDecimal, CastIntAsInt, CastIntAsJson, CastIntAsReal};
+        // The SQL signature reads the numeric member value rather than the
+        // string name of an ENUM or SET, or the raw bytes of a BIT.
+        if matches!(function.pb_code(), CastIntAsInt | CastIntAsReal | CastIntAsDecimal | CastIntAsJson)
+            && !function.cast_in_union()
+        {
+            if let [argument] = function.args.as_slice() {
+                let source = argument.static_type()?;
+                if source.is_hybrid() && !matches!(argument, Expression::ScalarFunction(_)) {
+                    let carrier = FieldType::new(FieldTypeCode::LongLong)
+                        .with_added_flags(source.flags() & FieldTypeFlags::UNSIGNED);
+                    let input = bind_value(
+                        argument,
+                        base_columns + bindings.len(),
+                        carrier.clone(),
+                        true,
+                        bindings,
+                    )?;
+                    let mut call = QueryExpr::new();
+                    call.set_tp(QueryExprType::ScalarFunc);
+                    call.set_field_type(rows::query_field_type(result_type)?);
+                    call.mut_children().push(input);
+                    return bind_host_call(
+                        call,
+                        HostOperation::LocalBuiltin(Box::new(PreparedLocalBuiltin::new(function))),
+                        vec![carrier],
+                        host_calls,
+                    );
+                }
+            }
+        }
+    }
     let string_decimal_union = function.cast_in_union()
         && function.pb_code() == tidb_proto::tipb::ScalarFuncSig::CastStringAsDecimal;
     if function.is_cast()
         && ((function.cast_in_union() && !string_decimal_union)
             || result_type.code() == FieldTypeCode::Timestamp
             || function.args.first().and_then(Expression::static_type).is_some_and(|source| {
-                source.is_hybrid() || source.eval_type() == NativeEvalType::VectorFloat32
+                (source.is_hybrid()
+                    && !(environment.mode == LoweringMode::TypedBatch
+                        && function.pb_code() == tidb_proto::tipb::ScalarFuncSig::CastStringAsJson))
+                    || source.eval_type() == NativeEvalType::VectorFloat32
             }))
     {
         // Preserve UNION's coercion and column materialization, temporal
@@ -1918,6 +1979,25 @@ fn lower_declared(
     }
     if let [argument] = function.args.as_slice() {
         let source = argument.static_type()?;
+        use tidb_proto::tipb::ScalarFuncSig::{CastDecimalAsDecimal, CastStringAsDecimal};
+        if matches!(signature, Some(CastStringAsDecimal | CastDecimalAsDecimal))
+            && !function.cast_in_union()
+        {
+            if let Some(literal) = argument.binary_literal_source() {
+                let field = FieldType::new(FieldTypeCode::LongLong)
+                    .with_added_flags(FieldTypeFlags::UNSIGNED);
+                let integer = bind_value(
+                    &Expression::Constant(literal.clone()),
+                    base_columns + bindings.len(),
+                    field,
+                    true,
+                    bindings,
+                )?;
+                call.set_sig(ScalarFuncSig::CastIntAsDecimal);
+                call.set_children(vec![integer].into());
+                return Some(call);
+            }
+        }
         if matches!(name, "cast_double" | "cast_float") {
             if let Some(literal) = argument
                 .binary_literal_source()
@@ -1949,8 +2029,9 @@ fn lower_declared(
                 );
             }
         }
-        use tidb_proto::tipb::ScalarFuncSig::{CastDurationAsJson, CastJsonAsDuration, CastStringAsDecimal};
+        use tidb_proto::tipb::ScalarFuncSig::{CastDurationAsJson, CastJsonAsDuration, CastRealAsDecimal};
         if matches!(signature, Some(CastStringAsDecimal | CastJsonAsDuration | CastDurationAsJson))
+            || (environment.mode != LoweringMode::Executor && signature == Some(CastRealAsDecimal))
         {
             return bind_host_call(
                 call,
@@ -1980,6 +2061,21 @@ fn lower_declared(
                 host_calls,
             );
         }
+    }
+    if environment.mode == LoweringMode::TypedBatch
+        && matches!(signature, Some(tidb_proto::tipb::ScalarFuncSig::IntDivideInt | tidb_proto::tipb::ScalarFuncSig::IntDivideDecimal))
+    {
+        let arguments = call.get_children().iter().map(|operand| {
+            let field = operand.get_field_type();
+            Some(FieldType::new(FieldTypeCode::from_mysql_type(u8::try_from(field.get_tp()).ok()?))
+                .with_flags(field.get_flag()))
+        }).collect::<Option<Vec<_>>>()?;
+        return bind_host_call(
+            call,
+            HostOperation::LocalBuiltin(Box::new(PreparedLocalBuiltin::new(function))),
+            arguments,
+            host_calls,
+        );
     }
     let execution_seed = seed_source.is_some();
     let local_kernel = typed_add_sub || string_extremum || needs_sql_value_kernel(name)

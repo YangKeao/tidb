@@ -2023,16 +2023,6 @@ pub(crate) fn cast_numeric_argument(
     target: EvalType,
     ctx: &dyn Columns,
 ) -> Result<Datum, EvalError> {
-    cast_numeric_argument_in_mode(expression, value, target, ctx, false)
-}
-
-fn cast_numeric_argument_in_mode(
-    expression: &Expression,
-    value: Datum,
-    target: EvalType,
-    ctx: &dyn Columns,
-    vectorized: bool,
-) -> Result<Datum, EvalError> {
     let field = expression
         .static_type()
         .expect("numeric argument has a type");
@@ -2059,7 +2049,7 @@ fn cast_numeric_argument_in_mode(
             Datum::Bytes(value) => value.as_slice(),
             _ => return Err(EvalError::Unsupported("string arithmetic argument domain")),
         };
-        return cast_string_numeric_argument(field, bytes, target, ctx, vectorized);
+        return cast_string_numeric_argument(field, bytes, target, ctx, false);
     }
     if matches!(value, Datum::Json(_)) {
         // Go arithmetic wraps JSON operands with the same typed cast
@@ -2282,56 +2272,6 @@ fn eval_numeric_operand_row(
     )
 }
 
-fn eval_numeric_operand_batch(
-    expression: &Expression,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    target: EvalType,
-) -> Result<Vec<Datum>, EvalError> {
-    let field = expression
-        .static_type()
-        .expect("numeric argument has a type");
-    let source = numeric_argument_source(expression, target).expect("numeric argument has a type");
-    // Go casts its borrowed string column buffer directly. Preserve the full
-    // operand pass while avoiding a String/Datum allocation for every cell.
-    if source == EvalType::String {
-        if let Expression::Column(column) = expression {
-            let index = usize::try_from(column.index)
-                .map_err(|_| EvalError::Unsupported("column index is negative"))?;
-            if index >= input.num_cols() {
-                return Err(EvalError::Unsupported(
-                    "column index is outside the input row",
-                ));
-            }
-            let column = input.column(index);
-            return (0..input.num_rows())
-                .map(|row| {
-                    let row = input.get_row(row).idx();
-                    if column.is_null(row) {
-                        Ok(Datum::Null)
-                    } else {
-                        cast_string_numeric_argument(
-                            field,
-                            column.get_bytes(row).as_ref(),
-                            target,
-                            ctx,
-                            true,
-                        )
-                    }
-                })
-                .collect();
-        }
-    }
-    let values = eval_numeric_batch_values(expression, ctx, input, source)?;
-    if source == target {
-        return Ok(values);
-    }
-    values
-        .into_iter()
-        .map(|value| cast_numeric_argument_in_mode(expression, value, target, ctx, true))
-        .collect()
-}
-
 /// Go JSON cast signatures consume their source EvalType, including hybrid
 /// string names and signed integer carriers, before constructing binary JSON.
 fn cast_json_argument_value(function: &ScalarFunction, value: Datum) -> Result<Datum, EvalError> {
@@ -2440,267 +2380,6 @@ fn numeric_batch_supported(expression: &Expression, target: EvalType) -> bool {
     }
 }
 
-// Integer batches carry the same i64 bit patterns as Go chunk.Int64s. This
-// avoids cloning large Datum enums for every intermediate arithmetic node.
-fn eval_integer_batch(
-    expression: &Expression,
-    ctx: &dyn Columns,
-    input: &Chunk,
-) -> Result<Vec<Option<i64>>, EvalError> {
-    let bits = |value: Datum| -> Result<Option<i64>, EvalError> {
-        match value {
-            Datum::Null => Ok(None),
-            Datum::Int(value) => Ok(Some(value)),
-            Datum::UInt(value) => Ok(Some(value as i64)),
-            _ => Err(EvalError::Unsupported(
-                "integer batch value is outside its typed domain",
-            )),
-        }
-    };
-    match expression {
-        Expression::Constant(constant) => {
-            if let Some(child) = constant.deferred_expr.as_deref() {
-                return eval_integer_batch(child, ctx, input);
-            }
-            Ok(vec![
-                bits(constant.eval_typed_as_on_row(
-                    ctx,
-                    input.get_row(0),
-                    EvalType::Int
-                )?)?;
-                input.num_rows()
-            ])
-        }
-        Expression::CorrelatedColumn(column) => {
-            Ok(vec![
-                bits(column.eval_typed(ctx, EvalType::Int)?)?;
-                input.num_rows()
-            ])
-        }
-        Expression::Column(column) => {
-            if column.get_static_type().is_some_and(FieldType::is_hybrid) {
-                return (0..input.num_rows())
-                    .map(|row| {
-                        bits(eval_numeric_row(
-                            expression,
-                            ctx,
-                            input.get_row(row),
-                            EvalType::Int,
-                        )?)
-                    })
-                    .collect();
-            }
-            let index = usize::try_from(column.index)
-                .map_err(|_| EvalError::Unsupported("invalid integer column index"))?;
-            if index >= input.num_cols() {
-                return Err(EvalError::Unsupported("invalid integer column index"));
-            }
-            let column = input.column(index);
-            Ok((0..input.num_rows())
-                .map(|row| {
-                    let row = input.get_row(row).idx();
-                    (!column.is_null(row)).then(|| column.get_int64(row))
-                })
-                .collect())
-        }
-        Expression::ScalarFunction(function) => {
-            if numeric_cast_target(function).is_some() {
-                return eval_numeric_batch_values(expression, ctx, input, EvalType::Int)?
-                    .into_iter()
-                    .map(bits)
-                    .collect();
-            }
-
-            if function.numeric_operand_domain() != Some(EvalType::Int)
-                || function
-                    .args
-                    .iter()
-                    .any(|arg| numeric_argument_source(arg, EvalType::Int) != Some(EvalType::Int))
-            {
-                return eval_arithmetic_batch(function, ctx, input)?
-                    .into_iter()
-                    .map(bits)
-                    .collect();
-            }
-            let mut left = eval_integer_batch(&function.args[0], ctx, input)?;
-            let right = eval_integer_batch(&function.args[1], ctx, input)?;
-            let op = binary_op_for_name(function.func_name.lowercase())
-                .expect("preflight checked arithmetic");
-            let unsigned = [0, 1].map(|i| {
-                function.args[i]
-                    .static_type()
-                    .expect("typed argument")
-                    .is_unsigned()
-            });
-            let integer = |bits: i64, unsigned: bool| {
-                if unsigned {
-                    crate::coerce::Integer::Unsigned(bits as u64)
-                } else {
-                    crate::coerce::Integer::Signed(bits)
-                }
-            };
-            for (left, right) in left.iter_mut().zip(right) {
-                *left = match (*left, right) {
-                    (Some(a), Some(b)) => bits(
-                        crate::ops::integer_binary(
-                            op,
-                            integer(a, unsigned[0]),
-                            integer(b, unsigned[1]),
-                            ctx,
-                        )
-                        .map_err(|error| match error {
-                            EvalError::IntOverflow if op == BinaryOp::IntDiv => {
-                                integer_division_overflow(
-                                    integer(a, unsigned[0]),
-                                    integer(b, unsigned[1]),
-                                )
-                            }
-                            EvalError::IntOverflow => arithmetic_overflow_error(function, op, ctx),
-                            other => other,
-                        })?,
-                    )?,
-                    _ => None,
-                };
-            }
-            Ok(left)
-        }
-        Expression::ScalarSubQuery(_) => Err(crate::scalar_subquery::vec_eval_error()),
-    }
-}
-
-fn eval_numeric_batch_values(
-    expression: &Expression,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    target: EvalType,
-) -> Result<Vec<Datum>, EvalError> {
-    if let Expression::ScalarFunction(function) = expression {
-        if let Some(field) = numeric_cast_target(function) {
-            let source = numeric_argument_source(&function.args[0], field.eval_type())
-                .expect("numeric cast source has a type");
-            let values = eval_numeric_batch_values(&function.args[0], ctx, input, source)?;
-            if source == EvalType::String && field.eval_type() == EvalType::Decimal {
-                return values
-                    .into_iter()
-                    .map(|value| match crate::arg_eval_type::eval_string(&value)? {
-                        None => Ok(Datum::Null),
-                        Some(bytes) => cast_string_as_decimal(&bytes, field, ctx, true),
-                    })
-                    .collect();
-            }
-            return values
-                .into_iter()
-                .map(|value| {
-                    if value.is_null() {
-                        Ok(value)
-                    } else {
-                        crate::cast::eval_numeric_cast_with_type(
-                            value,
-                            source,
-                            Some(&function.args[0]),
-                            function.args[0].static_type(),
-                            field,
-                            false,
-                            ctx,
-                        )
-                    }
-                })
-                .collect();
-        }
-    }
-    if target == EvalType::Int {
-        let unsigned = expression
-            .static_type()
-            .is_some_and(|field| field.is_unsigned());
-        return Ok(eval_integer_batch(expression, ctx, input)?
-            .into_iter()
-            .map(|value| match value {
-                None => Datum::Null,
-                Some(value) if unsigned => Datum::UInt(value as u64),
-                Some(value) => Datum::Int(value),
-            })
-            .collect());
-    }
-    match expression {
-        Expression::Constant(constant) => {
-            if let Some(child) = constant.deferred_expr.as_deref() {
-                return eval_numeric_batch_values(child, ctx, input, target);
-            }
-            let value = constant.eval_typed_as_on_row(ctx, input.get_row(0), target)?;
-            Ok(vec![value; input.num_rows()])
-        }
-        Expression::CorrelatedColumn(column) => {
-            Ok(vec![column.eval_typed(ctx, target)?; input.num_rows()])
-        }
-        Expression::Column(_) => (0..input.num_rows())
-            .map(|index| eval_numeric_row(expression, ctx, input.get_row(index), target))
-            .collect(),
-        Expression::ScalarFunction(function) if function.is_cast_as_json() => {
-            // Go completes the source-typed batch before JSON conversion.
-            let source = function.args[0]
-                .static_type()
-                .expect("preflight checked JSON source")
-                .eval_type();
-            let values = eval_numeric_batch_values(&function.args[0], ctx, input, source)?;
-            values
-                .into_iter()
-                .map(|value| cast_json_argument_value(function, value))
-                .collect()
-        }
-        Expression::ScalarFunction(function) => eval_arithmetic_batch(function, ctx, input),
-        Expression::ScalarSubQuery(_) => Err(crate::scalar_subquery::vec_eval_error()),
-    }
-}
-
-fn eval_arithmetic_batch(
-    function: &ScalarFunction,
-    ctx: &dyn Columns,
-    input: &Chunk,
-) -> Result<Vec<Datum>, EvalError> {
-    // Go evaluates the entire left batch, then the entire right batch, then
-    // arithmetic. A NULL left row does not suppress right operand errors.
-    let domain = function
-        .numeric_operand_domain()
-        .expect("preflight checked arithmetic");
-    let mut left = eval_numeric_operand_batch(&function.args[0], ctx, input, domain)?;
-    let right = eval_numeric_operand_batch(&function.args[1], ctx, input, domain)?;
-    let op =
-        binary_op_for_name(function.func_name.lowercase()).expect("preflight checked arithmetic");
-    for (left, right) in left.iter_mut().zip(right) {
-        let value = std::mem::replace(left, Datum::Null);
-        let result = if op == BinaryOp::IntDiv
-            && domain == EvalType::Decimal
-            && !value.is_null()
-            && !right.is_null()
-        {
-            let (Datum::Decimal(a), Datum::Decimal(b)) = (&value, &right) else {
-                return Err(EvalError::Unsupported("decimal DIV argument domain"));
-            };
-            let unsigned = function
-                .args
-                .iter()
-                .any(|arg| arg.static_type().is_some_and(|field| field.is_unsigned()));
-            crate::ops::decimal_integer_division(a, b, unsigned, ctx).map_err(
-                |error| match error {
-                    EvalError::IntOverflow => EvalError::DataOutOfRange {
-                        value: if unsigned {
-                            "BIGINT UNSIGNED"
-                        } else {
-                            "BIGINT"
-                        },
-                        expression: format!("({a} DIV {b})"),
-                    },
-                    other => other,
-                },
-            )?
-        } else {
-            function.eval_binary_values(op, value, right, ctx)?
-        };
-        *left = function.coerce_to_ret_type(result)?;
-    }
-    Ok(left)
-}
-
 /// Go numeric arithmetic batch evaluation for typed expression trees. A full
 /// eligibility pass precedes evaluation, so declining a shape never emits a
 /// warning or evaluates an operand. Other signatures retain their existing path.
@@ -2733,7 +2412,12 @@ pub fn try_eval_numeric_batch(
     if input.num_rows() == 0 {
         return Ok(Some(Vec::new()));
     }
-    eval_numeric_batch_values(expression, ctx, input, target).map(Some)
+    let mut values = Vec::with_capacity(input.num_rows());
+    let compiled = crate::rpn::PreparedExpression::try_eval_typed_batch(expression, ctx, input, |value| {
+        values.push(value);
+        Ok(())
+    })?;
+    Ok(compiled.then_some(values))
 }
 
 #[cfg(test)]
@@ -4245,8 +3929,11 @@ impl PreparedLocalBuiltin {
             .map(|arg| crate::wrap_cast::type_of(arg))
             .collect();
         let mut function = function.clone();
+        let uses_argument_label = function.pb_code() == tidb_proto::tipb::ScalarFuncSig::CastRealAsDecimal;
         for (index, argument) in function.args.iter_mut().enumerate() {
-            if matches!(argument, Expression::Constant(value) if value.literal_value().is_some()) {
+            if uses_argument_label
+                || matches!(argument, Expression::Constant(value) if value.literal_value().is_some())
+            {
                 continue;
             }
             let mut column = crate::column::Column::new(index as i64, fields[index].clone());
@@ -4273,6 +3960,24 @@ impl PreparedLocalBuiltin {
         }
         let function = &self.function;
         match function.pb_builtin.kernel {
+            Kernel::Binary(BinaryOp::IntDiv, domain) if vectorized => {
+                let [left, right]: [Datum; 2] = values.try_into()
+                    .map_err(|_| EvalError::Unsupported("integer division arity"))?;
+                if let (Datum::Decimal(a), Datum::Decimal(b)) = (&left, &right) {
+                    let unsigned = function.args.iter()
+                        .any(|arg| arg.static_type().is_some_and(FieldType::is_unsigned));
+                    return crate::ops::decimal_integer_division(a, b, unsigned, ctx)
+                        .map_err(|error| match error {
+                            EvalError::IntOverflow => EvalError::DataOutOfRange {
+                                value: if unsigned { "BIGINT UNSIGNED" } else { "BIGINT" },
+                                expression: format!("({a} DIV {b})"),
+                            },
+                            error => error,
+                        });
+                }
+                debug_assert!(domain == EvalType::Int || left.is_null() || right.is_null());
+                function.eval_binary_values(BinaryOp::IntDiv, left, right, ctx)
+            }
             Kernel::Cast { .. } => {
                 let [value] = values.as_mut_slice() else {
                     return Err(EvalError::Unsupported("protobuf cast arity"));
