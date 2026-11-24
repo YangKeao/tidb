@@ -150,31 +150,30 @@ fn translate_binary(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// `hex(ltrim(b))` over a `bit(8)` holding `b'11111111'` is `FF`; both were
 /// hard errors under the previous UTF-8 coercion.
 pub(crate) fn ltrim(value: &Datum) -> Result<Datum, EvalError> {
-    trimmed(value, |bytes| {
-        let cut = bytes.iter().take_while(|&&byte| byte == b' ').count();
-        bytes[cut..].to_vec()
-    })
+    trimmed(value, tidb_query_expr::impl_string::ltrim)
 }
 
 /// `RTRIM(str)`, ported from `builtinRTrimSig.evalString` in
 /// `pkg/expression/builtin_string.go`; it has the same ETString and
 /// U+0020-only contract as [`ltrim`].
 pub(crate) fn rtrim(value: &Datum) -> Result<Datum, EvalError> {
-    trimmed(value, |bytes| {
-        let cut = bytes.iter().rev().take_while(|&&byte| byte == b' ').count();
-        bytes[..bytes.len() - cut].to_vec()
-    })
+    trimmed(value, tidb_query_expr::impl_string::rtrim)
 }
 
 /// The shared half of [`ltrim`] and [`rtrim`]: read the `types.ETString`
 /// argument's bytes, strip, and hand the result back under the argument's own
 /// charset -- Go's `SetBinFlagOrBinStr(argType, bf.tp)`, which both function
 /// classes call on `args[0]`.
-fn trimmed(value: &Datum, strip: fn(&[u8]) -> Vec<u8>) -> Result<Datum, EvalError> {
+fn trimmed(value: &Datum, strip: fn(
+    &[u8],
+    tidb_query_datatype::codec::data_type::BytesWriter,
+) -> tidb_query_common::Result<tidb_query_datatype::codec::data_type::BytesGuard>) -> Result<Datum, EvalError> {
     let Some(bytes) = crate::arg_eval_type::eval_string(value)? else {
         return Ok(Datum::Null);
     };
-    let stripped = strip(&bytes);
+    let Some(stripped) = crate::string_fn::sdk_bytes(|writer| strip(&bytes, writer))? else {
+        return Ok(Datum::Null);
+    };
     Ok(if crate::string_signature::is_binary_str(value) {
         Datum::new_bytes_datum(stripped)
     } else {

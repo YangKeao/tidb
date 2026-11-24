@@ -1285,7 +1285,7 @@ impl ScalarFunction {
     }
 
     pub(crate) fn accepts_eager_values(&self) -> bool {
-        matches!(self.pb_builtin.kernel, Kernel::Values(_) | Kernel::Method(_))
+        matches!(self.pb_builtin.kernel, Kernel::RpnOnly | Kernel::Values(_) | Kernel::Method(_))
     }
 
     pub(crate) fn weight_string_input_required(&self) -> Option<bool> {
@@ -4583,6 +4583,7 @@ impl PreparedLocalBuiltin {
         }
         let function = &self.function;
         match function.pb_builtin.kernel {
+            Kernel::RpnOnly => function.finish_value(function.pb_builtin.eval_sdk_values(&values)?),
             Kernel::Values(kernel) => function.finish_value(kernel(&values, ctx)?),
             Kernel::Method(kernel) => function.finish_value(kernel(function, &values, ctx)?),
             _ => {

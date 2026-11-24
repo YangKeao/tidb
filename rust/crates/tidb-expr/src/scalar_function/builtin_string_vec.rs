@@ -13,8 +13,7 @@ pub(super) fn supported(function: &ScalarFunction) -> bool {
     use ScalarFuncSig::*;
     matches!(
         function.pb_code(),
-        Length
-            | CharLength
+        CharLength
             | CharLengthUtf8
             | Lower
             | LowerUtf8
@@ -26,11 +25,8 @@ pub(super) fn supported(function: &ScalarFunction) -> bool {
             | Substring3ArgsUtf8
             | ToBinary
             | FromBinary
-            | Ascii
-            | BitLength
             | Reverse
             | ReverseUtf8
-            | Replace
             | Strcmp
             | Elt
             | FieldInt
@@ -65,7 +61,6 @@ pub(super) fn supported(function: &ScalarFunction) -> bool {
             | Locate3ArgsUtf8
             | Instr
             | InstrUtf8
-            | UnHex
             | OctInt
             | OctString
             | ExportSet3Arg

@@ -45,7 +45,6 @@ pub(super) fn supported(sig: ScalarFuncSig) -> bool {
             | Tan
             | Pow
             | Pi
-            | Crc32
             | RoundInt
             | RoundReal
             | RoundDec
@@ -87,7 +86,7 @@ pub(super) fn eval(
     }
     let reuse = match sig {
         Pow => Some(1),
-        Sign | CeilIntToDec | CeilDecToInt | FloorIntToDec | FloorDecToInt | Pi | Conv | Crc32
+        Sign | CeilIntToDec | CeilDecToInt | FloorIntToDec | FloorDecToInt | Pi | Conv
         | Rand | RandWithSeedFirstGen => None,
         _ => Some(0),
     };

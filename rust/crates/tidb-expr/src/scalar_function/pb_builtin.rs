@@ -408,10 +408,6 @@ fn rpad_values(values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> 
     crate::string_packet::pad(values, false, ctx)
 }
 
-fn unhex_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::string_fn::unhex(values)
-}
-
 fn oct_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     crate::string_fn::oct(values)
 }
@@ -562,12 +558,10 @@ fn conv_bit_literal(
     }
 }
 
-fn crc32_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::crc32(values)
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Kernel {
+    /// A TiKV-owned computation. TiDB only adapts the typed SQL values.
+    RpnOnly,
     Binary(BinaryOp, EvalType),
     /// Go comparisons evaluate both typed operands before applying NULL semantics.
     Compare(BinaryOp, EvalType),
@@ -887,9 +881,7 @@ impl PbBuiltin {
             CoalesceJson => Kernel::Coalesce(EvalType::Json),
             // Go `builtinLengthSig`: the argument's byte length, whatever its
             // collation -- `CharLength`'s binary spelling.
-            Length => Kernel::Values(|values, _| {
-                crate::string_fn::eval_sdk_bytes_int(values, tidb_query_expr::impl_string::length)
-            }),
+            Length | Ascii | BitLength | Crc32 | Md5 | Sha1 | Sha2 | Replace | UnHex => Kernel::RpnOnly,
             CharLength => Kernel::String {
                 operation: StringOp::Length,
                 binary: true,
@@ -963,8 +955,8 @@ impl PbBuiltin {
             UuidVersion => Kernel::Values(|values, _| crate::builtin_ext::misc::uuid_version(&values[0])),
             SysDateWithoutFsp | SysDateWithFsp => Kernel::Method(sys_date_method),
             RandWithSeedFirstGen => Kernel::Row(rand_row),
-            Sha1 => Kernel::Values(|values, _| crate::builtin_ext::crypto::sha1_hash(&values[0])),
-            Sha2 => Kernel::Values(|values, _| crate::builtin_ext::crypto::sha2_hash(&values[0], &values[1])),
+
+
             UncompressedLength => Kernel::Values(|values, ctx| {
                 crate::builtin_ext::crypto::uncompressed_length(&values[0], ctx)
             }),
@@ -981,14 +973,9 @@ impl PbBuiltin {
             MakeDate => Kernel::Values(make_date_values),
             MakeTime => Kernel::Method(make_time_method),
             TimeToSec => Kernel::Values(|values, _| crate::time_fn::time_to_sec(values)),
-            Ascii => Kernel::Values(|values, _| {
-                crate::string_fn::eval_sdk_bytes_int(values, tidb_query_expr::impl_string::ascii)
-            }),
-            BitLength => Kernel::Values(|values, _| {
-                crate::string_fn::eval_sdk_bytes_int(values, tidb_query_expr::impl_string::bit_length)
-            }),
+
+
             Reverse | ReverseUtf8 => Kernel::Values(|values, _| crate::string_fn::reverse(values)),
-            Replace => Kernel::Values(|values, _| crate::string_fn::replace(values)),
             Strcmp => Kernel::Method(strcmp_method),
             Elt => Kernel::Values(|values, _| crate::string_fn::elt(values)),
             FieldInt | FieldReal | FieldString => Kernel::Method(field_method),
@@ -997,8 +984,8 @@ impl PbBuiltin {
             RTrim => Kernel::Values(rtrim_values),
             Right | RightUtf8 => Kernel::Values(right_values),
             Space => Kernel::Values(crate::string_packet::space),
-            Md5 => Kernel::Values(|values, _| crate::builtin_ext::crypto::md5_hash(&values[0])),
-            Crc32 => Kernel::Values(crc32_values),
+
+
             Concat => Kernel::Values(crate::string_fn::concat_with_context),
             ConcatWs => Kernel::Values(crate::string_fn::concat_ws_with_context),
             Acos => Kernel::Values(crate::math_fn::acos),
@@ -1210,7 +1197,6 @@ impl PbBuiltin {
             Locate2Args | Locate2ArgsUtf8 => Kernel::Method(locate_2_args_method),
             Locate3Args | Locate3ArgsUtf8 => Kernel::Method(locate_3_args_method),
             Instr | InstrUtf8 => Kernel::Method(instr_method),
-            UnHex => Kernel::Values(unhex_values),
             OctInt | OctString => Kernel::Values(oct_values),
             ExportSet3Arg | ExportSet4Arg | ExportSet5Arg => Kernel::Values(export_set_values),
             MakeSet => Kernel::Values(make_set_values),
@@ -1307,14 +1293,32 @@ impl PbBuiltin {
         matches!(self.kernel, Kernel::DateArithmetic { .. })
     }
 
+    pub(super) fn eval_sdk_values(self, values: &[Datum]) -> Result<Datum, EvalError> {
+        use crate::{builtin_ext::crypto, string_fn::eval_sdk_bytes_int};
+        use tidb_query_expr::impl_string as sdk;
+        match self.signature {
+            ScalarFuncSig::Length => eval_sdk_bytes_int(values, sdk::length),
+            ScalarFuncSig::Ascii => eval_sdk_bytes_int(values, sdk::ascii),
+            ScalarFuncSig::BitLength => eval_sdk_bytes_int(values, sdk::bit_length),
+            ScalarFuncSig::Crc32 => crate::math_fn::crc32(values),
+            ScalarFuncSig::Md5 => crypto::md5_hash(&values[0]),
+            ScalarFuncSig::Sha1 => crypto::sha1_hash(&values[0]),
+            ScalarFuncSig::Sha2 => crypto::sha2_hash(&values[0], &values[1]),
+            ScalarFuncSig::Replace => crate::string_fn::replace(values),
+            ScalarFuncSig::UnHex => crate::string_fn::unhex(values),
+            _ => unreachable!("RpnOnly signature has no SQL carrier adapter"),
+        }
+    }
+
     /// Go signature value operations shared by `eval*` and `vecEval*`.
     pub(super) fn eval_values(self, function: &ScalarFunction, mut values: Vec<Datum>, ctx: &dyn Columns) -> Result<Datum, EvalError> {
         let args = &function.args;
         let kernel = self.kernel;
-        if values.iter().any(Datum::is_null) && !matches!(kernel, Kernel::Json | Kernel::Values(_) | Kernel::Method(_)) {
+        if values.iter().any(Datum::is_null) && !matches!(kernel, Kernel::Json | Kernel::RpnOnly | Kernel::Values(_) | Kernel::Method(_)) {
             return Ok(Datum::Null);
         }
                 match kernel {
+                    Kernel::RpnOnly => self.eval_sdk_values(&values),
                     Kernel::Values(eval) => eval(&values, ctx),
                     Kernel::Method(eval) => eval(function, &values, ctx),
                     Kernel::RegexpFamily(name) => function.eval_regexp_family(name, &values, ctx),
@@ -1759,7 +1763,7 @@ impl PbBuiltin {
                     // The root tier's evaluators read a NULL argument
                     // themselves: Go `builtinConcatWSSig` skips a NULL member
                     // and `builtinWeekWithModeSig` reads a NULL mode as 0.
-                    if value.is_null() && !matches!(kernel, Kernel::Json | Kernel::Values(_) | Kernel::Method(_)) {
+                    if value.is_null() && !matches!(kernel, Kernel::Json | Kernel::RpnOnly | Kernel::Values(_) | Kernel::Method(_)) {
                         return Ok(Datum::Null);
                     }
                     values.push(value);
@@ -1930,7 +1934,7 @@ mod tests {
             .map(|(sig, domains)| (*sig, &domains[..]))
             .chain(rounding.iter().map(|(sig, domains)| (*sig, &domains[..])));
         for (sig, arg_types) in rows {
-            let Some(Kernel::Values(_)) = PbBuiltin::new(sig).map(|builtin| builtin.kernel) else {
+            let Some(Kernel::Values(_) | Kernel::RpnOnly) = PbBuiltin::new(sig).map(|builtin| builtin.kernel) else {
                 continue;
             };
             swept.insert(sig);

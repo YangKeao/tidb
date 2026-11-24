@@ -17,9 +17,6 @@ pub(super) fn supported(function: &ScalarFunction) -> bool {
             | AesEncryptIv
             | AesDecrypt
             | AesDecryptIv
-            | Md5
-            | Sha1
-            | Sha2
             | Compress
             | Uncompress
             | UncompressedLength
@@ -111,10 +108,9 @@ pub(super) fn eval(
     use ScalarFuncSig::*;
     let n = input.num_rows();
     let name = function.func_name.lowercase();
-    // Go's argument columns: RANDOM_BYTES reads an int length, SHA2 an int
-    // hash length; every other argument is a string.
-    let arg_type = |index: usize| match (name, function.pb_code(), index) {
-        ("random_bytes", _, 0) | (_, Sha2, 1) => EvalType::Int,
+    // RANDOM_BYTES reads an integer length. Other arguments are strings.
+    let arg_type = |index: usize| match (name, index) {
+        ("random_bytes", 0) => EvalType::Int,
         _ => EvalType::String,
     };
     let mut bufs = Vec::with_capacity(function.args.len());
@@ -150,9 +146,6 @@ pub(super) fn eval(
             continue;
         }
         let value = match function.pb_code() {
-            Md5 => crypto::md5_hash(&cell(0, i))?,
-            Sha1 => crypto::sha1_hash(&cell(0, i))?,
-            Sha2 => crypto::sha2_hash(&cell(0, i), &cell(1, i))?,
             Compress => crypto::compress(&cell(0, i))?,
             Uncompress => crypto::uncompress(&cell(0, i), ctx)?,
             Encode => crypto::sql_encode(&cell(0, i), &cell(1, i))?,

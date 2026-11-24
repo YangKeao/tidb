@@ -478,32 +478,18 @@ pub(crate) fn replace(vals: &[Datum]) -> Result<Datum, EvalError> {
     ) else {
         return Ok(Datum::Null);
     };
-    if from.is_empty() {
-        return Ok(string_result(value, s));
-    }
-    Ok(string_result(value, replace_bytes(&s, &from, &to)))
+    let replaced = sdk_bytes(|writer| tidb_query_expr::impl_string::replace(&s, &from, &to, writer))?;
+    Ok(replaced.map_or(Datum::Null, |bytes| string_result(value, bytes)))
 }
 
-/// Replaces non-overlapping byte occurrences, matching Go's
-/// `strings.ReplaceAll` over an arbitrary Go string.  Keeping this byte based
-/// means binary arguments never pass through a lossy UTF-8 decode.
-fn replace_bytes(value: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(value.len());
-    let mut cursor = 0;
-    while cursor <= value.len() {
-        let Some(relative) = value[cursor..]
-            .windows(from.len())
-            .position(|window| window == from)
-        else {
-            out.extend_from_slice(&value[cursor..]);
-            break;
-        };
-        let start = cursor + relative;
-        out.extend_from_slice(&value[cursor..start]);
-        out.extend_from_slice(to);
-        cursor = start + from.len();
-    }
-    out
+pub(super) fn sdk_bytes(
+    operation: impl FnOnce(
+        tidb_query_datatype::codec::data_type::BytesWriter,
+    ) -> tidb_query_common::Result<tidb_query_datatype::codec::data_type::BytesGuard>,
+) -> Result<Option<Vec<u8>>, EvalError> {
+    use tidb_query_datatype::codec::data_type::{ChunkedVec, ChunkedVecBytes};
+    let output = operation(ChunkedVecBytes::with_capacity(1).into_writer()).map_err(crate::rpn::query_error)?;
+    Ok(output.into_inner().get(0).map(<[u8]>::to_vec))
 }
 
 /// Preserve binary result semantics when the source string is binary; normal
@@ -672,21 +658,8 @@ pub(crate) fn unhex(vals: &[Datum]) -> Result<Datum, EvalError> {
     let Some(s) = coerce_str_bytes(&vals[0])? else {
         return Ok(Datum::Null);
     };
-    let mut digits = Vec::with_capacity(s.len() + s.len() % 2);
-    if s.len() % 2 != 0 {
-        digits.push(b'0');
-    }
-    digits.extend_from_slice(&s);
-    let mut bytes = Vec::with_capacity(digits.len() / 2);
-    for pair in digits.as_chunks::<2>().0 {
-        let hi = hex_nibble(pair[0]);
-        let lo = hex_nibble(pair[1]);
-        match (hi, lo) {
-            (Some(h), Some(l)) => bytes.push((h << 4) | l),
-            _ => return Ok(Datum::Null),
-        }
-    }
-    Ok(Datum::new_bytes_datum(bytes))
+    Ok(sdk_bytes(|writer| tidb_query_expr::impl_string::unhex(&s, writer))?
+        .map_or(Datum::Null, Datum::new_bytes_datum))
 }
 
 /// `BIN(n)`: the base-2 form of an implicitly-cast integer as an unsigned
@@ -713,8 +686,11 @@ pub(crate) fn bin(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, Eva
             );
         }
     }
-    Ok(radix_integer_bits(&vals[0])?
-        .map_or(Datum::Null, |bits| Datum::new_string_datum(format!("{bits:b}"))))
+    let Some(bits) = radix_integer_bits(&vals[0])? else {
+        return Ok(Datum::Null);
+    };
+    Ok(sdk_bytes(|writer| tidb_query_expr::impl_string::bin(&(bits as i64), writer))?
+        .map_or(Datum::Null, Datum::new_string_datum))
 }
 
 /// `OCT(n)`: the base-8 form of an integer as an unsigned 64-bit value.
@@ -745,16 +721,18 @@ pub(crate) fn bin(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, Eva
 /// `oct(e)` is `0` and `oct(s)` is `0` (the STRINGS parsed), while `oct(b)`
 /// is `3` and `oct(b'01000001')` is `101`.
 pub(crate) fn oct(vals: &[Datum]) -> Result<Datum, EvalError> {
-    match &vals[0] {
-        Datum::Null => Ok(Datum::Null),
-        Datum::Int(value) => Ok(Datum::new_string_datum(format!("{:o}", *value as u64))),
-        Datum::UInt(value) => Ok(Datum::new_string_datum(format!("{value:o}"))),
-        Datum::Bit(bits) | Datum::BinaryLiteral(bits) => {
-            Ok(Datum::new_string_datum(format!("{:o}", bits.to_int().value())))
-        }
-        value => Ok(oct_string_bits(value)?
-            .map_or(Datum::Null, |bits| Datum::new_string_datum(format!("{bits:o}")))),
-    }
+    let bits = match &vals[0] {
+        Datum::Null => None,
+        Datum::Int(value) => Some(*value as u64),
+        Datum::UInt(value) => Some(*value),
+        Datum::Bit(bits) | Datum::BinaryLiteral(bits) => Some(bits.to_int().value()),
+        value => oct_string_bits(value)?,
+    };
+    let Some(bits) = bits else {
+        return Ok(Datum::Null);
+    };
+    Ok(sdk_bytes(|writer| tidb_query_expr::impl_string::oct_int(&(bits as i64), writer))?
+        .map_or(Datum::Null, Datum::new_string_datum))
 }
 
 /// The `ETString` conversion inside Go's `builtinOctStringSig`.
@@ -825,14 +803,6 @@ fn trim_go_space(bytes: &[u8]) -> &[u8] {
     &bytes[start..end]
 }
 
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
 
 /// `BIN`'s argument path.  This mirrors
 /// `newBaseBuiltinFuncWithTp(..., ETInt)` in Go: a non-negative string is

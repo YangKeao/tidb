@@ -25,7 +25,8 @@ pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
     }
     matches!(
         function.pb_builtin.kernel,
-        Kernel::Binary(..)
+        Kernel::RpnOnly
+            | Kernel::Binary(..)
             | Kernel::IntegerMultiply { .. }
             | Kernel::IntegerMod { .. }
             | Kernel::Compare(..)
@@ -218,6 +219,11 @@ pub(crate) fn eval_into(
             }
         }
         Expression::ScalarFunction(function) if has_kernel(function) => {
+            if matches!(function.pb_builtin.kernel, Kernel::RpnOnly) {
+                return map_arguments(function, ctx, input, result, None, |values| {
+                    function.pb_builtin.eval_sdk_values(&values)
+                });
+            }
             if function.pb_code() == tidb_proto::tipb::ScalarFuncSig::DayName
                 && matches!(target, EvalType::Int | EvalType::Real)
             {

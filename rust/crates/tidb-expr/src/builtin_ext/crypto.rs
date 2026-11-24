@@ -31,7 +31,7 @@
 //!
 
 use flate2::{Decompress, FlushDecompress, Status};
-use sha1::{Digest, Sha1};
+use sha1::Sha1;
 use tidb_query_expr::impl_encryption as sdk;
 
 use crate::{BlockEncryptionMode, Columns, Datum, EvalError};
