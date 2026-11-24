@@ -1441,6 +1441,12 @@ fn small_ndv_out_of_range_index_reader_rows_match_go() {
     session
         .run("INSERT INTO issue_64137 SELECT a FROM (WITH RECURSIVE cte AS (SELECT 1 AS a, 1 AS num UNION ALL SELECT 1 AS a, num + 1 AS num FROM cte WHERE num < 10000) SELECT a FROM cte) AS source_rows")
         .unwrap();
+    // The embedded store may still be applying secondary writes when
+    // INSERT returns. Confirm the fixture rows are visible before sampling.
+    assert_eq!(
+        row_text(session.run("SELECT count(*) FROM issue_64137 IGNORE INDEX (idx_a)")),
+        [["10000"]],
+    );
     session.run("ANALYZE TABLE issue_64137").unwrap();
     session
         .run("INSERT INTO issue_64137 SELECT * FROM issue_64137 LIMIT 2000")
