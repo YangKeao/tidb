@@ -121,6 +121,32 @@ pub(crate) fn parse_date_ymd(s: &str) -> Option<(i64, u32, u32)> {
     Some((year, month, day))
 }
 
+/// The Go vector week signatures compute on partial dates with a zero component.
+pub(crate) fn week_vector_value(
+    signature: tidb_proto::tipb::ScalarFuncSig,
+    date: tidb_datatype::Time,
+    mode: i64,
+    ctx: &dyn crate::Columns,
+) -> Result<Datum, EvalError> {
+    use tidb_proto::tipb::ScalarFuncSig::*;
+    if date.is_zero() {
+        crate::expression_errors::handle_truncate(ctx, &format!("Incorrect datetime value: '{date}'"))?;
+        return Ok(Datum::Null);
+    }
+    let core = date.core_time();
+    Ok(Datum::Int(match signature {
+        WeekDay => (i64::from(core.weekday().sunday_index()) + 6) % 7,
+        WeekWithMode | WeekWithoutMode => i64::from(core.week(mode as u8)),
+        WeekOfYear => i64::from(core.week(3)),
+        YearWeekWithMode => {
+            let (year, week) = core.year_week(mode as u8);
+            let value = i64::from(week) + i64::from(year) * 100;
+            if value < 0 { i64::from(u32::MAX) } else { value }
+        }
+        _ => unreachable!("not a week kernel: {signature:?}"),
+    }))
+}
+
 /// The `(hour, minute, second)` extracted from a single-argument time-part
 /// function's argument (`HOUR`/`MINUTE`/`SECOND`): `NULL` if it doesn't
 /// coerce to a string or doesn't parse (see [`parse_hms_extended`]).

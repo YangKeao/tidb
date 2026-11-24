@@ -20,7 +20,7 @@ use tidb_query_expr::{
 use tipb::{Expr, ExprType, FieldType, ScalarFuncSig};
 
 use super::{
-    EXECUTION_SEED_DECLARATION, NATIVE_DIAGNOSTIC_TAG, NULL_HOST_TAG, REPEAT_DECLARATION, rows,
+    EXECUTION_SEED_DECLARATION, NATIVE_DIAGNOSTIC_TAG, NULL_HOST_TAG, PATH_FIRST_HOST_TAG, REPEAT_DECLARATION, rows,
 };
 
 pub(super) fn error(message: impl Into<String>) -> tidb_query_common::Error {
@@ -93,11 +93,11 @@ fn host_call(
     _: &mut EvalContext,
     count: usize,
     args: &[RpnStackNode<'_>],
-    extra: &mut RpnFnCallExtra<'_>,
+    _: &mut RpnFnCallExtra<'_>,
     metadata: &(dyn Any + Send),
 ) -> Result<VectorValue> {
     let slot = *metadata.downcast_ref::<usize>().expect("host call slot");
-    INPUT.with(|input| input.evaluate_host_call(slot, extra.ret_field_type, args, count))
+    INPUT.with(|input| input.evaluate_host_call(slot, args, count))
 }
 
 #[derive(Clone, Copy)]
@@ -503,8 +503,16 @@ fn compile(
                     sig,
                     fn_ptr: benchmark,
                 })
-            } else if tree.get_val().starts_with(EXECUTION_SEED_DECLARATION) {
-                let slot = index(&tree.get_val()[EXECUTION_SEED_DECLARATION.len()..])?;
+            } else if let Some(slot) = tree.get_val()
+                .strip_prefix(EXECUTION_SEED_DECLARATION)
+                .or_else(|| tree.get_val().strip_prefix(PATH_FIRST_HOST_TAG))
+            {
+                let fn_ptr = if tree.get_val().starts_with(PATH_FIRST_HOST_TAG) {
+                    json_paths_first
+                } else {
+                    seeded_rand
+                };
+                let slot = index(slot)?;
                 let literal = integer_root(slot as i64);
                 let mut args = tree
                     .take_children()
@@ -516,7 +524,7 @@ fn compile(
                 nodes.push(RpnExpressionNode::ShortCircuitFnCall {
                     func_meta: ShortCircuitFnMeta {
                         sig,
-                        fn_ptr: seeded_rand,
+                        fn_ptr,
                     },
                     args: args.into_boxed_slice(),
                     field_type: tree.take_field_type(),
@@ -1233,6 +1241,34 @@ fn seeded_rand(
             output.push_real(tidb_query_datatype::codec::data_type::Real::new(value).ok());
         }
         Ok(output)
+    })
+}
+
+fn json_paths_first(
+    ctx: &mut EvalContext,
+    schema: &[FieldType],
+    input: &LazyBatchColumnVec,
+    rows: &[usize],
+    count: usize,
+    args: &[RpnExpression],
+) -> Result<VectorValue> {
+    let (slot, args) = args.split_last().expect("JSON host call slot");
+    let slot = slot.eval_decoded(ctx, schema, input, rows, count)?;
+    let ScalarValueRef::Int(Some(slot)) = slot.get_logical_scalar_ref(0) else {
+        return Err(error("invalid JSON host call slot"));
+    };
+    INPUT.with(|host| {
+        let order: Vec<_> = if host.scalar_operand_demand() {
+            (0..args.len()).collect()
+        } else {
+            super::json_modify_operand_order(args.len()).collect()
+        };
+        let mut values: Vec<_> = std::iter::repeat_with(|| None).take(args.len()).collect();
+        for index in order {
+            values[index] = Some(args[index].eval_decoded(ctx, schema, input, rows, count)?);
+        }
+        let values: Vec<_> = values.into_iter().map(|value| value.expect("operand evaluated")).collect();
+        host.evaluate_host_call(*slot as usize, &values, count)
     })
 }
 

@@ -4555,6 +4555,11 @@ impl PreparedLocalBuiltin {
         self.function.func_name.lowercase()
     }
 
+    pub(crate) fn reads_json_paths_first(&self) -> bool {
+        use tidb_proto::tipb::ScalarFuncSig::{JsonInsertSig, JsonReplaceSig, JsonSetSig};
+        matches!(self.function.pb_code(), JsonInsertSig | JsonReplaceSig | JsonSetSig)
+    }
+
     pub(crate) fn new(function: &ScalarFunction) -> Self {
         let fields: Vec<_> = function.args.iter()
             .map(|arg| crate::wrap_cast::type_of(arg))

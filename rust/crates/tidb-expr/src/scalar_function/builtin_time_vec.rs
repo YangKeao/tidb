@@ -4,7 +4,6 @@
 
 use super::{vec_eval, ScalarFunction};
 mod date_arithmetic;
-mod week;
 use crate::{Columns, EvalError};
 use tidb_chunk::{chunk::Chunk, column::Column};
 use tidb_datatype::{Datum, EvalType};
@@ -119,9 +118,6 @@ pub(super) fn eval(
     if let super::Kernel::DateArithmetic { subtract } = function.pb_builtin.kernel {
         return date_arithmetic::eval(function, subtract, ctx, input, result);
     }
-    if week::supported(function) {
-        return week::eval(function, ctx, input, result);
-    }
     if matches!(sig, CurrentTime1Arg | UtcTimeWithArg) {
         return clock_duration(function, ctx, input, result);
     }
@@ -183,9 +179,6 @@ pub(super) fn eval(
         || matches!(function.func_name.lowercase(), "period_add" | "period_diff"))
     .then_some(0);
     vec_eval::map_arguments(function, ctx, input, result, reuse, |mut values| {
-        if sig == UtcTimestampWithArg && values[0].is_null() {
-            return Ok(Datum::Null);
-        }
         if sig == MakeTime {
             // Go `getVecIntParam`: REAL hours and minutes truncate to int64.
             for value in &mut values[..2] {

@@ -57,10 +57,9 @@ pub(super) fn eval(
         return object(function, ctx, input, result);
     }
     let order: Vec<_> = match function.pb_code() {
-        JsonSetSig | JsonInsertSig | JsonReplaceSig => std::iter::once(0)
-            .chain((1..function.args.len()).step_by(2))
-            .chain((2..function.args.len()).step_by(2))
-            .collect(),
+        JsonSetSig | JsonInsertSig | JsonReplaceSig => {
+            crate::rpn::json_modify_operand_order(function.args.len()).collect()
+        }
         _ => (0..function.args.len()).collect(),
     };
     vec_eval::map_arguments_in_order(function, ctx, input, result, None, &order, |values| {

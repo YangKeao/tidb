@@ -1315,6 +1315,37 @@ impl PbBuiltin {
             if matches!(self.signature, StrToDateDate | StrToDateDatetime | StrToDateDuration) {
                 return str_to_date_of(function, &values, false, ctx);
             }
+            if self.signature == UtcTimestampWithArg && values.first().is_some_and(Datum::is_null) {
+                return Ok(Datum::Null);
+            }
+            if matches!(self.signature, WeekDay | WeekWithMode | WeekWithoutMode | YearWeekWithMode | WeekOfYear) {
+                if let [Datum::Time(date), args @ ..] = values.as_slice() {
+                    let mode = match args.first() {
+                        Some(mode) => crate::arg_eval_type::eval_int(mode)?.unwrap_or(0),
+                        None => ctx.default_week_format(),
+                    };
+                    return crate::time_fn::calendar::week_vector_value(self.signature, *date, mode, ctx);
+                }
+            }
+            if matches!(self.signature, GreatestString | LeastString) {
+                if values.iter().any(Datum::is_null) {
+                    return Ok(Datum::Null);
+                }
+                let collator = tidb_datatype::get_collator(function.derived_collation().name());
+                let want = if self.signature == GreatestString {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                };
+                let mut best: Option<Vec<u8>> = None;
+                for value in values {
+                    let candidate = crate::coerce::coerce_str_bytes(&value)?.expect("non-NULL string");
+                    if best.as_ref().is_none_or(|current| collator.compare(current, &candidate) != want) {
+                        best = Some(candidate);
+                    }
+                }
+                return Ok(best.map_or(Datum::Null, Datum::new_string_datum));
+            }
             if self.signature == Repeat {
                 let flen = function.get_static_type().expect("REPEAT type").flen();
                 return crate::string_packet::repeat_in_mode(&values, Some(flen), ctx);

@@ -983,6 +983,7 @@ fn engine_error(message: String) -> EvalError {
 /// Native operations whose state belongs to the SQL session. Arguments
 /// are already evaluated by the caller's RPN program.
 struct HostCall {
+    output: tipb::FieldType,
     arguments: Vec<FieldType>,
     operation: HostOperation,
 }
@@ -1019,6 +1020,8 @@ impl HostOperation {
                         | "regexp"
                         | "regexp_like"
                         | "json_set"
+            | "json_insert"
+            | "json_replace"
                         | "json_merge"
                         | "greatest"
                         | "least"
@@ -1107,6 +1110,7 @@ fn compile(
 // signatures have no wire metadata. The wire compiler never interprets this tag.
 const NATIVE_DIAGNOSTIC_TAG: &[u8] = b"source";
 const NULL_HOST_TAG: &[u8] = b"null";
+const PATH_FIRST_HOST_TAG: &[u8] = b"paths";
 const REPEAT_DECLARATION: &[u8] = b"repeat";
 const EXECUTION_SEED_DECLARATION: &[u8] = b"seed";
 
@@ -1247,9 +1251,14 @@ fn lower_declared(
         // Read the member in its source charset before obtaining its bytes.
         return None;
     }
-    if matches!(name, "greatest" | "least") && result_type.eval_type() == NativeEvalType::String {
-        // SQL's scalar and vector string comparisons pick different values
-        // when two strings compare equal under the collation.
+    let string_extremum = matches!(
+        function.pb_code(),
+        tidb_proto::tipb::ScalarFuncSig::GreatestString | tidb_proto::tipb::ScalarFuncSig::LeastString
+    );
+    if matches!(name, "greatest" | "least")
+        && result_type.eval_type() == NativeEvalType::String
+        && !string_extremum
+    {
         return None;
     }
     if name == "values" && result_type.is_hybrid() {
@@ -1796,7 +1805,7 @@ fn lower_declared(
         }
     }
     let execution_seed = seed_source.is_some();
-    let local_kernel = typed_add_sub || needs_sql_value_kernel(name)
+    let local_kernel = typed_add_sub || string_extremum || needs_sql_value_kernel(name)
         || (name == "minus"
             && native_call
             && environment.host.no_unsigned_subtraction()
@@ -2047,6 +2056,7 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_contains"
             | "json_type"
             | "json_pretty"
+            | "json_storage_free"
             | "json_quote"
             | "json_unquote"
             | "json_object"
@@ -2054,6 +2064,9 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_merge"
             | "day"
             | "dayofmonth"
+            | "weekday"
+            | "weekofyear"
+            | "utc_timestamp"
             | "week"
             | "year"
             | "yearweek"
@@ -2068,6 +2081,10 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_array_append"
             | "find_in_set"
     )
+}
+
+pub(crate) fn json_modify_operand_order(argc: usize) -> impl Iterator<Item = usize> {
+    std::iter::once(0).chain((1..argc).step_by(2)).chain((2..argc).step_by(2))
 }
 
 fn bind_host_operand(
@@ -2092,15 +2109,16 @@ fn bind_host_call(
 ) -> Option<QueryExpr> {
     let slot = u64::try_from(host_calls.len()).ok()?;
     host_calls.push(HostCall {
+        output: call.get_field_type().clone(),
         arguments,
         operation,
     });
     call.set_sig(ScalarFuncSig::Unspecified);
     let mut metadata = Vec::new();
-    if host_calls[slot as usize]
-        .operation
-        .propagates_null_before_next_operand()
-    {
+    let operation = &host_calls[slot as usize].operation;
+    if matches!(operation, HostOperation::LocalBuiltin(function) if function.reads_json_paths_first()) {
+        metadata.extend_from_slice(PATH_FIRST_HOST_TAG);
+    } else if operation.propagates_null_before_next_operand() {
         metadata.extend_from_slice(NULL_HOST_TAG);
     }
     metadata.extend_from_slice(&slot.to_le_bytes());

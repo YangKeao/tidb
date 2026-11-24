@@ -75,7 +75,9 @@ pub(super) fn extremum(
         ) {
             return string_as_time(function, greatest, ctx, input, result);
         }
-        return string(function, greatest, ctx, input, result);
+        return vec_eval::map_arguments(function, ctx, input, result, None, |values| {
+            function.pb_builtin.eval_values_in(function, values, true, ctx)
+        });
     }
     let allocate = matches!(
         domain,
@@ -118,53 +120,6 @@ pub(super) fn extremum(
                 function.extremum_of(greatest, &[value], function.derived_collation(), ctx)?;
             vec_eval::put(result, i, domain, &value)?;
         }
-    }
-    Ok(())
-}
-
-/// Go `builtin{Greatest,Least}StringSig.vecEvalString` ping-pong result buffers.
-fn string(
-    function: &ScalarFunction,
-    greatest: bool,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    result: &mut Column,
-) -> Result<(), EvalError> {
-    vec_eval::eval_into(&function.args[0], EvalType::String, ctx, input, result)?;
-    let mut source = std::mem::take(result);
-    let mut destination = Column::default();
-    let mut argument = Column::default();
-    destination.reserve_string(input.num_rows());
-    let collator = tidb_datatype::get_collator(function.derived_collation().name());
-    let want = if greatest {
-        std::cmp::Ordering::Greater
-    } else {
-        std::cmp::Ordering::Less
-    };
-    for expr in &function.args[1..] {
-        vec_eval::eval_into(expr, EvalType::String, ctx, input, &mut argument)?;
-        for i in 0..input.num_rows() {
-            if source.is_null(i) || argument.is_null(i) {
-                destination.append_null();
-                continue;
-            }
-            let left = source.get_bytes(i);
-            let right = argument.get_bytes(i);
-            destination.append_bytes(if collator.compare(&left, &right) == want {
-                &left
-            } else {
-                &right
-            });
-        }
-        std::mem::swap(&mut source, &mut destination);
-        argument.reserve_string(input.num_rows());
-        destination.reserve_string(input.num_rows());
-    }
-    if function.args.len() % 2 == 0 {
-        source.copy_construct_to(&mut destination);
-        *result = destination;
-    } else {
-        *result = source;
     }
     Ok(())
 }

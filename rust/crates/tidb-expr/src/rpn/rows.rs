@@ -165,7 +165,6 @@ impl NativeRows<'_> {
     pub(super) fn evaluate_host_call(
         &self,
         slot: usize,
-        field: &QueryFieldType,
         args: &[RpnStackNode<'_>],
         rows: usize,
     ) -> Result<VectorValue> {
@@ -173,7 +172,7 @@ impl NativeRows<'_> {
             .host_calls
             .get(slot)
             .ok_or_else(|| error("unknown native call slot"))?;
-        let mut output = output_vector(field, rows)?;
+        let mut output = output_vector(&call.output, rows)?;
         for row in 0..rows {
             let value = match (&call.operation, args, call.arguments.as_slice()) {
                 (HostOperation::BenchmarkCount { body_error }, [value], [field]) => {
