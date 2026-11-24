@@ -1212,13 +1212,14 @@ fn lower_declared(
     let name = binding::local_name(function);
     let result_type = expression.static_type()?;
     if function.is_cast()
-        && (result_type.code() == FieldTypeCode::Timestamp
+        && (function.cast_in_union()
+            || result_type.code() == FieldTypeCode::Timestamp
             || function.args.first().and_then(Expression::static_type).is_some_and(|source| {
                 source.is_hybrid() || source.eval_type() == NativeEvalType::VectorFloat32
             }))
     {
-        // The declared SQL cast owns temporal assignment, source charset and
-        // numeric diagnostics for BIT, ENUM, SET and VECTOR operands.
+        // Preserve UNION's coercion and column materialization, temporal
+        // assignment, and the SQL conversion of BIT, ENUM, SET and VECTOR.
         return None;
     }
     if name == "intdiv" && function.numeric_operand_domain() != Some(NativeEvalType::Int) {
