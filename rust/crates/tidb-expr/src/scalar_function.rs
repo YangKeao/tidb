@@ -1260,8 +1260,9 @@ impl ScalarFunction {
     }
 
     fn can_use_shared_row_program(&self) -> bool {
-        use tidb_proto::tipb::ScalarFuncSig::{Concat, ConcatWs, JsonInsertSig, JsonReplaceSig, JsonSetSig};
-        if matches!(self.pb_code(), Concat | ConcatWs | JsonInsertSig | JsonReplaceSig | JsonSetSig)
+        use tidb_proto::tipb::ScalarFuncSig::{Concat, ConcatWs};
+        if matches!(self.pb_code(), Concat | ConcatWs)
+            || matches!(self.pb_builtin.kernel, Kernel::Json)
             || self.func_name.lowercase() == "json_schema_valid"
             || (self.func_name.lowercase() == "rand" && self.args.is_empty())
         {

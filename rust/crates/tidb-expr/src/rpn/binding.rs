@@ -101,7 +101,6 @@ pub(super) fn preserves_direct_row_contract(function: &ScalarFunction) -> bool {
         name,
         // Native row parsing/overflow errors and the statement clock.
         "inet_aton" | "inet6_aton" | "intdiv" | "addtime" | "subtime" | "date_add" | "date_sub"
-        | "json_insert" | "json_replace"
         | "unaryminus"
     )
 }

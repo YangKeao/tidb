@@ -2167,7 +2167,11 @@ fn local_typed_kernel(function: &ScalarFunction) -> bool {
                     | NativeEvalType::Real
             )
         )
-    ) || function.pb_code() == tidb_proto::tipb::ScalarFuncSig::OctString
+    ) || matches!(
+        function.pb_code(),
+        tidb_proto::tipb::ScalarFuncSig::OctString
+            | tidb_proto::tipb::ScalarFuncSig::JsonValidStringSig
+    )
         || (name == "strcmp" && uses_native_comparison_collation(collation))
         || (matches!(name, "greatest" | "least")
             && (function.get_static_type().is_some_and(|field| {
@@ -2225,6 +2229,7 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "convert_tz"
             | "json_extract"
             | "json_length"
+            | "json_keys"
             | "json_remove"
             | "json_contains"
             | "json_contains_path"
