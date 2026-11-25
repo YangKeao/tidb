@@ -91,11 +91,8 @@ pub(crate) fn space(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, E
         crate::expression_errors::handle_allowed_packet_overflowed(ctx, "space")?;
         return Ok(Datum::Null);
     }
-    const MAX_BLOB_WIDTH: i64 = 16_777_216; // pkg/parser/mysql.MaxBlobWidth
-    if width > MAX_BLOB_WIDTH {
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::new_string_datum(" ".repeat(width as usize)))
+    crate::string_fn::sdk_bytes(|writer| tidb_query_expr::impl_string::space(&width, writer))
+        .map(|value| value.map_or(Datum::Null, Datum::new_string_datum))
 }
 /// `LPAD(str, len, pad)` / `RPAD(str, len, pad)`: pad (or truncate) `str` to
 /// `len` characters using `pad` on the left/right. Ported from
@@ -312,20 +309,8 @@ pub(crate) fn to_base64(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datu
         crate::expression_errors::handle_allowed_packet_overflowed(ctx, "to_base64")?;
         return Ok(Datum::Null);
     }
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-
-    let encoded = STANDARD.encode(&bytes);
-    if encoded.len() <= 76 {
-        return Ok(Datum::new_string_datum(encoded));
-    }
-    let mut wrapped = Vec::with_capacity(needed as usize);
-    for line in encoded.as_bytes().chunks(76) {
-        if !wrapped.is_empty() {
-            wrapped.push(b'\n');
-        }
-        wrapped.extend_from_slice(line);
-    }
-    Ok(Datum::new_string_datum(wrapped))
+    crate::string_fn::sdk_bytes(|writer| tidb_query_expr::impl_string::to_base64(&bytes, writer))
+        .map(|value| value.map_or(Datum::Null, Datum::new_string_datum))
 }
 #[cfg(test)]
 mod space_tests {

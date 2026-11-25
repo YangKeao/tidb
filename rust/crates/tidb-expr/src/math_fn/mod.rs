@@ -296,23 +296,6 @@ pub(crate) fn round_or_truncate_with_result_decimal(
     if vals.contains(&Datum::Null) {
         return Ok(Datum::Null);
     }
-    // The integer TRUNCATE signatures inspect the scale FieldType before
-    // evaluating its value.  An unsigned scale is therefore always
-    // non-negative, even when its u64 bit pattern would become negative if
-    // narrowed to i64 (for example CAST(18446744073709551615 AS UNSIGNED));
-    // Go returns the integer input unchanged in that case.  Keep this type
-    // boundary explicit instead of letting the value-only scale cast invent
-    // a signed negative precision.
-    let unsigned_integer_scale = !round && matches!(vals.get(1), Some(Datum::UInt(_)));
-    // `builtinRoundIntSig.evalInt` is literally `return b.args[0].EvalInt(...)`:
-    // the ONE-argument integer ROUND is the identity, not a round trip through
-    // `f64`. The two-argument form is a different signature
-    // (`builtinRoundWithFracIntSig`) that really does go through `f64`, so the
-    // distinction is a signature boundary rather than an optimization.
-    // It is observable past `f64`'s 53-bit exact range: CAPTURED from TiDB,
-    // `ROUND(9223372036854775806)` is `9223372036854775806` while
-    // `ROUND(9223372036854775806, 0)` is `9223372036854775807`.
-    let int_round_is_identity = round && vals.len() == 1;
     let (v, d) = match vals {
         [v] if round => (v, 0i64),
         // The scale is Go's `types.ETInt` argument, cast by
@@ -323,41 +306,10 @@ pub(crate) fn round_or_truncate_with_result_decimal(
         _ => return Err(EvalError::Unsupported("bad function arity")),
     };
     Ok(match v {
-        Datum::Int(i) => {
-            if unsigned_integer_scale || int_round_is_identity {
-                Datum::Int(*i)
-            } else {
-                Datum::Int(if round {
-                    go_round_float(*i as f64, d) as i64
-                } else {
-                    go_truncate_int(*i, d)
-                })
-            }
-        }
-        Datum::UInt(i) => {
-            if unsigned_integer_scale || int_round_is_identity {
-                Datum::UInt(*i)
-            } else {
-                Datum::UInt(if round {
-                    // `builtinRoundWithFracIntSig` reads the argument through
-                    // `EvalInt` -- the SAME 64 bits, read as `int64` -- and
-                    // only the result FieldType carries UNSIGNED. Reading the
-                    // u64 as a magnitude instead diverges past `i64::MAX`:
-                    // CAPTURED from TiDB,
-                    // `ROUND(CAST(18446744073709551610 AS UNSIGNED), -1)` is
-                    // `18446744073709551606`, which is `-6` rounded to `-10`
-                    // and re-read unsigned, not `...610` rounded up.
-                    go_round_float(*i as i64 as f64, d) as i64 as u64
-                } else {
-                    // `builtinTruncateUintSig` operates on the original
-                    // uint64, not through `EvalReal`/f64.  The distinction is
-                    // observable at the u64 boundary: converting
-                    // 18446744073709551615 to f64 first loses enough low
-                    // digits to change the exact -10 result.
-                    go_truncate_uint(*i, d)
-                })
-            }
-        }
+        Datum::Int(i) => Datum::Int(go_round_float(*i as f64, d) as i64),
+        // ROUND's two-argument integer signature reads the unsigned bits
+        // as an i64 before rounding, then interprets the result as unsigned.
+        Datum::UInt(i) => Datum::UInt(go_round_float(*i as i64 as f64, d) as i64 as u64),
         Datum::Decimal(dec) => {
             // MySQL clamps a positive scale to DECIMAL's max (30); a
             // negative scale is used as-is (confirmed via `goeval`:
@@ -475,48 +427,6 @@ fn go_truncate_float(f: f64, dec: i64) -> f64 {
         return if f.is_nan() { f } else { 0.0 };
     }
     tmp.trunc() / shift
-}
-
-/// `TRUNCATE(int, d)` ported from Go's `builtinTruncateIntSig`: a
-/// non-negative `d` is a no-op (an integer has nothing past the decimal
-/// point to truncate away); a negative `d` zeroes out the low `-d` decimal
-/// digits via truncating integer division — exact integer arithmetic, no
-/// `f64` round-trip (unlike `ROUND`). A `-d` past `i64`'s own range of exact
-/// powers of ten (`> 18`) falls back to `0`, matching what real MySQL's
-/// float-round-tripped `shift` would produce for any in-range value at that
-/// magnitude anyway, without replicating Go's own undefined float-to-int
-/// overflow behavior at that boundary.
-fn go_truncate_int(val: i64, dec: i64) -> i64 {
-    if dec >= 0 {
-        return val;
-    }
-    let shift = dec
-        .checked_neg()
-        .and_then(|n| u32::try_from(n).ok())
-        .and_then(|n| 10i64.checked_pow(n));
-    match shift {
-        Some(shift) => val / shift * shift,
-        None => 0,
-    }
-}
-
-/// `builtinTruncateUintSig`'s exact unsigned integer path.  As with the Go
-/// signature, a non-negative scale is a no-op and a negative scale divides by
-/// an integer power of ten before multiplying it back.  Powers that do not
-/// fit in `u64` produce zero for every in-range input, matching the quotient
-/// boundary without routing through lossy floating-point conversion.
-fn go_truncate_uint(val: u64, dec: i64) -> u64 {
-    if dec >= 0 {
-        return val;
-    }
-    let shift = dec
-        .checked_neg()
-        .and_then(|n| u32::try_from(n).ok())
-        .and_then(|n| 10u64.checked_pow(n));
-    match shift {
-        Some(shift) => val / shift * shift,
-        None => 0,
-    }
 }
 
 #[cfg(test)]

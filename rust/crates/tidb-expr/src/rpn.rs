@@ -2164,12 +2164,14 @@ fn local_typed_kernel(function: &ScalarFunction) -> bool {
         .and_then(Expression::static_type)
         .map(FieldType::eval_type);
     let collation = function.derived_collation();
+    use tidb_proto::tipb::ScalarFuncSig::*;
     matches!(
+        function.pb_code(),
+        RoundDec | RoundWithFracInt | RoundWithFracDec | RoundWithFracReal
+            | TruncateDecimal | TruncateReal
+    ) || matches!(
         (name, source),
         (
-            "round" | "truncate",
-            Some(NativeEvalType::Decimal | NativeEvalType::Int | NativeEvalType::Real)
-        ) | (
             "hour" | "minute" | "second" | "microsecond",
             Some(
                 NativeEvalType::String

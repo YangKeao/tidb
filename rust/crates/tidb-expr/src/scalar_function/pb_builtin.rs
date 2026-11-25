@@ -901,7 +901,9 @@ impl PbBuiltin {
             Pow => Kernel::RpnOnly(None, &[EvalType::Real; 2]),
             Pi => Kernel::RpnOnly(None, &[]),
             Conv => Kernel::Conv,
-            RoundInt | RoundReal | RoundDec => Kernel::Round,
+            RoundInt => Kernel::RpnOnly(None, &[EvalType::Int]),
+            RoundReal => Kernel::RpnOnly(None, &[EvalType::Real]),
+            RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),
             DateDiff => Kernel::RpnOnly(None, &[EvalType::Datetime; 2]),
             DateFormatSig => Kernel::RpnOnly(None, &[EvalType::Datetime, EvalType::String]),
@@ -1095,9 +1097,8 @@ impl PbBuiltin {
             // builtin_math.go
             Rand => Kernel::Row(rand_const_row),
             RoundWithFracInt | RoundWithFracReal | RoundWithFracDec => Kernel::Round,
-            TruncateInt | TruncateUint | TruncateReal | TruncateDecimal => {
-                Kernel::Method(truncate_method)
-            }
+            TruncateInt | TruncateUint => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            TruncateReal | TruncateDecimal => Kernel::Method(truncate_method),
             // builtin_json.go
             JsonMergePreserveSig | JsonArrayInsertSig | JsonContainsPathSig
             | JsonKeysSig | JsonKeys2ArgsSig | JsonPrettySig | JsonSearchSig
