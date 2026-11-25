@@ -1571,46 +1571,6 @@ fn lower_declared(
             host_calls,
         );
     }
-    let convert_using_metadata = name == "convert_using"
-        && (|| {
-            let [_, Expression::Constant(target)] = function.args.as_slice() else {
-                return false;
-            };
-            target.literal_value().is_some_and(|value| {
-                value
-                    .sql_string()
-                    .is_ok_and(|name| name.eq_ignore_ascii_case(result_type.charset_name()))
-            })
-        })();
-    let char_using_metadata = name == "char_func"
-        && (|| {
-            let [numbers @ .., Expression::Constant(charset)] = function.args.as_slice() else {
-                return false;
-            };
-            if numbers.is_empty()
-                || !tidb_charset::is_supported_encoding(result_type.charset_name())
-            {
-                return false;
-            }
-            let Some(charset) = charset.literal_value() else {
-                return false;
-            };
-            (charset.is_null()
-                || charset
-                    .sql_string()
-                    .is_ok_and(|name| name.eq_ignore_ascii_case(result_type.charset_name())))
-                && numbers.iter().all(|arg| {
-                    arg.static_type().is_some_and(|field| {
-                        matches!(
-                            field.eval_type(),
-                            NativeEvalType::Int
-                                | NativeEvalType::Real
-                                | NativeEvalType::Decimal
-                                | NativeEvalType::String
-                        )
-                    })
-                })
-        })();
     let aes = matches!(name, "aes_encrypt" | "aes_decrypt");
     let operand_count = if let Some((_, arity)) = lock {
         if function.args.len() == arity {
@@ -1618,8 +1578,6 @@ fn lower_declared(
         } else {
             0
         }
-    } else if (char_using_metadata || convert_using_metadata) && !needs_sql_value_kernel(name) {
-        function.args.len() - 1
     } else if aes {
         crate::builtin_ext::crypto::aes_operand_count(
             environment.host.block_encryption_mode(),
