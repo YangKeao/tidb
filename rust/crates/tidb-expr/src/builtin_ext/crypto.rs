@@ -53,7 +53,7 @@ pub(crate) fn dispatch(
         ("DECODE", 2) => Some(sql_decode(&vals[0], &vals[1])),
         ("COMPRESS", 1) => Some(compress(&vals[0])),
         ("UNCOMPRESS", 1) => Some(uncompress(&vals[0], ctx)),
-        ("UNCOMPRESSED_LENGTH", 1) => Some(uncompressed_length(&vals[0], ctx)),
+        ("UNCOMPRESSED_LENGTH", 1) => crate::tests::eval_builtin_func(name, vals, ctx),
         _ => None,
     }
 }
@@ -189,28 +189,6 @@ pub(crate) fn uncompress(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalEr
         return Ok(Datum::Null);
     }
     Ok(Datum::new_string_datum(bytes))
-}
-
-/// `UNCOMPRESSED_LENGTH(payload)`. Port of
-/// `builtinUncompressedLengthSig.evalInt`: returns the 4-byte little-endian
-/// prefix as the original length. NULL yields NULL; empty or too-short/corrupted
-/// input yields 0.
-pub(crate) fn uncompressed_length(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let Some(payload) = sql_string_bytes(arg)? else {
-        return Ok(Datum::Null);
-    };
-    if payload.is_empty() {
-        return Ok(Datum::Int(0));
-    }
-    if payload.len() <= 4 {
-        ctx.append_go_warning(
-            &crate::expression_errors::ERR_ZLIB_Z_DATA,
-            "ZLIB: Input data corrupted",
-        );
-        return Ok(Datum::Int(0));
-    }
-    let length = u32::from_le_bytes(payload[0..4].try_into().unwrap());
-    Ok(Datum::Int(i64::from(length)))
 }
 
 const AES_BLOCK_SIZE: usize = 16;

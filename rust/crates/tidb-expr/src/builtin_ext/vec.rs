@@ -36,37 +36,6 @@ fn vector(value: &Datum) -> Result<Option<VectorFloat32>, EvalError> {
     }
 }
 
-pub(crate) fn distance(
-    left: &Datum,
-    right: &Datum,
-    operation: impl FnOnce(&VectorFloat32, &VectorFloat32) -> Result<f64, tidb_datatype::VectorError>,
-) -> Result<Datum, EvalError> {
-    let Some(left) = vector(left)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(right) = vector(right)? else {
-        return Ok(Datum::Null);
-    };
-    let result = operation(&left, &right).map_err(|error| EvalError::Vector(error.to_string()))?;
-    Ok(if result.is_nan() {
-        Datum::Null
-    } else {
-        Datum::Real(result)
-    })
-}
-
-pub(crate) fn l2_norm(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = vector(value)? else {
-        return Ok(Datum::Null);
-    };
-    let norm = value.l2_norm();
-    Ok(if norm.is_nan() {
-        Datum::Null
-    } else {
-        Datum::Real(norm)
-    })
-}
-
 pub(crate) fn from_text(value: &Datum) -> Result<Datum, EvalError> {
     let Some(bytes) = crate::arg_eval_type::eval_string(value)? else {
         return Ok(Datum::Null);

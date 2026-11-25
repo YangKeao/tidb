@@ -20,7 +20,9 @@ use tidb_exprctx::context::{Columns, EvalError};
 use crate::expression::{ConstLevel, Expression};
 use tidb_ast::BinaryOp;
 use tidb_chunk::row::Row;
-use tidb_datatype::{Datum, EvalType, FieldType, VectorFloat32};
+use tidb_datatype::{Datum, EvalType, FieldType};
+#[cfg(test)]
+use tidb_datatype::VectorFloat32;
 use tidb_proto::tipb::ScalarFuncSig;
 
 pub(crate) type ValuesKernel = fn(&[Datum], &dyn Columns) -> Result<Datum, EvalError>;
@@ -850,20 +852,11 @@ impl PbBuiltin {
             FloorDecToInt => Kernel::RpnOnly(None, &[EvalType::Decimal]),
             FloorDecToDec => Kernel::RpnOnly(None, &[EvalType::Decimal]),
             VecDimsSig => Kernel::RpnOnly(Some(tidb_query_expr::impl_vec::vec_dims_fn_meta), &[EvalType::VectorFloat32]),
-            VecL2NormSig => Kernel::Values(|values, _| crate::builtin_ext::vec::l2_norm(&values[0])),
+            VecL2NormSig => Kernel::RpnOnly(None, &[EvalType::VectorFloat32]),
             VecAsTextSig => Kernel::Values(|values, _| crate::builtin_ext::vec::as_text(&values[0])),
-            VecL1DistanceSig => Kernel::Values(|values, _| {
-                crate::builtin_ext::vec::distance(&values[0], &values[1], VectorFloat32::l1_distance)
-            }),
-            VecL2DistanceSig => Kernel::Values(|values, _| {
-                crate::builtin_ext::vec::distance(&values[0], &values[1], VectorFloat32::l2_distance)
-            }),
-            VecNegativeInnerProductSig => Kernel::Values(|values, _| {
-                crate::builtin_ext::vec::distance(&values[0], &values[1], VectorFloat32::negative_inner_product)
-            }),
-            VecCosineDistanceSig => Kernel::Values(|values, _| {
-                crate::builtin_ext::vec::distance(&values[0], &values[1], VectorFloat32::cosine_distance)
-            }),
+            VecL1DistanceSig | VecL2DistanceSig | VecNegativeInnerProductSig | VecCosineDistanceSig => {
+                Kernel::RpnOnly(None, &[EvalType::VectorFloat32; 2])
+            }
             Uuid => Kernel::Values(|_, _| crate::builtin_ext::misc::uuid_v1()),
             UuidTimestamp => Kernel::Values(|values, _| crate::builtin_ext::misc::uuid_timestamp(&values[0])),
             UuidVersion => Kernel::Values(|values, _| crate::builtin_ext::misc::uuid_version(&values[0])),
@@ -871,9 +864,7 @@ impl PbBuiltin {
             RandWithSeedFirstGen => Kernel::Row(rand_row),
 
 
-            UncompressedLength => Kernel::Values(|values, ctx| {
-                crate::builtin_ext::crypto::uncompressed_length(&values[0], ctx)
-            }),
+            UncompressedLength => Kernel::RpnOnly(None, &[EvalType::String]),
             JsonTypeSig | JsonUnquoteSig | JsonLengthSig | JsonObjectSig | JsonArraySig
             | JsonMergeSig | JsonSetSig | JsonInsertSig | JsonRemoveSig | JsonContainsSig
             | JsonValidJsonSig | JsonValidStringSig | JsonValidOthersSig => Kernel::Json,

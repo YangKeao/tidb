@@ -917,6 +917,19 @@ pub(crate) fn evaluate_required_kernel(
     if !reads_null && values.iter().any(Datum::is_null) {
         return Ok(Datum::Null);
     }
+    match (signature, values.as_slice()) {
+        (
+            VecL1DistanceSig | VecL2DistanceSig | VecNegativeInnerProductSig | VecCosineDistanceSig,
+            [Datum::VectorFloat32(left), Datum::VectorFloat32(right)],
+        ) if left.len() != right.len() => {
+            return Err(EvalError::Vector(format!(
+                "vectors have different dimensions: {} and {}",
+                left.len(),
+                right.len(),
+            )));
+        }
+        _ => {}
+    }
     if values.iter().any(|value| matches!(value,
         Datum::Real(value) | Datum::Float32(value) if value.is_nan()))
     {
