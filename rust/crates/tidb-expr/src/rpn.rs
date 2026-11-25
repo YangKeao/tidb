@@ -1371,6 +1371,7 @@ fn lower_declared(
     if function.is_cast()
         && ((function.cast_in_union() && !string_decimal_union)
             || result_type.code() == FieldTypeCode::Timestamp
+            || result_type.is_hybrid()
             || function.args.first().and_then(Expression::static_type).is_some_and(|source| {
                 (source.is_hybrid()
                     && !(environment.mode == LoweringMode::TypedBatch
@@ -2779,6 +2780,27 @@ mod tests {
             let value = program.evaluate_row(&crate::NoColumns, input.get_row(index)).unwrap();
             assert_eq!(value.sql_string().unwrap(), want);
         }
+    }
+
+    #[test]
+    fn assignment_cast_folds_before_materializing_the_enum_column() {
+        let source = FieldType::new(FieldTypeCode::VarString)
+            .with_charset_name("utf8mb4")
+            .with_collation_name("utf8mb4_bin");
+        let target = FieldType::new(FieldTypeCode::Enum)
+            .with_charset_name("utf8mb4")
+            .with_collation_name("utf8mb4_bin");
+        let value = Datum::new_string_datum("Y");
+        let expression = crate::builtin_cast::build_cast_function(
+            &crate::builtin::ColumnsBuildContext(&crate::NoColumns),
+            Expression::Constant(crate::constant::Constant::new(value.clone(), source)),
+            target,
+        )
+        .unwrap();
+        let Expression::Constant(folded) = expression else {
+            panic!("the ENUM assignment cast must fold as a SQL string");
+        };
+        assert_eq!(folded.value, value);
     }
 
     #[test]
