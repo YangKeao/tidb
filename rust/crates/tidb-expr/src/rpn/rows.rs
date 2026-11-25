@@ -616,7 +616,7 @@ pub(super) fn decimal_result_scale(value: &QueryDecimal) -> Result<u8> {
     Ok(decimal_chunk_bytes(value)?[DECIMAL_RESULT_SCALE])
 }
 
-fn to_query_time(value: Time) -> Result<QueryTime> {
+pub(crate) fn to_query_time(value: Time) -> Result<QueryTime> {
     use tidb_query_datatype::codec::mysql::TimeDecoder;
     if value.fsp() > 6 {
         return Err(error("invalid native time fractional precision"));

@@ -404,130 +404,56 @@ pub(crate) fn from_days(vals: &[Datum]) -> Result<Datum, EvalError> {
     Ok(Datum::new_time(ret))
 }
 
-#[derive(Clone, Copy)]
-struct TimestampDiffDateTime {
-    year: i64,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-    microsecond: u32,
-}
-
-/// Parses a strict DATE/DATETIME string for `TIMESTAMPDIFF`.
-fn parse_timestamp_diff_datetime(input: &str) -> Option<TimestampDiffDateTime> {
+/// Parse the calendar fields accepted by the SQL signature before sharing
+/// arithmetic with the storage engine.
+fn timestamp_diff_time(input: &str) -> Option<tidb_datatype::Time> {
     let input = input.trim();
     let (date, time) = input
         .split_once(char::is_whitespace)
         .or_else(|| input.split_once('T'))
-        .map_or((input, "00:00:00"), |(date, time)| (date, time.trim()));
+        .map_or((input, None), |(date, time)| (date, Some(time.trim())));
     let (year, month, day) = parse_date_ymd(date)?;
-    let (hour, minute, second, fraction) = parse_time_with_fraction(time)?;
-    let fsp = fraction.len();
-    let microsecond = fraction.parse::<u32>().ok().unwrap_or(0) * 10u32.pow(6 - fsp as u32);
-    Some(TimestampDiffDateTime {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        microsecond,
-    })
+    let (hour, minute, second, micros) = time_parts_with_micros(time)?;
+    tidb_datatype::Time::from_date_checked(
+        i32::try_from(year).ok()?,
+        month as i32,
+        day as i32,
+        hour as i32,
+        minute as i32,
+        second as i32,
+        micros as i32,
+        tidb_datatype::TimeType::DateTime,
+        6,
+    )
+    .ok()
 }
 
-/// `TIMESTAMPDIFF(unit, datetime_expr1, datetime_expr2)`, ported from
-/// `builtinTimestampDiffSig.evalInt` and `types.TimestampDiff`.  The Rust
-/// value boundary accepts scalar DATE/DATETIME strings and returns the exact
-/// integer result; typed temporal conversion, warning state, and SQL-mode
-/// handling remain at the caller boundary.
 pub(crate) fn timestamp_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 3 {
+    use tidb_query_datatype::codec::mysql::time::IntervalUnit;
+
+    let [unit, left, right] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
-    }
+    };
     let (Some(unit), Some(left), Some(right)) = (
-        coerce_str(&vals[0])?,
-        coerce_str(&vals[1])?,
-        coerce_str(&vals[2])?,
+        coerce_str(unit)?,
+        coerce_str(left)?,
+        coerce_str(right)?,
     ) else {
         return Ok(Datum::Null);
     };
-    let Some(left) = parse_timestamp_diff_datetime(&left) else {
+    let (Some(left), Some(right)) = (timestamp_diff_time(&left), timestamp_diff_time(&right))
+    else {
         return Ok(Datum::Null);
     };
-    let Some(right) = parse_timestamp_diff_datetime(&right) else {
-        return Ok(Datum::Null);
+    let Some(unit) = IntervalUnit::from_str(&unit).ok().filter(IntervalUnit::is_valid_for_timestamp)
+    else {
+        return Ok(Datum::Int(0));
     };
-
-    // Go `calcTimeTimeDiff` counts days with `calcDaynr`.
-    let left_day = time_diff_daynr(left.year, left.month, left.day);
-    let right_day = time_diff_daynr(right.year, right.month, right.day);
-    let left_clock = i64::from(left.hour) * 3_600_000_000
-        + i64::from(left.minute) * 60_000_000
-        + i64::from(left.second) * 1_000_000
-        + i64::from(left.microsecond);
-    let right_clock = i64::from(right.hour) * 3_600_000_000
-        + i64::from(right.minute) * 60_000_000
-        + i64::from(right.second) * 1_000_000
-        + i64::from(right.microsecond);
-    let delta = (right_day - left_day) * 86_400_000_000 + right_clock - left_clock;
-    let negative = delta < 0;
-    let absolute = delta.unsigned_abs();
-    let seconds = absolute / 1_000_000;
-    let microseconds = absolute % 1_000_000;
-    let sign = if negative { -1 } else { 1 };
-
-    let (begin, end) = if negative {
-        (right, left)
-    } else {
-        (left, right)
-    };
-    let months = if matches!(
-        unit.to_ascii_uppercase().as_str(),
-        "YEAR" | "QUARTER" | "MONTH"
-    ) {
-        let mut years = end.year - begin.year;
-        let date_before =
-            end.month < begin.month || (end.month == begin.month && end.day < begin.day);
-        if date_before {
-            years -= 1;
-        }
-        let mut months = 12 * years;
-        if date_before {
-            months += 12 - (i64::from(begin.month) - i64::from(end.month));
-        } else {
-            months += i64::from(end.month) - i64::from(begin.month);
-        }
-        if end.day < begin.day
-            || (end.day == begin.day
-                && (end.hour * 3_600 + end.minute * 60 + end.second
-                    < begin.hour * 3_600 + begin.minute * 60 + begin.second
-                    || (end.hour * 3_600 + end.minute * 60 + end.second
-                        == begin.hour * 3_600 + begin.minute * 60 + begin.second
-                        && end.microsecond < begin.microsecond)))
-        {
-            months -= 1;
-        }
-        months
-    } else {
-        0
-    };
-
-    let unit = unit.to_ascii_uppercase();
-    let result = match unit.as_str() {
-        "YEAR" => months / 12 * sign,
-        "QUARTER" => months / 3 * sign,
-        "MONTH" => months * sign,
-        "WEEK" => (seconds / 86_400 / 7) as i64 * sign,
-        "DAY" => (seconds / 86_400) as i64 * sign,
-        "HOUR" => (seconds / 3_600) as i64 * sign,
-        "MINUTE" => (seconds / 60) as i64 * sign,
-        "SECOND" => seconds as i64 * sign,
-        "MICROSECOND" => (seconds * 1_000_000 + microseconds) as i64 * sign,
-        _ => 0,
-    };
-    Ok(Datum::Int(result))
+    let left = crate::rpn::to_query_time(left).map_err(crate::rpn::query_error)?;
+    let right = crate::rpn::to_query_time(right).map_err(crate::rpn::query_error)?;
+    left.timestamp_diff(&right, unit)
+        .map(Datum::Int)
+        .map_err(|error| crate::rpn::query_error(error.into()))
 }
 
 /// `TO_DAYS(date)`, implemented through the same zero-date day number used by
