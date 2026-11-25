@@ -85,6 +85,7 @@ fn in_decimal_across_scales_compares_numerically() {
         vec![lhs.clone(), rhs.clone()],
     ).unwrap().into_scalar_function().unwrap();
 
+    let in_func = Expression::ScalarFunction(in_func);
     for (index, (_low, high)) in left.iter().zip(right.iter()).enumerate() {
         let row = input.get_row(index);
         let lhs_value = lhs.eval(&tidb_exprctx::context::NoColumns, row).unwrap();

@@ -1156,7 +1156,7 @@ fn test_compress_and_uncompress_length_framing() {
     }
 
     // {"", ""} and {"", nil} rows.
-    assert_eq!(call("COMPRESS", &[s("")], &NoColumns), s(""));
+    assert_eq!(call("COMPRESS", &[s("")], &NoColumns), Datum::new_bytes_datum([]));
     assert_eq!(call("COMPRESS", &[Datum::Null], &NoColumns), Datum::Null);
 }
 

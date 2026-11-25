@@ -496,12 +496,15 @@ fn test_oct() {
         ("13", "15"),
         ("1025", "2001"),
         ("8a8", "10"),
+        ("\u{2003}8", "10"),
+        ("\u{2003}", "0"),
         ("abc", "0"),
         ("9999999999999999999999999", "1777777777777777777777"),
         ("-9999999999999999999999999", "1777777777777777777777"),
     ] {
         let expr = format!("oct('{arg}')");
         assert_eq!(e(&expr), format!("STR:{want}"), "{expr}");
+        assert_eq!(chunk_e(&expr), format!("STR:{want}"), "{expr}");
     }
     // The non-string sources take the integer-datum path: floats as REAL
     // constants, ints directly, binary literals by payload.

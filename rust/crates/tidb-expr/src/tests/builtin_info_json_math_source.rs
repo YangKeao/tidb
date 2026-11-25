@@ -1533,6 +1533,13 @@ fn json_schema_valid_cache_replaces_context_only_schema() {
     );
     assert_eq!(
         function
+            .clone()
+            .eval(&SchemaContext { context_id: 7, schema: json_s("{}") }, row)
+            .unwrap(),
+        Datum::Int(1)
+    );
+    assert_eq!(
+        function
             .eval(
                 &SchemaContext {
                     context_id: 7,
@@ -1607,6 +1614,13 @@ fn json_modify_path_cache_replaces_context_only_paths() {
             )
             .unwrap(),
         r#"{"a": 1}"#,
+    );
+    json_eq(
+        &function
+            .clone()
+            .eval(&PathContext { context_id: 11, path: json_s("$.b") }, row)
+            .unwrap(),
+        r#"{"b": 1}"#,
     );
     json_eq(
         &function
