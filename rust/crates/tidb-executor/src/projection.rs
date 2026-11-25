@@ -223,7 +223,7 @@ impl<C: Columns> ProjectionExec<C> {
     /// `tidb_projection_concurrency` workers, or zero for the serial path.
     #[must_use]
     pub fn with_workers(mut self, num_workers: usize) -> Self {
-        self.num_workers = num_workers;
+        self.num_workers = if self.program.parallelizable() { num_workers } else { 0 };
         self
     }
 
@@ -550,6 +550,7 @@ impl<C: ProjectionContext> ProjectionExec<C> {
         if let Some(parallel) = self.parallel.take() {
             parallel.close(self.mem_tracker.as_ref());
         }
+        self.evaluator_suite.reset();
         self.child_chunk.reset();
         if self.is_unparallel_exec() {
             let child_chunk = self.child().new_chunk();
@@ -572,6 +573,7 @@ impl<C: ProjectionContext> Executor for ProjectionExec<C> {
             parallel.close(self.mem_tracker.as_ref());
         }
         self.child().open()?;
+        self.evaluator_suite.reset();
         self.child_chunk.reset();
         // Go `open`: the serial path takes its child result from the pool
         // (`TryNewCacheChunk`) and charges it as it stands.

@@ -4280,6 +4280,18 @@ fn run_update_with_physical(
     // instead see the whole statement snapshot first.
     // Go `updateRows`' `rowsColMultiply`.
     let mut rows_col_multiply = 0i64;
+    let mut row_evaluator = UpdateRowEvaluator {
+        field_types: &field_types,
+        stored_meta: &stored_meta,
+        visible_offsets: &visible_offsets,
+        programs: set_exprs
+            .into_iter()
+            .map(|(offset, expression)| (offset, tidb_expr::evaluator::RowProgram::new(expression)))
+            .collect(),
+        ctx,
+        on_update_now: &on_update_now,
+        stored_handle_slot,
+    };
     if writes_stored_columns {
         let mut row_index = 0usize;
         stream_physical_write_rows(
@@ -4302,16 +4314,7 @@ fn run_update_with_physical(
                         add_rows_col_multiply(rows_col_multiply, row.stored.len() as i64);
                 }
                 let handle = extra_handle_value(&row.id);
-                let mut new_row = UpdateRowEvaluator {
-                    field_types: &field_types,
-                    stored_meta: &stored_meta,
-                    visible_offsets: &visible_offsets,
-                    set_exprs: &set_exprs,
-                    ctx,
-                    on_update_now: &on_update_now,
-                    stored_handle_slot,
-                }
-                .compute(
+                let mut new_row = row_evaluator.compute(
                     &row.stored,
                     handle,
                     Some((&row.output, physical_field_types)),
@@ -4354,15 +4357,6 @@ fn run_update_with_physical(
         dml,
         None,
     )?;
-    let row_evaluator = UpdateRowEvaluator {
-        field_types: &field_types,
-        stored_meta: &stored_meta,
-        visible_offsets: &visible_offsets,
-        set_exprs: &set_exprs,
-        ctx,
-        on_update_now: &on_update_now,
-        stored_handle_slot,
-    };
     for row in rows {
         let handle = extra_handle_value(&row.id);
         let new_row = row_evaluator.compute(
@@ -4440,11 +4434,11 @@ struct UpdateRowEvaluator<'a> {
     /// The statement's visible columns, then Go's extra handle column when
     /// the table has one.
     field_types: &'a [FieldType],
-    /// Every column of the stored row, which `set_exprs` offsets address.
+    /// Every column of the stored row, which the assignment offsets address.
     stored_meta: &'a [ColumnDefaultMeta],
     /// The stored offsets of the visible columns, in order.
     visible_offsets: &'a [usize],
-    set_exprs: &'a [(usize, Expression)],
+    programs: Vec<(usize, tidb_expr::evaluator::RowProgram)>,
     ctx: &'a crate::StmtContext,
     on_update_now: &'a PreparedOnUpdateNow,
     /// The extra handle's assignment offset, one past the stored row: Go
@@ -4456,7 +4450,7 @@ impl UpdateRowEvaluator<'_> {
     /// Evaluates one selected row. The shared record owner decides whether
     /// it changed and retains unchanged selected rows for locking.
     fn compute(
-        &self,
+        &mut self,
         row: &[Datum],
         handle: Option<i64>,
         physical_input: Option<(&[Datum], &[FieldType])>,
@@ -4486,9 +4480,9 @@ impl UpdateRowEvaluator<'_> {
         // against the single unmodified `chunk` makes that the only reading there
         // is, rather than a rule the loop has to re-establish per assignment.
         let mut new_row = row.to_vec();
-        for (offset, expr) in self.set_exprs {
-            let value = expr
-                .eval(
+        for (offset, program) in &mut self.programs {
+            let value = program
+                .evaluate(
                     self.ctx,
                     physical_row.ok_or_else(|| {
                         DriverError::unsupported(

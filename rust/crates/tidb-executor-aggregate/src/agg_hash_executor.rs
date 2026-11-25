@@ -179,7 +179,7 @@ impl<C: Columns + Send + Sync + 'static> HashAggExec<C> {
             group_set: StringSetWithMemoryUsage::new(std::iter::empty::<GoString>()).0,
             group_keys: Vec::new(),
             cursor_4_group_key: 0,
-            group_key_buffer: GroupKeys::new(),
+            group_key_buffer: GroupKeys::new(&[]),
             child_result,
             prepared: false,
             executed: false,
@@ -236,7 +236,7 @@ impl<C: Columns + Send + Sync + 'static> HashAggExec<C> {
         self.group_set = group_set;
         self.partial_result_map = new_agg_partial_result_mapper();
         self.mem_tracker.consume(self.partial_result_map.bytes() as i64 + set_size);
-        self.group_key_buffer = GroupKeys::new();
+        self.group_key_buffer = GroupKeys::new(&self.group_by_items);
         let child_result = self.stmt_child().new_chunk();
         self.child_result = child_result;
         self.mem_tracker.consume(self.child_result.memory_usage());
@@ -352,8 +352,7 @@ impl<C: Columns + Send + Sync + 'static> HashAggExec<C> {
                 output_chs: partial_output.iter().map(|(sender, _)| sender.clone()).collect(),
                 global_output_ch: final_output_sender.clone(),
                 give_back_ch: input_sender.clone(),
-                group_by_items: Arc::clone(&self.group_by_items),
-                group_key_buf: GroupKeys::new(),
+                group_key_buf: GroupKeys::new(&self.group_by_items),
                 chk,
             };
             worker.partial_result_num_in_row = worker.base.get_partial_result_slice_len_consider_byte_align();
@@ -684,7 +683,7 @@ impl<C: Columns + Send + Sync + 'static> HashAggExec<C> {
             if self.child_result.num_rows() == 0 {
                 return Ok(());
             }
-            get_group_key(&*self.ctx, &self.child_result, &mut self.group_key_buffer, &self.group_by_items)?;
+            get_group_key(&*self.ctx, &self.child_result, &mut self.group_key_buffer)?;
 
             let mut all_mem_delta = 0;
             let num_rows = self.child_result.num_rows();

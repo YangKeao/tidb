@@ -57,10 +57,10 @@ pub(crate) fn recover_hash_agg(output: &crossbeam_channel::Sender<AfFinalResult>
 }
 
 /// Go's `[][]byte` group keys, with the capacities Go's appends leave.
-#[derive(Clone, Debug)]
 pub(crate) struct GroupKeys {
     keys: Vec<Vec<u8>>,
     key_caps: Vec<usize>,
+    expressions: Vec<tidb_expr::evaluator::RowProgram>,
     /// Go `len(groupKey)`.
     len: usize,
     /// Go `cap(groupKey)`.
@@ -69,8 +69,18 @@ pub(crate) struct GroupKeys {
 
 impl GroupKeys {
     /// Go `getBuffer`'s `make([][]byte, 0, defaultGroupKeyCap)`.
-    pub(crate) fn new() -> Self {
-        Self { keys: Vec::new(), key_caps: Vec::new(), len: 0, cap: DEFAULT_GROUP_KEY_CAP }
+    pub(crate) fn new(group_by_items: &[Expression]) -> Self {
+        Self {
+            keys: Vec::new(),
+            key_caps: Vec::new(),
+            expressions: group_by_items
+                .iter()
+                .cloned()
+                .map(tidb_expr::evaluator::RowProgram::new)
+                .collect(),
+            len: 0,
+            cap: DEFAULT_GROUP_KEY_CAP,
+        }
     }
 
     /// The `i`th key.
@@ -140,7 +150,7 @@ fn append_hash_group_key_pieces(key: &mut Vec<u8>, cap: &mut usize, eval_type: E
 
 /// Go `GetGroupKey`: each row's key over `group_by_items`, evaluated and
 /// encoded one item (one column) at a time.
-pub(crate) fn get_group_key(ctx: &dyn Columns, input: &Chunk, group_key: &mut GroupKeys, group_by_items: &[Expression]) -> Result<(), ExecError> {
+pub(crate) fn get_group_key(ctx: &dyn Columns, input: &Chunk, group_key: &mut GroupKeys) -> Result<(), ExecError> {
     let num_rows = input.num_rows();
     let avl_group_key_len = group_key.len.min(num_rows);
     for i in 0..avl_group_key_len {
@@ -151,7 +161,7 @@ pub(crate) fn get_group_key(ctx: &dyn Columns, input: &Chunk, group_key: &mut Gr
         if group_key.len + 1 > group_key.cap {
             group_key.cap = go_64_next_slice_capacity_for_element(group_key.len + 1, group_key.cap, 24, GoSliceElementLayout::PointerBearing);
         }
-        let key_cap = 10 * group_by_items.len();
+        let key_cap = 10 * group_key.expressions.len();
         if i < group_key.keys.len() {
             group_key.keys[i] = Vec::with_capacity(key_cap);
             group_key.key_caps[i] = key_cap;
@@ -165,12 +175,12 @@ pub(crate) fn get_group_key(ctx: &dyn Columns, input: &Chunk, group_key: &mut Gr
 
     let timezone = ctx.time_zone();
     let mut encoded = Vec::new();
-    for item in group_by_items {
-        let field_type = item.static_type().ok_or_else(|| ExecError::internal("HashAgg group expression has no field type"))?;
-        let key_type = crate::group_key::group_key_type(field_type);
+    for expression in &mut group_key.expressions {
+        let field_type = expression.expression().static_type().ok_or_else(|| ExecError::internal("HashAgg group expression has no field type"))?;
+        let key_type = crate::group_key::group_key_type(field_type).into_owned();
         let eval_type = key_type.eval_type();
         for row in 0..num_rows {
-            let value = item.eval(ctx, input.get_row(row)).map_err(ExecError::Eval)?;
+            let value = expression.evaluate(ctx, input.get_row(row)).map_err(ExecError::Eval)?;
             encoded.clear();
             tidb_codec::append_hash_group_key_in_timezone(&timezone, &value, &key_type, &mut encoded)
                 .map_err(|error| ExecError::internal(error.to_string()))?;

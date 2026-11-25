@@ -27,7 +27,6 @@ use tidb_chunk::chunk_in_disk::DataInDiskByChunks;
 use tidb_driver_error::ExecError;
 use tidb_executor_aggfuncs::agg_func::{new_agg_partial_result_mapper, AggFunc, AggPartialResultMapper, PartialResult};
 use tidb_executor_aggfuncs::spill_serialize_helper::SerializeHelper;
-use tidb_expr::expression::Expression;
 use tidb_exprctx::Columns;
 use tidb_goruntime::GoString;
 use tidb_memory::Tracker;
@@ -145,7 +144,6 @@ pub(crate) struct HashAggPartialWorker<C: Columns + Send + Sync + 'static> {
     pub(crate) give_back_ch: Sender<HashAggInput>,
     pub(crate) partial_result_num_in_row: usize,
     pub(crate) state: Arc<Mutex<PartialWorkerSpillState>>,
-    pub(crate) group_by_items: Arc<Vec<Expression>>,
     pub(crate) group_key_buf: GroupKeys,
     /// Go `chk`: the input this worker swaps with each child chunk.
     pub(crate) chk: Chunk,
@@ -286,7 +284,7 @@ impl<C: Columns + Send + Sync + 'static> HashAggPartialWorker<C> {
     /// Go `updatePartialResult`.
     fn update_partial_result(&mut self, chk: &Chunk) -> Result<(), ExecError> {
         let mem_size = get_group_key_mem_usage(&self.group_key_buf);
-        let result = get_group_key(&*self.ctx, chk, &mut self.group_key_buf, &self.group_by_items);
+        let result = get_group_key(&*self.ctx, chk, &mut self.group_key_buf);
         self.base.mem_tracker.consume(get_group_key_mem_usage(&self.group_key_buf) - mem_size);
         result?;
 
