@@ -119,10 +119,16 @@ impl Columns for RequestEvalContext {
 }
 
 /// A decoded builtin and the request that owns its evaluation settings.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SharedExpression {
-    pub(super) expression: tidb_expr::expression::Expression,
+    pub(super) program: SharedProgram,
     pub(super) context: Arc<RequestEvalContext>,
+}
+
+#[derive(Debug)]
+pub(super) enum SharedProgram {
+    Rpn(Mutex<tidb_expr::rpn::WireExpressionExecution>),
+    Typed(tidb_expr::expression::Expression),
 }
 
 #[cfg(test)]
@@ -425,7 +431,57 @@ mod child_error_tests {
     use super::*;
     use tidb_proto::tipb;
     #[test]
-    fn legacy_parent_keeps_typed_child_error() {
+    fn wire_json_and_year_casts_keep_typed_values() {
+        use super::super::{convert_expr_with_context, eval_shared, SimpleExpr};
+        use tidb_datatype::{BinaryJSON, Datum, FieldTypeCode};
+        use tipb::ScalarFuncSig;
+
+        for (sig, source, result, value) in [
+            (
+                ScalarFuncSig::CastJsonAsReal, FieldTypeCode::Json, FieldTypeCode::Double,
+                Datum::Json(BinaryJSON::parse("1.5").unwrap()),
+            ),
+            (
+                ScalarFuncSig::CastIntAsTime, FieldTypeCode::Year, FieldTypeCode::Datetime,
+                Datum::Int(2024),
+            ),
+        ] {
+            let field = |code: FieldTypeCode| tipb::FieldType {
+                tp: Some(i32::from(code.mysql_type())),
+                ..Default::default()
+            };
+            let mut offset = Vec::new();
+            tidb_codec::encode_int(&mut offset, 0);
+            let expr = tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(sig as i32),
+                field_type: Some(field(result)),
+                children: vec![tipb::Expr {
+                    tp: Some(tipb::ExprType::ColumnRef as i32),
+                    field_type: Some(field(source)),
+                    val: Some(offset),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let mut ctx = RequestEvalContext::new(SessionTimeZone::utc(), 4, FLAG_TRUNCATE_AS_WARNING);
+            ctx.column_types.push(tidb_datatype::FieldType::new(source));
+            let ctx = Arc::new(ctx);
+            let typed = tidb_expr::distsql_builtin::pb_to_expr(&expr, &ctx.column_types).unwrap();
+            let row = tidb_chunk::mutrow::MutRow::mut_row_from_datums(std::slice::from_ref(&value));
+            let expected = typed.eval(ctx.as_ref(), row.to_row()).unwrap();
+            let warnings = ctx.take_warnings();
+            let SimpleExpr::Shared(shared) = convert_expr_with_context(&expr, &ctx).unwrap() else {
+                panic!("expected a compiled wire expression");
+            };
+            assert!(matches!(&shared.program, SharedProgram::Rpn(_)), "{sig:?}");
+            assert_eq!(eval_shared(&shared, &[value]), Ok(expected), "{sig:?}");
+            assert_eq!(ctx.take_warnings(), warnings, "{sig:?}");
+        }
+    }
+
+    #[test]
+    fn shared_wire_parent_keeps_typed_child_diagnostics() {
         let text = tipb::Expr {
             tp: Some(tipb::ExprType::String as i32),
             val: Some(b"not a number".to_vec()),
@@ -466,17 +522,20 @@ mod child_error_tests {
             }),
             ..Default::default()
         };
-        let ctx = Arc::new(RequestEvalContext::new(
-            SessionTimeZone::Named(chrono_tz::UTC),
-            4,
-            0,
-        ));
-        let converted = super::super::convert_expr_with_context(&expr, &ctx).unwrap();
-        let result = super::super::eval_expr(&converted, &[]);
-        assert!(
-            result.is_err(),
-            "strict cast error must propagate, got {result:?}"
-        );
+        use super::super::{convert_expr_with_context, eval_shared, CopExecError, SimpleExpr};
+        let typed = tidb_expr::distsql_builtin::pb_to_expr(&expr, &[]).unwrap();
+        for flags in [0, FLAG_TRUNCATE_AS_WARNING, FLAG_IGNORE_TRUNCATE] {
+            let ctx = Arc::new(RequestEvalContext::new(SessionTimeZone::utc(), 4, flags));
+            let expected = typed.eval(ctx.as_ref(), tidb_chunk::row::Row::empty())
+                .map_err(CopExecError::from);
+            let warnings = ctx.take_warnings();
+            let SimpleExpr::Shared(shared) = convert_expr_with_context(&expr, &ctx).unwrap() else {
+                panic!("expected a compiled wire expression");
+            };
+            assert!(matches!(&shared.program, SharedProgram::Rpn(_)));
+            assert_eq!(eval_shared(&shared, &[]), expected);
+            assert_eq!(ctx.take_warnings(), warnings);
+        }
     }
 }
 #[cfg(test)]
