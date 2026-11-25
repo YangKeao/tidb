@@ -118,12 +118,10 @@ impl NativeRows<'_> {
         self.scalar_operands
     }
 
-    pub(super) fn next_random(&self) -> Option<Result<f64>> {
-        Some(
-            self.context
-                .rand_next()
-                .ok_or_else(|| error("RAND requires a session")),
-        )
+    pub(super) fn next_random(&self) -> Result<f64> {
+        self.context
+            .rand_next()
+            .ok_or_else(|| self.native_error(EvalError::Unsupported("RAND requires a session")))
     }
 
     pub(super) fn seed_slot(&self, slot: usize) -> usize {

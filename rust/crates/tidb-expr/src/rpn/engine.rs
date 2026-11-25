@@ -1222,9 +1222,7 @@ fn unseeded_rand(
     let mut output = VectorValue::with_capacity(count, EvalType::Real);
     INPUT.with(|host| {
         for _ in 0..count {
-            let value = host
-                .next_random()
-                .ok_or_else(|| error("RAND requires a session"))??;
+            let value = host.next_random()?;
             output.push_real(tidb_query_datatype::codec::data_type::Real::new(value).ok());
         }
         Ok(output)

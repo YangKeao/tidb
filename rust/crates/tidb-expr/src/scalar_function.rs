@@ -1263,6 +1263,7 @@ impl ScalarFunction {
         use tidb_proto::tipb::ScalarFuncSig::{Concat, ConcatWs, JsonInsertSig, JsonReplaceSig, JsonSetSig};
         if matches!(self.pb_code(), Concat | ConcatWs | JsonInsertSig | JsonReplaceSig | JsonSetSig)
             || self.func_name.lowercase() == "json_schema_valid"
+            || (self.func_name.lowercase() == "rand" && self.args.is_empty())
         {
             return true;
         }
