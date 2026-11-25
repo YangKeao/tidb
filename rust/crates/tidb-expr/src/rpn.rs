@@ -891,6 +891,13 @@ pub(crate) fn evaluate_value_kernel<T>(
     result.map_err(query_error)
 }
 
+pub(crate) fn uses_native_comparison_collation(collation: tidb_charset::Collation) -> bool {
+    matches!(
+        collation,
+        tidb_charset::Collation::Gb18030Bin | tidb_charset::Collation::Utf8Mb4ZhPinyinTiDbAsCs
+    )
+}
+
 /// Invoke the same SDK kernel on already evaluated SQL operands.
 pub(crate) fn evaluate_required_kernel(
     function: &ScalarFunction,
@@ -949,8 +956,15 @@ pub(crate) fn evaluate_required_kernel(
     let output = function.get_static_type().ok_or(EvalError::Unsupported("RPN kernel output type"))?;
     let mut output_type = rows::query_field_type(output)
         .ok_or(EvalError::Unsupported("RPN kernel output carrier"))?;
-    if matches!(signature, LtString | LeString | GtString | GeString | EqString | NeString | NullEqString) {
-        output_type.set_collate(-function.derived_collation().id());
+    if matches!(
+        signature,
+        LtString | LeString | GtString | GeString | EqString | NeString | NullEqString | Strcmp
+    ) {
+        let collation = function.derived_collation();
+        if signature == Strcmp && uses_native_comparison_collation(collation) {
+            return crate::string_fn::strcmp_with_collation(&values, collation);
+        }
+        output_type.set_collate(-collation.id());
     }
     let mut input_types = Vec::with_capacity(inputs.len());
     for ((argument, &domain), value) in function.args.iter().zip(inputs).zip(&values) {
@@ -2188,13 +2202,14 @@ fn local_typed_kernel(function: &ScalarFunction) -> bool {
                     | NativeEvalType::Real
             )
         )
-    ) || matches!(name, "greatest" | "least")
-        && (function.get_static_type().is_some_and(|field| {
-            matches!(
-                field.eval_type(),
-                NativeEvalType::String | NativeEvalType::Datetime | NativeEvalType::Timestamp
-            )
-        }) || collation != tidb_charset::Collation::Binary)
+    ) || (name == "strcmp" && uses_native_comparison_collation(collation))
+        || (matches!(name, "greatest" | "least")
+            && (function.get_static_type().is_some_and(|field| {
+                matches!(
+                    field.eval_type(),
+                    NativeEvalType::String | NativeEvalType::Datetime | NativeEvalType::Timestamp
+                )
+            }) || collation != tidb_charset::Collation::Binary))
 }
 
 // The baseline callbacks for these signatures omit TiDB's per-statement

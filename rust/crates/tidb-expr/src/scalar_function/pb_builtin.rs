@@ -30,11 +30,6 @@ pub(crate) type ValuesKernel = fn(&[Datum], &dyn Columns) -> Result<Datum, EvalE
 /// collator or an argument's field type -- beside the argument values.
 pub(crate) type MethodKernel = fn(&ScalarFunction, &[Datum], &dyn Columns) -> Result<Datum, EvalError>;
 
-/// Go `builtinStrcmpSig`: the comparison under `b.collation`.
-fn strcmp_method(function: &ScalarFunction, values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::string_fn::strcmp_with_collation(values, function.derived_collation())
-}
-
 /// Go `builtinFieldStringSig` compares under `b.collation`; the int and real
 /// signatures read arguments their class already cast.
 fn field_method(function: &ScalarFunction, values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
@@ -875,7 +870,7 @@ impl PbBuiltin {
 
             Reverse => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::reverse_fn_meta), &[EvalType::String]),
             ReverseUtf8 => Kernel::Values(|values, _| crate::string_fn::reverse(values)),
-            Strcmp => Kernel::Method(strcmp_method),
+            Strcmp => Kernel::RpnOnly(None, &[EvalType::String; 2]),
             Elt => Kernel::Values(|values, _| crate::string_fn::elt(values)),
             FieldInt | FieldReal | FieldString => Kernel::Method(field_method),
             HexStrArg => Kernel::RpnOnly(
@@ -1086,9 +1081,12 @@ impl PbBuiltin {
             LeftUtf8 => Kernel::Values(left_values),
             Lpad | LpadUtf8 => Kernel::Values(lpad_values),
             Rpad | RpadUtf8 => Kernel::Values(rpad_values),
-            Locate2Args | Locate2ArgsUtf8 => Kernel::Method(locate_2_args_method),
-            Locate3Args | Locate3ArgsUtf8 => Kernel::Method(locate_3_args_method),
-            Instr | InstrUtf8 => Kernel::Method(instr_method),
+            Locate2Args => Kernel::RpnOnly(None, &[EvalType::String; 2]),
+            Locate2ArgsUtf8 => Kernel::Method(locate_2_args_method),
+            Locate3Args => Kernel::RpnOnly(None, &[EvalType::String, EvalType::String, EvalType::Int]),
+            Locate3ArgsUtf8 => Kernel::Method(locate_3_args_method),
+            Instr => Kernel::RpnOnly(None, &[EvalType::String; 2]),
+            InstrUtf8 => Kernel::Method(instr_method),
             OctInt | OctString => Kernel::Values(oct_values),
             ExportSet3Arg | ExportSet4Arg | ExportSet5Arg => Kernel::Values(export_set_values),
             MakeSet => Kernel::Values(make_set_values),
@@ -1645,11 +1643,7 @@ impl PbBuiltin {
                 };
                 let left = eval_numeric_row(left, ctx, row, EvalType::String)?;
                 let right = eval_numeric_row(right, ctx, row, EvalType::String)?;
-                if matches!(
-                    function.derived_collation(),
-                    tidb_charset::Collation::Gb18030Bin
-                        | tidb_charset::Collation::Utf8Mb4ZhPinyinTiDbAsCs
-                ) {
+                if crate::rpn::uses_native_comparison_collation(function.derived_collation()) {
                     // These SQL collations need TiDB's comparison semantics.
                     return function.eval_binary_values(op, left, right, ctx);
                 }

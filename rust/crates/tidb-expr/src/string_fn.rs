@@ -254,13 +254,9 @@ pub(crate) fn locate(
     let (Some(needle), Some(haystack)) = (coerce_str_bytes(substr)?, coerce_str_bytes(str)?) else {
         return Ok(Datum::Null);
     };
-    if needle.is_empty() {
-        return Ok(Datum::Int(1));
-    }
-    let found = haystack
-        .windows(needle.len())
-        .position(|window| window == needle.as_slice());
-    Ok(Datum::Int(found.map_or(0, |index| index as i64 + 1)))
+    tidb_query_expr::impl_string::locate_2_args(&needle, &haystack)
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 /// `LOCATE(substr, str, pos)` — the three-argument signatures
@@ -306,18 +302,9 @@ pub(crate) fn locate_with_position(
     let start = position.wrapping_sub(1);
 
     if binary {
-        if start < 0 || start > hay.len() as i64 - needle.len() as i64 {
-            return Ok(Datum::Int(0));
-        }
-        if needle.is_empty() {
-            return Ok(Datum::Int(start + 1));
-        }
-        let found = hay[start as usize..]
-            .windows(needle.len())
-            .position(|window| window == needle.as_slice());
-        return Ok(Datum::Int(
-            found.map_or(0, |index| start + index as i64 + 1),
-        ));
+        return tidb_query_expr::impl_string::locate_3_args(&needle, &hay, &position)
+            .map(|value| value.map_or(Datum::Null, Datum::Int))
+            .map_err(crate::rpn::query_error);
     }
 
     // Under a case-insensitive collation Go lowers both strings BEFORE the
@@ -481,15 +468,7 @@ pub(crate) fn strcmp_with_collation(
     let (Some(a), Some(b)) = (coerce_str_bytes(left)?, coerce_str_bytes(right)?) else {
         return Ok(Datum::Null);
     };
-    strcmp_under(&a, &b, collation)
-}
-
-fn strcmp_under(
-    a: &[u8],
-    b: &[u8],
-    collation: tidb_charset::Collation,
-) -> Result<Datum, EvalError> {
-    Ok(Datum::Int(match collation.compare(a, b) {
+    Ok(Datum::Int(match collation.compare(&a, &b) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
