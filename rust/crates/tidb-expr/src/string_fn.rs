@@ -1174,54 +1174,12 @@ pub(crate) fn from_base64_with_packet_limit(
         .into_iter()
         .filter(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
         .collect();
-    if cleaned.is_empty() {
-        return Ok(Datum::new_bytes_datum(Vec::new()));
-    }
-    if !cleaned.len().is_multiple_of(4) {
-        return Ok(Datum::Null);
-    }
-    let val = |c: u8| -> Option<u8> {
-        match c {
-            b'A'..=b'Z' => Some(c - b'A'),
-            b'a'..=b'z' => Some(c - b'a' + 26),
-            b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    };
-    let mut bytes = Vec::new();
-    for (group_index, chunk) in cleaned.as_chunks::<4>().0.iter().enumerate() {
-        let last = group_index + 1 == cleaned.len() / 4;
-        let Some(a) = val(chunk[0]) else {
-            return Ok(Datum::Null);
-        };
-        let Some(b) = val(chunk[1]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((a << 2) | (b >> 4));
-        if chunk[2] == b'=' {
-            if !last || chunk[3] != b'=' || b & 0x0f != 0 {
-                return Ok(Datum::Null);
-            }
-            continue;
-        }
-        let Some(c) = val(chunk[2]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((b << 4) | (c >> 2));
-        if chunk[3] == b'=' {
-            if !last || c & 0x03 != 0 {
-                return Ok(Datum::Null);
-            }
-            continue;
-        }
-        let Some(d) = val(chunk[3]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((c << 6) | d);
-    }
-    Ok(Datum::new_bytes_datum(bytes))
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    Ok(STANDARD
+        .decode(cleaned)
+        .ok()
+        .map_or(Datum::Null, Datum::new_bytes_datum))
 }
 
 #[cfg(test)]

@@ -8775,6 +8775,7 @@ dependencies = [
 name = "tidb-expr"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "chrono-tz 0.10.4",
  "flate2 1.0.11",
