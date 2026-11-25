@@ -19,7 +19,7 @@ use tidb_datatype::{
     Datum, EvalType as NativeEvalType, FieldType, FieldTypeCode, FieldTypeFlags, SessionTimeZone,
 };
 use tidb_proto::tipb::{Expr as WireExpr, ExprType};
-use tidb_query_common::error::{ErrorInner, EvaluateError};
+use tidb_query_common::error::ErrorInner;
 use tidb_query_datatype::codec::{batch::LazyBatchColumnVec, data_type::BATCH_MAX_SIZE};
 use tidb_query_datatype::{
     codec::mysql::Tz,
@@ -30,7 +30,6 @@ use tidb_query_expr::RpnExpression;
 use tipb::{Expr as QueryExpr, ExprType as QueryExprType, ScalarFuncSig};
 
 mod engine;
-pub(crate) use engine::StatementRand;
 use engine::{resolve_rpn_function, scalar_func_sig, RpnArgTypes};
 
 mod binding;
@@ -292,63 +291,6 @@ impl PreparedExpression {
         Ok(result)
     }
 
-    #[cfg(test)]
-    fn append_quiet_int_presence(
-        &mut self,
-        ctx: &dyn Columns,
-        chunk: &Chunk,
-        output: &mut Vec<bool>,
-    ) -> bool {
-        use tidb_query_expr::RpnExpressionNode::*;
-
-        if self.row_ordered
-            || !self.seed_keys.is_empty()
-            || !self.bindings.is_empty()
-            || !self.host_calls.is_empty()
-        {
-            return false;
-        }
-        let int_only = self.program.as_ref().iter().all(|node| match node {
-            FnCall {
-                field_type,
-                func_meta,
-                ..
-            } => {
-                func_meta.name != "TiDB host"
-                    && EvalType::try_from(field_type.as_accessor().tp()).ok() == Some(EvalType::Int)
-            }
-            Constant { value, .. } => value.eval_type() == EvalType::Int,
-            ColumnRef { offset } => {
-                *offset == 0
-                    || self.schema.get(offset - 1).is_some_and(|field| {
-                        EvalType::try_from(field.as_accessor().tp())
-                            .is_ok_and(|kind| kind == EvalType::Int)
-                    })
-            }
-            _ => false,
-        });
-        if !int_only {
-            return false;
-        }
-        let selected = (0..chunk.num_rows()).collect::<Vec<_>>();
-        let output_start = output.len();
-        let result = self.evaluate(
-            ctx,
-            chunk,
-            &selected,
-            rows::ReadMode::QuietIntBatch,
-            |value| {
-                output.push(!value.is_null());
-                Ok(())
-            },
-        );
-        if result.is_ok() {
-            return true;
-        }
-        output.truncate(output_start);
-        false
-    }
-
     fn evaluate(
         &mut self,
         ctx: &dyn Columns,
@@ -386,7 +328,7 @@ impl PreparedExpression {
         let selected_physical;
         let selected = if matches!(
             mode,
-            rows::ReadMode::LogicalBatch | rows::ReadMode::QuietIntBatch | rows::ReadMode::TypedBatch
+            rows::ReadMode::LogicalBatch | rows::ReadMode::TypedBatch
         ) && chunk.sel().is_some()
         {
             selected_physical = selected
@@ -477,13 +419,6 @@ impl PreparedExpression {
         for rows in logical_rows.chunks(batch_size) {
             let result =
                 engine::evaluate(program, &mut self.context, &schema, &input, &physical, rows);
-            if matches!(mode, rows::ReadMode::QuietIntBatch)
-                && self.context.warnings.warning_cnt != 0
-            {
-                self.context.warnings.warning_cnt = 0;
-                self.context.warnings.warnings.clear();
-                return Err(EvalError::Unsupported("batch produced diagnostics"));
-            }
             forward_query_warnings(ctx, &mut self.context);
             let values = result.map_err(|error| {
                 input
@@ -2866,7 +2801,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_integer_batch_preserves_the_scalar_overflow_contract() {
+    fn integer_batch_preserves_the_scalar_overflow_contract() {
         let integer = FieldType::new(FieldTypeCode::LongLong);
         let mut input = Chunk::new_chunk_with_capacity(std::slice::from_ref(&integer), 2);
         input.append_int64(0, 7);
@@ -2882,9 +2817,15 @@ mod tests {
         let mut prepared = PreparedExpression::new(&increment, &crate::NoColumns, 1)
             .unwrap()
             .unwrap();
-        let mut presence = vec![false];
-        assert!(!prepared.append_quiet_int_presence(&crate::NoColumns, &input, &mut presence));
-        assert_eq!(presence, [false]);
+        let mut values = Vec::new();
+        let mut append = |value| {
+            values.push(value);
+            Ok(())
+        };
+        assert!(matches!(
+            prepared.evaluate_rows(&crate::NoColumns, &input, &[0, 1], false, &mut append),
+            Err(EvalError::DataOutOfRange { .. })
+        ));
         assert_eq!(
             prepared.evaluate_row(&crate::NoColumns, input.get_row(0)),
             Ok(Datum::Int(8))
@@ -2897,8 +2838,10 @@ mod tests {
         input.reset();
         input.append_int64(0, 7);
         input.append_datum(0, &Datum::Null);
-        assert!(prepared.append_quiet_int_presence(&crate::NoColumns, &input, &mut presence));
-        assert_eq!(presence, [false, true, false]);
+        prepared
+            .evaluate_rows(&crate::NoColumns, &input, &[0, 1], false, append)
+            .unwrap();
+        assert_eq!(values, [Datum::Int(8), Datum::Null]);
     }
 
     #[test]
@@ -2931,7 +2874,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_integer_batch_discards_only_speculative_warnings() {
+    fn integer_batch_records_the_same_division_warning_as_scalar() {
         struct Warnings(RefCell<Vec<u16>>);
 
         impl Columns for Warnings {
@@ -2967,10 +2910,16 @@ mod tests {
         let mut prepared = PreparedExpression::new(&modulo, &ctx, 1)
             .unwrap()
             .unwrap();
-        let mut presence = Vec::new();
-        assert!(!prepared.append_quiet_int_presence(&ctx, &input, &mut presence));
-        assert!(presence.is_empty());
-        assert!(ctx.0.borrow().is_empty());
+        let mut values = Vec::new();
+        prepared
+            .evaluate_rows(&ctx, &input, &[0, 1], false, |value| {
+                values.push(value);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(values, [Datum::Int(1), Datum::Null]);
+        assert_eq!(*ctx.0.borrow(), [1365]);
+        ctx.0.borrow_mut().clear();
         assert_eq!(
             prepared.evaluate_row(&ctx, input.get_row(0)),
             Ok(Datum::Int(1))

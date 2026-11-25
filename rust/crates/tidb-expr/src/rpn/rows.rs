@@ -47,7 +47,6 @@ use tidb_query_expr::{RpnStackNode, RpnStackNodeVectorValue};
 pub(super) enum ReadMode {
     LogicalBatch,
     TypedBatch,
-    QuietIntBatch,
     PhysicalBatch,
     Scalar,
 }
@@ -393,7 +392,7 @@ impl NativeRows<'_> {
 impl NativeRows<'_> {
     fn row(&self, index: usize) -> tidb_chunk::row::Row<'_> {
         match self.mode {
-            ReadMode::LogicalBatch | ReadMode::QuietIntBatch | ReadMode::TypedBatch => self.chunk.get_row(index),
+            ReadMode::LogicalBatch | ReadMode::TypedBatch => self.chunk.get_row(index),
             ReadMode::PhysicalBatch | ReadMode::Scalar => self.chunk.physical_row(index),
         }
     }
