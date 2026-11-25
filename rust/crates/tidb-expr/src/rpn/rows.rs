@@ -543,10 +543,8 @@ pub(super) fn from_query_value(value: ScalarValueRef<'_>, field: &FieldType) -> 
     })
 }
 
-pub(super) fn query_field_type(field: &FieldType) -> Option<QueryFieldType> {
-    Some(query_field_from_wire(super::native_field_declaration(
-        field,
-    )?))
+pub(super) fn query_field_type(field: &FieldType) -> QueryFieldType {
+    query_field_from_wire(super::native_field_declaration(field))
 }
 
 pub(super) fn query_field_from_wire(wire: tidb_proto::tipb::FieldType) -> QueryFieldType {

@@ -5,10 +5,10 @@ use tidb_proto::tipb::ScalarFuncSig;
 
 use crate::scalar_function::ScalarFunction;
 
-pub(super) fn field_type_to_pb(field: &FieldType) -> Option<tidb_proto::tipb::FieldType> {
+pub(super) fn field_type_to_pb(field: &FieldType) -> tidb_proto::tipb::FieldType {
     let mut ty = crate::expr_to_pb::to_pb_field_type(field);
     ty.array = Some(field.is_array());
-    Some(ty)
+    ty
 }
 
 pub(super) fn local_name(function: &ScalarFunction) -> &str {

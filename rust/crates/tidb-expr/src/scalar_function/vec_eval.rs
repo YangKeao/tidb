@@ -9,7 +9,8 @@ use tidb_chunk::{chunk::Chunk, column::Column, row::Row};
 use tidb_datatype::{Datum, Decimal, EvalType, FieldType, FieldTypeCode};
 use tidb_proto::tipb::ScalarFuncSig;
 
-/// Go `ScalarFunction.VecEval*`: whether this signature has a migrated kernel.
+/// Go `ScalarFunction.VecEval*` eligibility. RPN-only kernels and the
+/// generic typed operations already declare their support.
 pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
     if supports_vec(function) {
         return true;
@@ -24,6 +25,8 @@ pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
     {
         return false;
     }
+    use ScalarFuncSig::*;
+    let sig = function.pb_code();
     matches!(
         function.pb_builtin.kernel,
         Kernel::RpnOnly(..)
@@ -39,37 +42,12 @@ pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
             | Kernel::Cast { .. }
             | Kernel::Logic(_)
             | Kernel::Unary(_)
-    ) || supports_math(function.pb_code())
-        || supports_string(function)
-        || supports_other(function)
-        || supports_miscellaneous(function)
-        || supports_time(function)
-        || supports_encryption(function)
-        || supports_like(function)
-        || supports_info(function)
-        || supports_json(function)
-        || supports_compare(function.pb_code())
-}
-
-// Vector eligibility is part of the Go expression contract. Execution uses
-// the prepared RPN program and these declarations describe supported APIs.
-fn supports_vec(function: &ScalarFunction) -> bool {
-    use ScalarFuncSig::*;
-    matches!(
-        function.pb_code(),
-        VecDimsSig
-            | VecL1DistanceSig
-            | VecL2DistanceSig
-            | VecNegativeInnerProductSig
-            | VecCosineDistanceSig
-            | VecL2NormSig
-            | VecAsTextSig
-    ) || function.func_name.lowercase() == "vec_from_text"
-}
-
-fn supports_compare(sig: ScalarFuncSig) -> bool {
-    use ScalarFuncSig::*;
-    matches!(
+            | Kernel::DateArithmetic { .. }
+    ) || matches!(
+        function.sig,
+        crate::builtin::SigFields::TimeLiteral { .. }
+            | crate::builtin::SigFields::DurationLiteral { .. }
+    ) || matches!(
         sig,
         GreatestInt
             | GreatestReal
@@ -91,38 +69,12 @@ fn supports_compare(sig: ScalarFuncSig) -> bool {
             | LeastCmpStringAsDate
             | IntervalInt
             | IntervalReal
-    )
-}
-
-fn supports_math(sig: ScalarFuncSig) -> bool {
-    use ScalarFuncSig::*;
-    matches!(
-        sig,
-        AbsInt
-            | AbsUInt
-            | AbsReal
-            | AbsDecimal
-            | Sqrt
             | Exp
             | Log1Arg
-            | Log2Args
-            | Log2
             | Log10
-            | Radians
             | Degrees
-            | Sign
-            | CeilIntToInt
             | CeilIntToDec
-            | CeilDecToInt
-            | CeilDecToDec
-            | CeilReal
-            | FloorIntToInt
             | FloorIntToDec
-            | FloorDecToInt
-            | FloorDecToDec
-            | FloorReal
-            | Acos
-            | Asin
             | Atan1Arg
             | Atan2Args
             | Cos
@@ -130,7 +82,6 @@ fn supports_math(sig: ScalarFuncSig) -> bool {
             | Sin
             | Tan
             | Pow
-            | Pi
             | RoundInt
             | RoundReal
             | RoundDec
@@ -143,18 +94,8 @@ fn supports_math(sig: ScalarFuncSig) -> bool {
             | TruncateDecimal
             | Rand
             | RandWithSeedFirstGen
-    )
-}
-
-fn supports_string(function: &ScalarFunction) -> bool {
-    use ScalarFuncSig::*;
-    matches!(
-        function.pb_code(),
-        CharLength
             | CharLengthUtf8
-            | Lower
             | LowerUtf8
-            | Upper
             | UpperUtf8
             | Substring2Args
             | Substring3Args
@@ -162,16 +103,11 @@ fn supports_string(function: &ScalarFunction) -> bool {
             | Substring3ArgsUtf8
             | ToBinary
             | FromBinary
-            | Reverse
             | ReverseUtf8
-            | Strcmp
             | Elt
             | FieldInt
             | FieldReal
             | FieldString
-            | HexStrArg
-            | HexIntArg
-            | Right
             | RightUtf8
             | Space
             | Concat
@@ -184,17 +120,13 @@ fn supports_string(function: &ScalarFunction) -> bool {
             | Ord
             | Repeat
             | FindInSet
-            | Left
             | LeftUtf8
             | Lpad
             | LpadUtf8
             | Rpad
             | RpadUtf8
-            | Locate2Args
             | Locate2ArgsUtf8
-            | Locate3Args
             | Locate3ArgsUtf8
-            | Instr
             | InstrUtf8
             | OctInt
             | OctString
@@ -211,14 +143,7 @@ fn supports_string(function: &ScalarFunction) -> bool {
             | Trim3Args
             | Convert
             | Char
-    ) || function.func_name.lowercase() == "translate"
-}
-
-fn supports_json(function: &ScalarFunction) -> bool {
-    use ScalarFuncSig::*;
-    matches!(
-        function.pb_code(),
-        JsonTypeSig
+            | JsonTypeSig
             | JsonUnquoteSig
             | JsonLengthSig
             | JsonObjectSig
@@ -244,10 +169,137 @@ fn supports_json(function: &ScalarFunction) -> bool {
             | JsonSearchSig
             | JsonStorageFreeSig
             | JsonStorageSizeSig
-    ) || matches!(
-        function.func_name.lowercase(),
-        "json_overlaps" | "json_sum_crc32"
-    )
+            | LikeSig
+            | IlikeSig
+            | AesEncrypt
+            | AesEncryptIv
+            | AesDecrypt
+            | AesDecryptIv
+            | Compress
+            | Uncompress
+            | Encode
+            | Decode
+            | Date
+            | FromUnixTime1Arg
+            | FromUnixTime2Arg
+            | ExtractDatetime
+            | ExtractDuration
+            | TimeFormat
+            | UtcTimeWithArg
+            | UtcTimeWithoutArg
+            | UnixTimestampCurrent
+            | YearWeekWithoutMode
+            | YearWeekWithMode
+            | PeriodDiff
+            | PeriodAdd
+            | NowWithArg
+            | NowWithoutArg
+            | GetFormat
+            | LastDay
+            | StrToDateDate
+            | StrToDateDatetime
+            | StrToDateDuration
+            | FromDays
+            | WeekWithMode
+            | WeekWithoutMode
+            | MakeDate
+            | WeekOfYear
+            | UtcTimestampWithArg
+            | UtcTimestampWithoutArg
+            | UtcDate
+            | UnixTimestampDec
+            | UnixTimestampInt
+            | TimestampAdd
+            | DateFormatSig
+            | SecToTime
+            | CurrentDate
+            | MakeTime
+            | DayOfYear
+            | TimestampDiff
+            | CurrentTime0Arg
+            | CurrentTime1Arg
+            | Time
+            | MonthName
+            | SysDateWithFsp
+            | SysDateWithoutFsp
+            | ConvertTz
+            | Timestamp1Arg
+            | Timestamp2Args
+            | DurationDurationTimeDiff
+            | DurationStringTimeDiff
+            | StringDurationTimeDiff
+            | StringStringTimeDiff
+            | StringTimeTimeDiff
+            | TimeStringTimeDiff
+            | TimeTimeTimeDiff
+            | NullTimeDiff
+            | InetAton
+            | Inet6Aton
+            | IsIPv4
+            | IsUuid
+            | Uuid
+            | UuiDv4
+            | UuiDv7
+            | UuidVersion
+            | UuidTimestamp
+            | VitessHash
+            | DecimalAnyValue
+            | DurationAnyValue
+            | IntAnyValue
+            | JsonAnyValue
+            | RealAnyValue
+            | StringAnyValue
+            | TimeAnyValue
+    ) || crate::time_fn::add_sub::kinds_of_signature(sig).is_some()
+        || supports_info(function)
+        || match function.func_name.lowercase() {
+            "translate"
+            | "json_overlaps"
+            | "json_sum_crc32"
+            | "password"
+            | "random_bytes"
+            | "sm3"
+            | "validate_password_strength"
+            | "tidb_bounded_staleness"
+            | "tidb_parse_tso"
+            | "period_add"
+            | "period_diff"
+            | "curdate"
+            | "current_date"
+            | "utc_date"
+            | "name_const"
+            | "uuid_v4"
+            | "uuid_v7"
+            | "uuid_to_bin"
+            | "bin_to_uuid"
+            | "sleep"
+            | "bit_count"
+            | "getparam"
+            | "row" => true,
+            "getvar" | "setvar" => function.get_static_type().is_some_and(|field| {
+                matches!(
+                    field.eval_type(),
+                    EvalType::Int | EvalType::Real | EvalType::Decimal | EvalType::String
+                )
+            }),
+            _ => false,
+        }
+}
+
+// Vector eligibility is part of the Go expression contract. Execution uses
+// the prepared RPN program and these declarations describe supported APIs.
+fn supports_vec(function: &ScalarFunction) -> bool {
+    use ScalarFuncSig::*;
+    matches!(
+        function.pb_code(),
+        VecDimsSig
+            | VecL1DistanceSig
+            | VecL2DistanceSig
+            | VecNegativeInnerProductSig
+            | VecCosineDistanceSig
+            | VecL2NormSig
+            | VecAsTextSig
+    ) || function.func_name.lowercase() == "vec_from_text"
 }
 
 pub(super) fn supports_info(function: &ScalarFunction) -> bool {
@@ -273,173 +325,6 @@ pub(super) fn supports_info(function: &ScalarFunction) -> bool {
             | "version"
             | "tidb_decode_key"
     )
-}
-
-fn supports_like(function: &ScalarFunction) -> bool {
-    matches!(
-        function.pb_code(),
-        ScalarFuncSig::LikeSig | ScalarFuncSig::IlikeSig
-    )
-}
-
-fn supports_encryption(function: &ScalarFunction) -> bool {
-    use ScalarFuncSig::*;
-    matches!(
-        function.pb_code(),
-        AesEncrypt
-            | AesEncryptIv
-            | AesDecrypt
-            | AesDecryptIv
-            | Compress
-            | Uncompress
-            | UncompressedLength
-            | Encode
-            | Decode
-    ) || matches!(
-        function.func_name.lowercase(),
-        "password" | "random_bytes" | "sm3" | "validate_password_strength"
-    )
-}
-
-fn supports_time(function: &ScalarFunction) -> bool {
-    use ScalarFuncSig::*;
-    if matches!(
-        function.sig,
-        crate::builtin::SigFields::TimeLiteral { .. }
-            | crate::builtin::SigFields::DurationLiteral { .. }
-    ) {
-        return true;
-    }
-    matches!(
-        function.pb_builtin.kernel,
-        super::Kernel::DateArithmetic { .. }
-    ) || matches!(
-        function.pb_code(),
-        Month
-            | Year
-            | Date
-            | FromUnixTime1Arg
-            | FromUnixTime2Arg
-            | ExtractDatetime
-            | ExtractDuration
-            | DayName
-            | WeekDay
-            | TimeFormat
-            | UtcTimeWithArg
-            | UtcTimeWithoutArg
-            | UnixTimestampCurrent
-            | YearWeekWithoutMode
-            | YearWeekWithMode
-            | PeriodDiff
-            | PeriodAdd
-            | NowWithArg
-            | NowWithoutArg
-            | GetFormat
-            | LastDay
-            | StrToDateDate
-            | StrToDateDatetime
-            | StrToDateDuration
-            | FromDays
-            | MicroSecond
-            | Quarter
-            | WeekWithMode
-            | WeekWithoutMode
-            | ToSeconds
-            | Minute
-            | Second
-            | MakeDate
-            | WeekOfYear
-            | UtcTimestampWithArg
-            | UtcTimestampWithoutArg
-            | TimeToSec
-            | UtcDate
-            | UnixTimestampDec
-            | UnixTimestampInt
-            | TimestampAdd
-            | ToDays
-            | DateFormatSig
-            | Hour
-            | SecToTime
-            | DateDiff
-            | CurrentDate
-            | MakeTime
-            | DayOfYear
-            | TimestampDiff
-            | CurrentTime0Arg
-            | CurrentTime1Arg
-            | Time
-            | MonthName
-            | SysDateWithFsp
-            | SysDateWithoutFsp
-            | DayOfWeek
-            | ConvertTz
-            | Timestamp1Arg
-            | Timestamp2Args
-            | DayOfMonth
-            | DurationDurationTimeDiff
-            | DurationStringTimeDiff
-            | StringDurationTimeDiff
-            | StringStringTimeDiff
-            | StringTimeTimeDiff
-            | TimeStringTimeDiff
-            | TimeTimeTimeDiff
-            | NullTimeDiff
-    ) || crate::time_fn::add_sub::kinds_of_signature(function.pb_code()).is_some()
-        || matches!(
-            function.func_name.lowercase(),
-            "tidb_bounded_staleness"
-                | "tidb_parse_tso"
-                | "period_add"
-                | "period_diff"
-                | "curdate"
-                | "current_date"
-                | "utc_date"
-        )
-}
-
-fn supports_miscellaneous(function: &ScalarFunction) -> bool {
-    use ScalarFuncSig::*;
-    matches!(
-        function.pb_code(),
-        InetAton
-            | InetNtoa
-            | Inet6Aton
-            | Inet6Ntoa
-            | IsIPv4
-            | IsIPv6
-            | IsIPv4Compat
-            | IsIPv4Mapped
-            | IsUuid
-            | Uuid
-            | UuiDv4
-            | UuiDv7
-            | UuidVersion
-            | UuidTimestamp
-            | VitessHash
-            | DecimalAnyValue
-            | DurationAnyValue
-            | IntAnyValue
-            | JsonAnyValue
-            | RealAnyValue
-            | StringAnyValue
-            | TimeAnyValue
-    ) || matches!(
-        function.func_name.lowercase(),
-        "name_const" | "uuid_v4" | "uuid_v7" | "uuid_to_bin" | "bin_to_uuid" | "sleep"
-    )
-}
-
-fn supports_other(function: &ScalarFunction) -> bool {
-    match function.func_name.lowercase() {
-        "bit_count" | "getparam" | "row" => true,
-        "getvar" | "setvar" => function.get_static_type().is_some_and(|field| {
-            matches!(
-                field.eval_type(),
-                EvalType::Int | EvalType::Real | EvalType::Decimal | EvalType::String
-            )
-        }),
-        _ => false,
-    }
 }
 
 /// Go `evalOneVec`: evaluate directly into the projection's owned result column.
@@ -627,17 +512,9 @@ pub(crate) fn eval_into(
             }
         }
         Expression::ScalarSubQuery(_) => return Err(crate::scalar_subquery::vec_eval_error()),
-        _ => {}
+        _ => return Err(EvalError::Unsupported("signature has no vectorized implementation")),
     }
-    // Go `Column.VecEval*`: hybrid columns and FLOAT widening read typed
-    // cells; ordinary columns have already returned through CopyReconstruct.
-    if !matches!(expression, Expression::Column(_))
-        && !matches!(expression, Expression::ScalarFunction(function) if has_kernel(function))
-    {
-        return Err(EvalError::Unsupported(
-            "signature has no vectorized implementation",
-        ));
-    }
+    // Go's typed read also handles hybrid columns and FLOAT widening.
     if target == EvalType::Int
         && expression
             .static_type()

@@ -733,7 +733,6 @@ impl EvaluatorSuite {
                     }
                 }
                 if ctx.enable_vectorized_expression()
-                    && crate::chunk_executor::vectorized(expression)
                     && crate::scalar_function::vec_eval::eval_one(
                         expression, ctx, input, output, *output_index,
                     )?

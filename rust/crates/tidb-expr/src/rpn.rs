@@ -144,14 +144,11 @@ impl PreparedExpression {
         else {
             return Ok(None);
         };
-        let Some(schema) = columns
+        let schema = columns
             .iter()
             .chain(compiled.bindings.iter().map(|binding| &binding.field))
             .map(rows::query_field_type)
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Ok(None);
-        };
+            .collect::<Vec<_>>();
         let scalar_effects = match expression {
             ExpressionRoot::Scalar(function) => crate::evaluator::scalar_has_effects(function),
             ExpressionRoot::Leaf(expression) => crate::evaluator::has_scalar_effects(expression),
@@ -465,13 +462,10 @@ impl WireExpressionExecution {
         );
         let mut context = new_context(ctx, Some(request_flags));
         let tree = engine::decode(&expr.encode_to_vec()).map_err(query_error)?;
-        let Some(schema) = columns
+        let schema = columns
             .iter()
             .map(rows::query_field_type)
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Ok(None);
-        };
+            .collect::<Vec<_>>();
         let mut host_calls = Vec::new();
         let program = engine::build_wire(tree, &mut context, &schema, columns, &mut host_calls)
             .map_err(query_error)?;
@@ -531,7 +525,7 @@ fn bind_wire_fields(expr: &mut WireExpr, columns: &[FieldType]) -> Option<()> {
     if expr.tp() == ExprType::ColumnRef {
         let (_, offset) = tidb_codec::decode_int(expr.val()).ok()?;
         let column = columns.get(usize::try_from(offset).ok()?)?;
-        expr.field_type = Some(binding::field_type_to_pb(column)?);
+        expr.field_type = Some(binding::field_type_to_pb(column));
         return Some(());
     }
     for child in &mut expr.children {
@@ -573,9 +567,9 @@ fn bind_wire_fields(expr: &mut WireExpr, columns: &[FieldType]) -> Option<()> {
                         {
                             *wire = WireExpr {
                                 tp: Some(ExprType::Null as i32),
-                                field_type: native_field_declaration(&FieldType::new(
+                                field_type: Some(native_field_declaration(&FieldType::new(
                                     FieldTypeCode::LongLong,
-                                )),
+                                ))),
                                 ..Default::default()
                             };
                         }
@@ -594,7 +588,7 @@ fn bind_wire_fields(expr: &mut WireExpr, columns: &[FieldType]) -> Option<()> {
         if expr.tp() == ExprType::Uint64 {
             field.add_flags(FieldTypeFlags::UNSIGNED);
         }
-        let declared = native_field_declaration(&field)?;
+        let declared = native_field_declaration(&field);
         if let Some(partial) = &mut expr.field_type {
             partial.tp = declared.tp;
             partial.flen = partial.flen.or(declared.flen);
@@ -935,8 +929,7 @@ pub(crate) fn evaluate_required_kernel(
         }
     }
     let output = function.get_static_type().ok_or(EvalError::Unsupported("RPN kernel output type"))?;
-    let mut output_type = rows::query_field_type(output)
-        .ok_or(EvalError::Unsupported("RPN kernel output carrier"))?;
+    let mut output_type = rows::query_field_type(output);
     if matches!(
         signature,
         LtString | LeString | GtString | GeString | EqString | NeString | NullEqString | Strcmp
@@ -967,8 +960,7 @@ pub(crate) fn evaluate_required_kernel(
         } else {
             actual.clone()
         };
-        input_types.push(rows::query_field_type(&carrier)
-            .ok_or(EvalError::Unsupported("RPN kernel input carrier"))?);
+        input_types.push(rows::query_field_type(&carrier));
     }
     let arguments = values.into_iter().zip(inputs).zip(&input_types)
         .map(|((value, domain), field)| {
@@ -1310,7 +1302,7 @@ fn lower_declared(
                     let output = expression.static_type()?.clone();
                     let mut call = QueryExpr::new();
                     call.set_tp(QueryExprType::ScalarFunc);
-                    call.set_field_type(rows::query_field_type(&output)?);
+                    call.set_field_type(rows::query_field_type(&output));
                     call.mut_children().push(lower_declared(
                         child.into(),
                         environment,
@@ -1368,7 +1360,7 @@ fn lower_declared(
                     )?;
                     let mut call = QueryExpr::new();
                     call.set_tp(QueryExprType::ScalarFunc);
-                    call.set_field_type(rows::query_field_type(result_type)?);
+                    call.set_field_type(rows::query_field_type(result_type));
                     call.mut_children().push(input);
                     return bind_host_call(
                         call,
@@ -1530,7 +1522,7 @@ fn lower_declared(
         // Read session values, including the statement clock, on demand.
         return bind_context_input(function, base_columns + bindings.len(), result_type, bindings);
     }
-    let mut field_type = rows::query_field_type(result_type)?;
+    let mut field_type = rows::query_field_type(result_type);
     let (charset, collation) = function.collation.charset_and_collation();
     if !matches!(name, "char_func" | "convert_using")
         && !result_type.is_binary_string()
@@ -1643,7 +1635,7 @@ fn lower_declared(
             body.set_tp(QueryExprType::Null);
             body.set_field_type(rows::query_field_type(&FieldType::new(
                 FieldTypeCode::Null,
-            ))?);
+            )));
             call.mut_children().push(body);
             continue;
         }
@@ -1891,7 +1883,7 @@ fn lower_declared(
             ignored.set_tp(QueryExprType::Null);
             ignored.set_field_type(rows::query_field_type(&FieldType::new(
                 FieldTypeCode::VarString,
-            ))?);
+            )));
             call.mut_children().push(ignored);
         }
     }
@@ -2278,7 +2270,7 @@ fn bind_host_operand(
 ) -> Option<QueryExpr> {
     let mut call = QueryExpr::new();
     call.set_tp(QueryExprType::ScalarFunc);
-    call.set_field_type(rows::query_field_type(output)?);
+    call.set_field_type(rows::query_field_type(output));
     call.mut_children().push(operand);
     bind_host_call(call, operation, vec![input], host_calls)
 }
@@ -2441,22 +2433,22 @@ fn column_input(offset: usize, field: &FieldType) -> Option<QueryExpr> {
     tidb_codec::encode_int(&mut offset_bytes, i64::try_from(offset).ok()?);
     let mut column = QueryExpr::new();
     column.set_tp(QueryExprType::ColumnRef);
-    column.set_field_type(rows::query_field_type(field)?);
+    column.set_field_type(rows::query_field_type(field));
     column.set_val(offset_bytes);
     Some(column)
 }
 
-fn native_field_declaration(field: &FieldType) -> Option<tidb_proto::tipb::FieldType> {
+fn native_field_declaration(field: &FieldType) -> tidb_proto::tipb::FieldType {
     if field.code() == FieldTypeCode::Set {
         // The native SET supplies the name and bits in memory. Both fit the
         // SDK's hybrid input carrier while wire SET decoding stays disabled.
         return binding::field_type_to_pb(&field.clone().with_code(FieldTypeCode::Enum));
     }
-    let mut declaration = binding::field_type_to_pb(field)?;
+    let mut declaration = binding::field_type_to_pb(field);
     if field.code() == FieldTypeCode::String && field.is_binary_string() {
         declaration.flen = Some(field.flen().min(i64::from(i32::MAX)) as i32);
     }
-    Some(declaration)
+    declaration
 }
 
 fn eval_type(expr: &QueryExpr) -> Option<EvalType> {
@@ -2530,7 +2522,7 @@ fn truth_operand(mut arg: QueryExpr) -> Option<QueryExpr> {
 }
 
 fn bind_selection_result(mut arg: QueryExpr, result: &FieldType) -> Option<QueryExpr> {
-    let field = rows::query_field_type(result)?;
+    let field = rows::query_field_type(result);
     let expected = EvalType::try_from(field.as_accessor().tp()).ok()?;
     if arg.get_tp() == QueryExprType::Null {
         arg.set_field_type(field);
@@ -2617,7 +2609,7 @@ fn make_cast(arg: QueryExpr, from: EvalType, to: EvalType) -> Option<QueryExpr> 
 fn unary_call(sig: ScalarFuncSig, field: &FieldType, arg: QueryExpr) -> Option<QueryExpr> {
     let mut call = QueryExpr::new();
     call.set_tp(QueryExprType::ScalarFunc);
-    call.set_field_type(rows::query_field_type(field)?);
+    call.set_field_type(rows::query_field_type(field));
     call.set_sig(sig);
     call.mut_children().push(arg);
     Some(call)
@@ -3228,7 +3220,7 @@ mod tests {
     #[test]
     fn wide_json_column_compiles_with_its_native_declaration() {
         let json = FieldType::new(FieldTypeCode::Json).with_flen(i64::from(u32::MAX));
-        let wire = binding::field_type_to_pb(&json).expect("Go narrows the width");
+        let wire = binding::field_type_to_pb(&json);
         assert_eq!(wire.flen(), -1);
         let mut chunk = Chunk::new(std::slice::from_ref(&json), 2, 2);
         chunk.append_json(0, &tidb_datatype::BinaryJSON::parse(r#"{"a":1}"#).unwrap());
