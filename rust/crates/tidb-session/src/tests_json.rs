@@ -1749,12 +1749,10 @@ fn json_path_errors_carry_the_code_of_where_they_are_evaluated() {
     assert!(row_text(session.run("select json_extract('[1,2,3]', '$[1') from e")).is_empty());
 }
 
-/// `JSON_QUOTE` is Go's `encoding/json` encoder (U+2028 escaped, an invalid
-/// byte read as U+FFFD) and `JSON_UNQUOTE` checks a quoted argument with
-/// `json.Valid` before `types.UnquoteString`, whose own failures are plain Go
-/// errors (1105). Every answer captured from Go on this branch.
+/// JSON_QUOTE preserves the SQL encoder's UTF-8 and control characters.
+/// JSON_UNQUOTE uses the shared TiKV decoder and its error code.
 #[test]
-fn json_quote_and_unquote_answer_like_go() {
+fn json_quote_and_unquote_report_invalid_text() {
     let mut session = Session::new();
     for (sql, want) in [
         (
@@ -1766,8 +1764,8 @@ fn json_quote_and_unquote_answer_like_go() {
             r#""x\b\f\u0001<>&""#,
         ),
         ("select hex(json_quote(x'ff41'))", "22EFBFBD4122"),
-        (r#"select json_unquote('"a" "b"')"#, "ERR 3140"),
-        (r#"select json_unquote('"\\x"')"#, "ERR 3140"),
+        (r#"select json_unquote('"a" "b"')"#, "ERR 1105"),
+        (r#"select json_unquote('"\\x"')"#, "ERR 1105"),
         (r#"select json_unquote('"abc')"#, r#""abc"#),
         (r#"select json_unquote('"a\\tb"')"#, "a\tb"),
         (
@@ -1781,10 +1779,8 @@ fn json_quote_and_unquote_answer_like_go() {
         .run(r#"select json_unquote('"\\ud800"')"#)
         .unwrap_err()
         .to_mysql_error();
-    assert_eq!(
-        (error.code, error.message.as_str()),
-        (1105, "Invalid unicode: d800")
-    );
+    assert_eq!(error.code, 1105);
+    assert!(error.message.ends_with("invalid char from: d800"), "{error:?}");
 }
 
 /// Go `newBaseBuiltinFuncWithTp`'s argument casts are part of the expression

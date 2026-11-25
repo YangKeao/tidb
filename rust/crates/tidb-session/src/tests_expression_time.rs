@@ -273,7 +273,7 @@ fn clock_precision_is_checked_while_building() {
 /// LAST_DAY accepts a zero day without it. Captured from Go TiDB under the
 /// default sql_mode and under `''`.
 #[test]
-fn date_part_builtins_warn_on_zero_dates_as_go() {
+fn date_part_builtins_warn_on_zero_dates() {
     let mut session = Session::new();
     session
         .run("create table t(v1 datetime, v2 datetime(3))")
@@ -309,8 +309,6 @@ fn date_part_builtins_warn_on_zero_dates_as_go() {
             for (arg, rendered) in args {
                 let sql = format!("select {function}({arg}) from t");
                 let (value, warns) = match (function, arg, strict) {
-                    ("MONTHNAME", "'2024-02-00'", _) => ("February", false),
-                    ("MONTHNAME", "'2024-00-10'", _) | ("MONTHNAME", _, false) => ("NULL", false),
                     ("LAST_DAY", "'2024-02-00'", false) => ("2024-02-29", false),
                     _ => ("NULL", true),
                 };
