@@ -2772,6 +2772,30 @@ mod tests {
     }
 
     #[test]
+    fn prepared_period_operations_apply_sql_month_validation() {
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let mut input = Chunk::new_chunk_with_capacity(std::slice::from_ref(&integer), 1);
+        input.append_int64(0, 201313);
+        let right = Expression::Constant(crate::constant::Constant::new(
+            Datum::Int(200101), integer.clone(),
+        ));
+        for name in ["period_add", "period_diff"] {
+            let expression = Expression::ScalarFunction(build_function(
+                CiString::new(name),
+                integer.clone(),
+                vec![Expression::Column(Column::new(0, integer.clone())), right.clone()],
+            ));
+            let mut program = PreparedExpression::new(&expression, &crate::NoColumns, 1)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                program.evaluate_row(&crate::NoColumns, input.get_row(0)),
+                Err(EvalError::IncorrectArguments(format!("Incorrect arguments to {name}"))),
+            );
+        }
+    }
+
+    #[test]
     fn prepared_enum_literal_reads_the_native_member_name() {
         let value = Datum::new_enum(
             tidb_datatype::MysqlEnum::new("member", 1),

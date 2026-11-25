@@ -136,8 +136,6 @@ pub(super) fn function_signature(function: &ScalarFunction) -> Option<ScalarFunc
     // wire declarations.
     Some(match (function.func_name.lowercase(), function.args.len()) {
         ("bit_count", 1) => ScalarFuncSig::BitCount,
-        ("period_add", 2) => ScalarFuncSig::PeriodAdd,
-        ("period_diff", 2) => ScalarFuncSig::PeriodDiff,
         ("ltrim_with" | "rtrim_with", 2) => ScalarFuncSig::Trim3Args,
         ("json_member_of", 2) => ScalarFuncSig::JsonMemberOfSig,
         ("json_merge_preserve", 2..) => ScalarFuncSig::JsonMergeSig,

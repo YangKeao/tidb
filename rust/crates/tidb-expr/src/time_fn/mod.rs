@@ -1162,7 +1162,8 @@ pub(crate) fn period_add(vals: &[Datum]) -> Result<Datum, EvalError> {
             "Incorrect arguments to period_add".to_owned(),
         ));
     }
-    let sum = (period_to_month(period as u64) as i64).wrapping_add(months);
+    let start = tidb_query_datatype::codec::mysql::Time::period_to_month(period as u64);
+    let sum = (start as i64).wrapping_add(months);
     Ok(Datum::Int(month_to_period(sum as u64) as i64))
 }
 
@@ -1180,29 +1181,13 @@ pub(crate) fn period_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
             "Incorrect arguments to period_diff".to_owned(),
         ));
     }
-    // Go subtracts the uint64 month totals before converting to int64.
-    Ok(Datum::Int(
-        period_to_month(period1 as u64).wrapping_sub(period_to_month(period2 as u64)) as i64,
-    ))
+    tidb_query_expr::impl_time::period_diff(Some(&period1), Some(&period2))
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 fn valid_period(period: i64) -> bool {
     period >= 0 && period % 100 != 0 && period % 100 <= 12
-}
-
-/// Exact `period2Month` from `pkg/expression/builtin_time.go`.
-fn period_to_month(period: u64) -> u64 {
-    if period == 0 {
-        return 0;
-    }
-    let mut year = period / 100;
-    let month = period % 100;
-    if year < 70 {
-        year += 2_000;
-    } else if year < 100 {
-        year += 1_900;
-    }
-    year.wrapping_mul(12).wrapping_add(month).wrapping_sub(1)
 }
 
 /// Exact `month2Period` from `pkg/expression/builtin_time.go`.
