@@ -163,9 +163,8 @@ impl PreparedExpression {
                 .any(|call| match &call.operation {
                     HostOperation::LocalBuiltin(_)
                     | HostOperation::DeferredValue(_)
-                    | HostOperation::SqlCast(_)
+                    | HostOperation::SeedAsSigned
                     | HostOperation::NumericCast(_)
-                    | HostOperation::JsonCast { .. }
                     | HostOperation::TemporalFsp(_) => false,
                     _ => true,
                 });
@@ -1156,9 +1155,8 @@ enum HostOperation {
     ClockDuration { utc: bool },
     PasswordStrength,
     DateArithmetic { subtract: bool, result: FieldType },
-    SqlCast(tidb_ast::CastType),
+    SeedAsSigned,
     NumericCast(NativeEvalType),
-    JsonCast { parse: bool },
     TemporalFsp(i64),
     RejectVectorCast,
     RejectVectorJsonCast,
@@ -2035,23 +2033,12 @@ fn lower_declared(
                 host_calls,
             );
         }
-        if name == "cast_json"
-            && (source.eval_type() == NativeEvalType::String
-                || source.code() == FieldTypeCode::Year)
-        {
+        let json_with_sql_input = name == "cast_json"
+            && (source.eval_type() == NativeEvalType::String || source.code() == FieldTypeCode::Year);
+        if json_with_sql_input || needs_sql_cast_kernel(name, source.eval_type()) {
             return bind_host_call(
                 call,
-                HostOperation::JsonCast {
-                    parse: result_type.has_flag(FieldTypeFlags::PARSE_TO_JSON),
-                },
-                vec![source.clone()],
-                host_calls,
-            );
-        }
-        if let Some(target) = sql_cast_override(name, source, result_type) {
-            return bind_host_call(
-                call,
-                HostOperation::SqlCast(target),
+                HostOperation::LocalBuiltin(Box::new(PreparedLocalBuiltin::new(function))),
                 vec![source.clone()],
                 host_calls,
             );
@@ -2105,7 +2092,7 @@ fn lower_declared(
         call.mut_children().push(if kind == EvalType::Bytes {
             bind_host_operand(
                 seed,
-                HostOperation::SqlCast(tidb_ast::CastType::Signed),
+                HostOperation::SeedAsSigned,
                 seed_source?.static_type()?.clone(),
                 &FieldType::new(FieldTypeCode::LongLong),
                 host_calls,
@@ -2192,61 +2179,17 @@ fn lower_declared(
     bind_host_call(call, operation, arguments, host_calls)
 }
 
-// These SQL conversions carry the statement clock or retain TiDB's
-// diagnostics and declared output widths.
-fn sql_cast_override(
-    name: &str,
-    source: &FieldType,
-    result: &FieldType,
-) -> Option<tidb_ast::CastType> {
-    use tidb_ast::CastType;
-    let length = u32::try_from(result.flen()).ok();
-    let fsp = u32::try_from(result.decimal()).ok();
-    Some(match name {
-        "cast_signed"
-            if matches!(
-                source.eval_type(),
-                NativeEvalType::String | NativeEvalType::Real | NativeEvalType::Decimal
-            ) =>
-        {
-            CastType::Signed
-        }
-        "cast_unsigned"
-            if matches!(
-                source.eval_type(),
-                NativeEvalType::String
-                    | NativeEvalType::Int
-                    | NativeEvalType::Real
-                    | NativeEvalType::Decimal
-            ) =>
-        {
-            CastType::Unsigned
-        }
-        "cast_decimal" => CastType::Decimal {
-            flen: length.unwrap_or(0),
-            scale: fsp.unwrap_or(crate::cast::UNSPECIFIED_CAST_SCALE),
-        },
-        // The storage CAST renders the exact Decimal coefficient, which can
-        // retain more fractional digits than the protocol result display.
-        "cast_char" if source.eval_type() == NativeEvalType::Decimal => return None,
-        "cast_char" => CastType::Char {
-            len: length,
-            charset: Some(if result.is_binary_string() {
-                "BINARY".to_owned()
-            } else {
-                result.charset_name().to_owned()
-            }),
-        },
-        "cast_binary" => CastType::Binary {
-            len: length.filter(|_| result.code() == FieldTypeCode::String),
-        },
-        "cast_date" => CastType::Date,
-        "cast_datetime" => CastType::DateTime { fsp },
-        "cast_time" => CastType::Time { fsp },
-        "cast_vector" => CastType::Vector { dimensions: length },
-        "cast_float" => CastType::Float,
-        _ => return None,
-    })
+// Use the SQL signature's conversion when it owns diagnostics or result widths.
+fn needs_sql_cast_kernel(name: &str, source: NativeEvalType) -> bool {
+    use NativeEvalType::*;
+    match (name, source) {
+        ("cast_signed", String | Real | Decimal)
+        | ("cast_unsigned", String | Int | Real | Decimal)
+        | ("cast_decimal" | "cast_binary" | "cast_date" | "cast_datetime"
+             | "cast_time" | "cast_vector" | "cast_float", _) => true,
+        ("cast_char", source) => source != Decimal,
+        _ => false,
+    }
 }
 
 fn local_typed_kernel(function: &ScalarFunction) -> bool {

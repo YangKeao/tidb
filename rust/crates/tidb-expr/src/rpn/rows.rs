@@ -205,23 +205,6 @@ impl NativeRows<'_> {
                         value => Ok(value),
                     }
                 }
-                (HostOperation::JsonCast { parse }, [value], [field]) => {
-                    let value = from_query_value(value.get_logical_scalar_ref(row), field)?;
-                    let value = match value {
-                        Datum::Int(value) if field.code() == FieldTypeCode::Year => {
-                            Datum::UInt(value as u64)
-                        }
-                        value @ (Datum::Enum(..) | Datum::Set(..)) => {
-                            Datum::new_bytes_datum(value.sql_bytes().map_err(error)?)
-                        }
-                        value => value,
-                    };
-                    if *parse {
-                        crate::builtin_ext::cast_as_json_typed(&value, Some(field))
-                    } else {
-                        crate::builtin_ext::cast_as_json_value_typed(&value, Some(field))
-                    }
-                }
                 (HostOperation::NumericCast(target), [value], [field]) => {
                     let value = from_query_value(value.get_logical_scalar_ref(row), field)?;
                     crate::scalar_function::cast_numeric_value(
@@ -233,12 +216,17 @@ impl NativeRows<'_> {
                         || None,
                     )
                 }
-                (HostOperation::SqlCast(target), [value], [field]) => {
+                (HostOperation::SeedAsSigned, [value], [field]) => {
                     let value = from_query_value(value.get_logical_scalar_ref(row), field)?;
                     if value.is_null() {
                         Ok(value)
                     } else {
-                        crate::cast::eval_cast(target, value, Some(field), self.context)
+                        crate::cast::eval_cast(
+                            &tidb_ast::CastType::Signed,
+                            value,
+                            Some(field),
+                            self.context,
+                        )
                     }
                 }
                 (HostOperation::CapturedRandom(generator), [], []) => {
