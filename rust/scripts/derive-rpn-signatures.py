@@ -127,62 +127,14 @@ def unexported_signature(method):
 
 def sdk_signatures(tikv):
     source = (tikv / "components/tidb_query_expr/src/lib.rs").read_text()
-    registry = source.split("pub fn resolve_rpn_function(", 1)[1].split("fn map_expr_node_to_sc_func", 1)[0]
+    entry = re.search(r"^\s*(?:pub )?fn (?:resolve_rpn_function|map_expr_node_to_rpn_func)\(", source, re.M)
+    if entry is None:
+        raise ValueError(f"cannot find the RPN mapper in {tikv}")
+    registry = source[entry.end():].split("fn map_expr_node_to_sc_func", 1)[0]
     return list(dict.fromkeys(re.findall(r'ScalarFuncSig::(\w+)', registry)))
 
 
-def signedness_rules(signatures, by_name):
-    """Emit the sign constraints encoded by related overload spellings."""
-    arguments = {}
-    results = {}
-    for sig in signatures:
-        if pair := re.search(r'(Unsigned|Signed)(Unsigned|Signed)$', sig):
-            arguments[sig] = tuple(sign == "Unsigned" for sign in pair.groups())
-
-    for overloads in by_name.values():
-        for sig in sorted(overloads):
-            if pair := re.fullmatch(r'(.*)U(Int|int)', sig):
-                signed = pair[1] + "Int"
-                if signed in overloads:
-                    arguments[signed] = (False,)
-                    arguments[sig] = (True,)
-            if sig.endswith("IntUnsigned") and sig.removesuffix("Unsigned") in overloads:
-                results[sig.removesuffix("Unsigned")] = False
-                results[sig] = True
-    return arguments, results
-
-
-def text_mode_rules(by_name, classes, methods):
-    """Read the operand supplying binary versus character overloads."""
-    rules = {}
-    for overloads in by_name.values():
-        for utf8 in sorted(overloads):
-            binary = utf8.removesuffix("Utf8")
-            if binary == utf8 or binary not in overloads:
-                continue
-            owners = classes[binary.casefold()] & classes[utf8.casefold()]
-            constructs = [
-                method for klass in owners for _, method in methods[klass]
-                if f"tipb.ScalarFuncSig_{utf8[:-4]}UTF8" in method
-            ]
-            assert len(constructs) == 1, (binary, owners)
-            method = constructs[0]
-            if "bf.collation == charset.CollationBin" in method:
-                source = "CallCollation"
-            elif "types.IsBinaryStr(bf.tp)" in method:
-                source = "Result"
-            elif re.search(r'types.IsBinaryStr\(args\[2\].GetType\(', method):
-                assert "types.IsBinaryStr(args[0].GetType(" in method, binary
-                source = "FirstOrThird"
-            else:
-                assert "types.IsBinaryStr(" in method and "args[0].GetType(" in method, binary
-                source = "FirstOrBit" if "types.IsTypeBit(" in method else "First"
-            rules[binary] = (source, True)
-            rules[utf8] = (source, False)
-    return rules
-
-
-def main(tidb, tikv, mode="inventory"):
+def main(tidb, tikv):
     registrations = native_registrations(tidb)
     field_types, methods, callbacks = native_methods(tidb)
     classes = collections.defaultdict(set)
@@ -222,43 +174,6 @@ def main(tidb, tikv, mode="inventory"):
     # Go's JSON IS NULL casts to text and emits StringIsNull. The SDK can
     # inspect the existing typed JSON carrier without converting any value.
     bindings["jsonisnull"] = bindings["stringisnull"].copy()
-    if mode == "rust":
-        by_name = collections.defaultdict(set)
-        for sig in supported:
-            for name, minimum, maximum in bindings[sig.casefold()]:
-                by_name[(name, minimum, maximum)].add(sig)
-        print("// Copyright 2026 PingCAP, Inc. Licensed under Apache-2.0.")
-        print("// Generated from the Go builtin registrations and the SDK signature registry.")
-        print("use tidb_query_expr::ScalarFuncSig;")
-        print()
-        print("#[rustfmt::skip]")
-        print("pub(super) const SIGNATURES: &[(&str, usize, Option<usize>, &[ScalarFuncSig])] = &[")
-        for (name, minimum, maximum), sigs in sorted(by_name.items()):
-            candidates = ", ".join(f"ScalarFuncSig::{sig}" for sig in sorted(sigs))
-            maximum = "None" if maximum < 0 else f"Some({maximum})"
-            print(f'    ("{name}", {minimum}, {maximum}, &[{candidates}]),')
-        print("];")
-        arguments, results = signedness_rules(supported, by_name)
-        print()
-        print("pub(super) const ARGUMENT_SIGNEDNESS: &[(ScalarFuncSig, &[bool])] = &[")
-        for sig, flags in sorted(arguments.items()):
-            flags = ", ".join(str(flag).lower() for flag in flags)
-            print(f"    (ScalarFuncSig::{sig}, &[{flags}]),")
-        print("];")
-        print()
-        print("pub(super) const RESULT_SIGNEDNESS: &[(ScalarFuncSig, bool)] = &[")
-        for sig, flag in sorted(results.items()):
-            print(f"    (ScalarFuncSig::{sig}, {str(flag).lower()}),")
-        print("];")
-        print()
-        print("use super::TextModeSource;")
-        print("#[rustfmt::skip]")
-        print("pub(super) const TEXT_MODES: &[(ScalarFuncSig, TextModeSource, bool)] = &[")
-        for sig, (source, binary) in sorted(text_mode_rules(by_name, classes, methods).items()):
-            print(f"    (ScalarFuncSig::{sig}, TextModeSource::{source}, {str(binary).lower()}),")
-        print("];")
-        return
-
     inventory = [
         dict(signature=sig, native_classes=sorted(classes[sig.casefold()]), candidates=sorted(bindings[sig.casefold()]))
         for sig in supported
@@ -271,4 +186,4 @@ def main(tidb, tikv, mode="inventory"):
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]), *sys.argv[3:])
+    main(Path(sys.argv[1]), Path(sys.argv[2]))

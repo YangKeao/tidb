@@ -129,7 +129,20 @@ pub(super) fn uses_native_real_math(name: &str) -> bool {
 
 pub(super) fn function_signature(function: &ScalarFunction) -> Option<ScalarFuncSig> {
     let signature = function.pb_code();
-    (signature != ScalarFuncSig::Unspecified).then_some(signature)
+    if signature != ScalarFuncSig::Unspecified {
+        return Some(signature);
+    }
+    // These names carry local execution signatures without changing their
+    // wire declarations.
+    Some(match (function.func_name.lowercase(), function.args.len()) {
+        ("bit_count", 1) => ScalarFuncSig::BitCount,
+        ("period_add", 2) => ScalarFuncSig::PeriodAdd,
+        ("period_diff", 2) => ScalarFuncSig::PeriodDiff,
+        ("ltrim_with" | "rtrim_with", 2) => ScalarFuncSig::Trim3Args,
+        ("json_member_of", 2) => ScalarFuncSig::JsonMemberOfSig,
+        ("json_merge_preserve", 2..) => ScalarFuncSig::JsonMergeSig,
+        _ => return None,
+    })
 }
 
 pub(crate) const fn cast_signature(from: EvalType, to: EvalType) -> Option<Option<ScalarFuncSig>> {

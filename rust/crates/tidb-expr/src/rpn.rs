@@ -35,7 +35,6 @@ use engine::{resolve_rpn_function, scalar_func_sig, RpnArgTypes};
 
 mod binding;
 mod rows;
-mod signatures;
 
 use tidb_exprctx::context::StatementSeededRandom;
 
@@ -1527,14 +1526,7 @@ fn lower_declared(
         "rtrim_with" => Some(3_i64),
         _ => None,
     };
-    let candidates = match name {
-        "json_merge_preserve" => registered_candidates("json_merge", function.args.len()),
-        _ if trim_direction.is_some() => registered_candidates("trim", function.args.len() + 1),
-        "json_member_of" => registered_candidates("json_memberof", function.args.len()),
-        _ => registered_candidates(name, function.args.len()),
-    };
     if signature.is_none()
-        && candidates.is_none()
         && lock.is_none()
         && (function.args.is_empty()
             || matches!(name, "tidb_is_ddl_owner" | "values")
@@ -2124,11 +2116,16 @@ fn lower_declared(
     } else if local_kernel {
         None
     } else if signature.is_some() {
-        // An already decoded native PB expression retains its selected
-        // signature. Bind its operands through the same declaration rules.
+        // The SQL constructor selects the overload before lowering.
         resolve_rpn_function(call.get_sig(), call.get_field_type(), call.get_children())
             .ok()
             .and_then(|meta| {
+                if function.pb_code() == tidb_proto::tipb::ScalarFuncSig::Unspecified
+                    && (meta.return_type != eval_type(&call)?
+                        || matches!(meta.argument_types, RpnArgTypes::Unused))
+                {
+                    return None;
+                }
                 if meta.validate(&call).is_ok() {
                     Some(std::mem::take(&mut call))
                 } else {
@@ -2138,7 +2135,7 @@ fn lower_declared(
                 }
             })
     } else {
-        candidates.and_then(|candidates| select_call(&mut call, function, candidates))
+        None
     };
     if let Some(mut call) = selected {
         if numeric_domain.is_some() {
@@ -2552,165 +2549,6 @@ fn native_field_declaration(field: &FieldType) -> Option<tidb_proto::tipb::Field
         declaration.flen = Some(field.flen().min(i64::from(i32::MAX)) as i32);
     }
     Some(declaration)
-}
-
-fn registered_candidates(name: &str, argc: usize) -> Option<&'static [ScalarFuncSig]> {
-    let index = signatures::SIGNATURES
-        .binary_search_by_key(&name, |&(name, _, _, _)| name)
-        .ok()?;
-    let (_, minimum, maximum, signatures) = signatures::SIGNATURES[index];
-    (minimum <= argc && maximum.is_none_or(|maximum| argc <= maximum)).then_some(signatures)
-}
-
-fn select_call(
-    call: &mut QueryExpr,
-    function: &ScalarFunction,
-    candidates: &[ScalarFuncSig],
-) -> Option<QueryExpr> {
-    let return_type = eval_type(call)?;
-    let name = function.func_name.lowercase();
-    let extremum = if matches!(name, "greatest" | "least") {
-        Some(crate::rewriter::result_type::gl_signature(&function.args)?)
-    } else {
-        None
-    };
-    let field_domain = (name == "field").then(|| {
-        let domains = function
-            .args
-            .iter()
-            .filter_map(Expression::static_type)
-            .map(FieldType::eval_type);
-        if domains.clone().all(|kind| kind == NativeEvalType::String) {
-            EvalType::Bytes
-        } else if domains.clone().all(|kind| kind == NativeEvalType::Int) {
-            EvalType::Int
-        } else {
-            EvalType::Real
-        }
-    });
-    let mut exact = None;
-    let mut converted = None;
-    let mut converted_ambiguous = false;
-    let date_result = function
-        .get_static_type()
-        .is_some_and(|field| field.code() == FieldTypeCode::Date);
-    for &sig in candidates {
-        if !matches_signedness(sig, call)
-            || !matches_text_mode(sig, function)
-            || (sig == ScalarFuncSig::StrToDateDate && !date_result)
-            || (sig == ScalarFuncSig::StrToDateDatetime && date_result)
-        {
-            continue;
-        }
-        call.set_sig(sig);
-        let Ok(meta) = resolve_rpn_function(sig, call.get_field_type(), call.get_children()) else {
-            continue;
-        };
-        // No-read overloads must be selected from source declarations before
-        // lowering children, as ADDTIME does above. A compatible carrier alone
-        // cannot justify discarding a SQL operand.
-        if meta.return_type != return_type || matches!(meta.argument_types, RpnArgTypes::Unused) {
-            continue;
-        }
-        if let Some(expected) = field_domain.or(extremum.map(|mode| query_eval_type(mode.arg_type)))
-        {
-            if !matches!(meta.argument_types, RpnArgTypes::Uniform(actual) if actual == expected) {
-                continue;
-            }
-        }
-        if extremum.is_some_and(|mode| !matches_extremum(sig, mode)) {
-            continue;
-        }
-
-        if meta.validate(call).is_ok() {
-            if exact.replace(sig).is_some() {
-                return None;
-            }
-        } else if let Some(candidate) = coerce_call(call, meta.argument_types) {
-            if meta.validate(&candidate).is_ok() {
-                converted_ambiguous |= converted.replace(candidate).is_some();
-            }
-        }
-    }
-    if let Some(sig) = exact {
-        call.set_sig(sig);
-        Some(std::mem::take(call))
-    } else if converted_ambiguous {
-        None
-    } else {
-        converted
-    }
-}
-
-fn matches_extremum(signature: ScalarFuncSig, mode: crate::builtin_ext::GlSignature) -> bool {
-    use crate::builtin_ext::GlCmpStringMode;
-    use ScalarFuncSig::*;
-    match signature {
-        GreatestCmpStringAsDate | LeastCmpStringAsDate => {
-            mode.cmp_string_mode == GlCmpStringMode::AsDate
-        }
-        GreatestCmpStringAsTime | LeastCmpStringAsTime => {
-            mode.cmp_string_mode == GlCmpStringMode::AsDatetime
-        }
-        GreatestString | LeastString => mode.cmp_string_mode == GlCmpStringMode::Directly,
-        GreatestDate | LeastDate => mode.ret_date,
-        GreatestTime | LeastTime => !mode.ret_date,
-        _ => true,
-    }
-}
-
-#[derive(Clone, Copy)]
-enum TextModeSource {
-    First,
-    FirstOrBit,
-    FirstOrThird,
-    Result,
-    CallCollation,
-}
-
-fn matches_text_mode(signature: ScalarFuncSig, function: &ScalarFunction) -> bool {
-    let Some(&(_, source, binary)) = signatures::TEXT_MODES
-        .iter()
-        .find(|&&(sig, _, _)| sig == signature)
-    else {
-        return true;
-    };
-    let argument = |index| function.args.get(index).and_then(Expression::static_type);
-    let binary_argument = |index| argument(index).is_some_and(FieldType::is_binary_string);
-    let actual = match source {
-        TextModeSource::First => binary_argument(0),
-        TextModeSource::FirstOrBit => {
-            binary_argument(0)
-                || argument(0).is_some_and(|field| field.code() == FieldTypeCode::Bit)
-        }
-        TextModeSource::FirstOrThird => binary_argument(0) || binary_argument(2),
-        TextModeSource::Result => function
-            .get_static_type()
-            .is_some_and(FieldType::is_binary_string),
-        TextModeSource::CallCollation => {
-            let (_, collation) = function.collation.charset_and_collation();
-            collation == "binary"
-        }
-    };
-    binary == actual
-}
-
-fn matches_signedness(signature: ScalarFuncSig, call: &QueryExpr) -> bool {
-    let unsigned = |expr: &QueryExpr| expr.get_field_type().as_accessor().is_unsigned();
-    signatures::RESULT_SIGNEDNESS
-        .iter()
-        .find(|&&(sig, _)| sig == signature)
-        .is_none_or(|&(_, expected)| unsigned(call) == expected)
-        && signatures::ARGUMENT_SIGNEDNESS
-            .iter()
-            .find(|&&(sig, _)| sig == signature)
-            .is_none_or(|&(_, expected)| {
-                call.get_children()
-                    .iter()
-                    .map(unsigned)
-                    .take(expected.len())
-                    .eq(expected.iter().copied())
-            })
 }
 
 fn eval_type(expr: &QueryExpr) -> Option<EvalType> {
@@ -3232,15 +3070,18 @@ mod tests {
     }
 
     #[test]
-    fn generated_bindings_distinguish_aliases_from_configured_semantics() {
-        assert_eq!(
-            registered_candidates("ceil", 1),
-            registered_candidates("ceiling", 1)
-        );
-        assert!(registered_candidates("ceil", 1)
-            .unwrap()
-            .contains(&ScalarFuncSig::CeilReal));
-        assert!(registered_candidates("ceil", 2).is_none());
+    fn declared_bindings_preserve_aliases_and_configured_truth_semantics() {
+        use tidb_proto::tipb::ScalarFuncSig;
+
+        let real = FieldType::new(FieldTypeCode::Double);
+        for name in ["ceil", "ceiling"] {
+            let function = build_function(
+                CiString::new(name),
+                real.clone(),
+                vec![Expression::Column(Column::new(0, real.clone()))],
+            );
+            assert_eq!(binding::function_signature(&function), Some(ScalarFuncSig::CeilReal));
+        }
         let expected = [
             (
                 "istrue",
@@ -3264,16 +3105,13 @@ mod tests {
         input.append_int64(0, 0);
         input.append_int64(0, -2);
         for (name, sig, results) in expected {
-            let candidates = registered_candidates(name, 1).unwrap();
-            assert!(candidates.contains(&sig));
-            assert!(!expected
-                .iter()
-                .any(|(_, other, _)| *other != sig && candidates.contains(other)));
-            let expression = Expression::ScalarFunction(build_function(
+            let function = build_function(
                 CiString::new(name),
                 integer.clone(),
                 vec![Expression::Column(Column::new(0, integer.clone()))],
-            ));
+            );
+            assert_eq!(binding::function_signature(&function), Some(sig));
+            let expression = Expression::ScalarFunction(function);
             let mut program = PreparedExpression::new(&expression, &crate::NoColumns, 1)
                 .unwrap()
                 .unwrap();
@@ -3286,18 +3124,6 @@ mod tests {
                 .unwrap();
             assert_eq!(values, results);
         }
-        let compare = registered_candidates("eq", 2).unwrap();
-        assert!(compare.contains(&ScalarFuncSig::EqInt));
-        assert!(!compare.contains(&ScalarFuncSig::GtInt));
-        let add = registered_candidates("date_add", 3).unwrap();
-        let sub = registered_candidates("date_sub", 3).unwrap();
-        assert!(add.contains(&ScalarFuncSig::AddDateDatetimeInt));
-        assert!(sub.contains(&ScalarFuncSig::SubDateDatetimeInt));
-        assert!(!add.contains(&ScalarFuncSig::SubDateDatetimeInt));
-        assert!(!sub.contains(&ScalarFuncSig::AddDateDatetimeInt));
-        assert!(registered_candidates("cast", 1)
-            .unwrap()
-            .contains(&ScalarFuncSig::CastIntAsReal));
     }
 
     #[test]
