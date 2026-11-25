@@ -460,7 +460,7 @@ fn trim_row(function: &ScalarFunction, ctx: &dyn Columns, row: Row<'_>) -> Resul
     let binary = matches!(value, Datum::Bytes(_));
     let text = crate::coerce::coerce_str_bytes(&value)?;
     let remove = crate::coerce::coerce_str_bytes(&remstr)?;
-    Ok(crate::string_fn::trim_value(text, remove, direction, binary))
+    crate::string_fn::trim_value(text, remove, direction, binary)
 }
 
 /// Go `builtinConvertSig.evalString`.

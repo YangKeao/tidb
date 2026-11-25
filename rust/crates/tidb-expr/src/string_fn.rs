@@ -1084,64 +1084,48 @@ pub(crate) fn concat_ws_columns<B: AsRef<[u8]>>(
 /// yields the empty string; `|count|` past the number of parts yields the
 /// whole string. `NULL` if any argument is `NULL`.
 pub(crate) fn substring_index(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [value, delim_value, count_value] = vals else {
+    let [value_source, delim_value, count_value] = vals else {
         return Err(EvalError::Unsupported("bad SUBSTRING_INDEX arity"));
     };
-    let (Some(s), Some(delim)) = (coerce_str_bytes(value)?, coerce_str_bytes(delim_value)?) else {
+    let (Some(s), Some(delim)) = (coerce_str_bytes(value_source)?, coerce_str_bytes(delim_value)?) else {
         return Ok(Datum::Null);
     };
     if count_value == &Datum::Null {
         return Ok(Datum::Null);
     }
     if delim.is_empty() {
-        return Ok(string_result(value, Vec::new()));
+        return Ok(string_result(value_source, Vec::new()));
     }
     // A UInt64 above MaxInt64 is the source's unsigned ETInt overflow case;
     // builtinSubstringIndexSig returns the complete string before applying
     // the negative-count branch.  The ordinary signed path uses TiDB's
     // shared EvalInt coercion for strings, decimals, and reals.
     if matches!(count_value, Datum::UInt(n) if *n > i64::MAX as u64) {
-        return Ok(string_result(value, s));
+        return Ok(string_result(value_source, s));
     }
     let count = crate::cast::to_i64_signed(count_value);
-    if count == 0 {
-        return Ok(string_result(value, Vec::new()));
+    if count >= 0 {
+        return sdk_bytes(|writer| {
+            tidb_query_expr::impl_string::substring_index(&s, &delim, &count, writer)
+        })
+        .map(|value| value.map_or(Datum::Null, |bytes| string_result(value_source, bytes)));
     }
-    let parts = split_bytes(&s, &delim);
-    let (start, end) = if count > 0 {
-        (0, (count as usize).min(parts.len()))
-    } else if count == i64::MIN {
-        (0, parts.len())
-    } else {
-        let n = (-count) as usize;
-        (parts.len().saturating_sub(n), parts.len())
+    // Go counts nonoverlapping delimiters from left to right even for a
+    // negative count. The SDK searches from the right, and abs(MIN) overflows.
+    let Ok(count) = usize::try_from(count.unsigned_abs()) else {
+        return Ok(string_result(value_source, s));
     };
-    let mut out = Vec::new();
-    for (index, part) in parts[start..end].iter().enumerate() {
-        if index != 0 {
-            out.extend_from_slice(&delim);
-        }
-        out.extend_from_slice(part);
+    if count > s.len() {
+        return Ok(string_result(value_source, s));
     }
-    Ok(string_result(value, out))
-}
-
-fn split_bytes<'a>(value: &'a [u8], delim: &[u8]) -> Vec<&'a [u8]> {
-    debug_assert!(!delim.is_empty());
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut cursor = 0;
-    while cursor + delim.len() <= value.len() {
-        if &value[cursor..cursor + delim.len()] == delim {
-            parts.push(&value[start..cursor]);
-            cursor += delim.len();
-            start = cursor;
-        } else {
-            cursor += 1;
-        }
+    let mut starts = vec![0];
+    let mut remaining = s.as_slice();
+    while let Some(offset) = remaining.windows(delim.len()).position(|part| part == delim) {
+        remaining = &remaining[offset + delim.len()..];
+        starts.push(s.len() - remaining.len());
     }
-    parts.push(&value[start..]);
-    parts
+    let start = starts[starts.len().saturating_sub(count)];
+    Ok(string_result(value_source, s[start..].to_vec()))
 }
 
 /// `INSERT(str, pos, len, newstr)`: replaces the `len` characters of `str`
@@ -1922,38 +1906,31 @@ fn append_char_integer(bytes: &mut Vec<u8>, mut value: i64) {
 /// own doc for the exact `None`/`Some` shape). `NULL` if either operand
 /// is `NULL`.
 pub(crate) fn trim_value(
-    str: Option<Vec<u8>>,
-    remstr: Option<Vec<u8>>,
+    text: Option<Vec<u8>>,
+    removal: Option<Vec<u8>>,
     direction: tidb_ast::TrimDirection,
     binary: bool,
-) -> Datum {
-    let (Some(mut str), Some(remstr)) = (str, remstr) else {
-        return Datum::Null;
+) -> Result<Datum, EvalError> {
+    let (Some(text), Some(removal)) = (text, removal) else {
+        return Ok(Datum::Null);
     };
-    if remstr.is_empty() {
-        return if binary {
-            Datum::new_bytes_datum(str)
-        } else {
-            Datum::new_string_datum(str)
-        };
-    }
-    use tidb_ast::TrimDirection::*;
-    if matches!(direction, Leading | Both) {
-        while str.starts_with(&remstr) {
-            str.drain(..remstr.len());
-        }
-    }
-    if matches!(direction, Trailing | Both) {
-        while str.ends_with(&remstr) {
-            let new_len = str.len() - remstr.len();
-            str.truncate(new_len);
-        }
-    }
-    if binary {
-        Datum::new_bytes_datum(str)
-    } else {
-        Datum::new_string_datum(str)
-    }
+    let direction = match direction {
+        tidb_ast::TrimDirection::Both => 1,
+        tidb_ast::TrimDirection::Leading => 2,
+        tidb_ast::TrimDirection::Trailing => 3,
+    };
+    sdk_bytes(|writer| {
+        tidb_query_expr::impl_string::trim_3_args(&text, &removal, &direction, writer)
+    })
+    .map(|result| {
+        result.map_or(Datum::Null, |bytes| {
+            if binary {
+                Datum::new_bytes_datum(bytes)
+            } else {
+                Datum::new_string_datum(bytes)
+            }
+        })
+    })
 }
 
 #[cfg(test)]

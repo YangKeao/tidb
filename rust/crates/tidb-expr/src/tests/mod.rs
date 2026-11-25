@@ -1329,7 +1329,8 @@ fn trim_source_vectors_preserve_direction_and_whole_remstr() {
             Some(b" ".to_vec()),
             TrimDirection::Both,
             false,
-        ),
+        )
+        .unwrap(),
         Datum::new_string_datum(b"\t   bar   \n".to_vec())
     );
     assert_eq!(
@@ -1338,7 +1339,8 @@ fn trim_source_vectors_preserve_direction_and_whole_remstr() {
             Some(b" ".to_vec()),
             TrimDirection::Both,
             false,
-        ),
+        )
+        .unwrap(),
         Datum::new_string_datum(b"\r   bar   \t".to_vec())
     );
     assert_eq!(
@@ -1347,7 +1349,8 @@ fn trim_source_vectors_preserve_direction_and_whole_remstr() {
             Some(b" ".to_vec()),
             TrimDirection::Both,
             false,
-        ),
+        )
+        .unwrap(),
         Datum::new_string_datum(b"\tbar\n".to_vec())
     );
     assert_eq!(
@@ -1356,7 +1359,8 @@ fn trim_source_vectors_preserve_direction_and_whole_remstr() {
             Some(b"x".to_vec()),
             TrimDirection::Leading,
             false,
-        ),
+        )
+        .unwrap(),
         Datum::new_string_datum("barxxx".to_string())
     );
     assert_eq!(
@@ -1365,7 +1369,8 @@ fn trim_source_vectors_preserve_direction_and_whole_remstr() {
             Some(b"xyz".to_vec()),
             TrimDirection::Trailing,
             false,
-        ),
+        )
+        .unwrap(),
         Datum::new_string_datum("barx".to_string())
     );
     assert_eq!(
@@ -1374,15 +1379,18 @@ fn trim_source_vectors_preserve_direction_and_whole_remstr() {
             Some(vec![0x20]),
             TrimDirection::Both,
             true,
-        ),
+        )
+        .unwrap(),
         Datum::new_bytes_datum(vec![0xff])
     );
     assert_eq!(
-        string_fn::trim_value(Some(b"bar".to_vec()), None, TrimDirection::Both, false,),
+        string_fn::trim_value(Some(b"bar".to_vec()), None, TrimDirection::Both, false)
+            .unwrap(),
         Datum::Null
     );
     assert_eq!(
-        string_fn::trim_value(Some(b"bar".to_vec()), None, TrimDirection::Leading, false,),
+        string_fn::trim_value(Some(b"bar".to_vec()), None, TrimDirection::Leading, false)
+            .unwrap(),
         Datum::Null
     );
 }

@@ -2236,6 +2236,7 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "insert_func"
             | "lpad"
             | "rpad"
+            | "substring_index"
             | "space"
             | "to_base64"
             | "from_base64"
@@ -2792,6 +2793,37 @@ mod tests {
                 program.evaluate_row(&crate::NoColumns, input.get_row(0)),
                 Err(EvalError::IncorrectArguments(format!("Incorrect arguments to {name}"))),
             );
+        }
+    }
+
+    #[test]
+    fn prepared_substring_index_keeps_go_delimiter_and_count_semantics() {
+        let string = FieldType::new(FieldTypeCode::VarString);
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let fields = [string.clone(), string.clone(), integer];
+        let mut input = Chunk::new_chunk_with_capacity(&fields, 2);
+        for count in [-1, i64::MIN] {
+            input.append_datum(0, &Datum::new_string_datum("aaa"));
+            input.append_datum(1, &Datum::new_string_datum("aa"));
+            input.append_int64(2, count);
+        }
+        let expression = Expression::ScalarFunction(build_function(
+            CiString::new("substring_index"),
+            string,
+            fields.into_iter().enumerate()
+                .map(|(index, field)| {
+                    let mut column = Column::new(index as i64, field);
+                    column.index = index as i64;
+                    Expression::Column(column)
+                })
+                .collect(),
+        ));
+        let mut program = PreparedExpression::new(&expression, &crate::NoColumns, 3)
+            .unwrap()
+            .unwrap();
+        for (index, want) in ["a", "aaa"].into_iter().enumerate() {
+            let value = program.evaluate_row(&crate::NoColumns, input.get_row(index)).unwrap();
+            assert_eq!(value.sql_string().unwrap(), want);
         }
     }
 
