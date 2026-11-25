@@ -858,7 +858,6 @@ impl PbBuiltin {
             JsonTypeSig | JsonUnquoteSig | JsonLengthSig | JsonObjectSig | JsonArraySig
             | JsonMergeSig | JsonSetSig | JsonInsertSig | JsonRemoveSig | JsonContainsSig
             | JsonValidJsonSig | JsonValidStringSig | JsonValidOthersSig => Kernel::Json,
-            DayOfWeek => Kernel::Values(crate::time_fn::day_of_week),
             DayOfYear => Kernel::Values(crate::time_fn::day_of_year),
             WeekOfYear => Kernel::Values(crate::time_fn::week_of_year_builtin),
             MonthName => Kernel::Values(crate::time_fn::monthname),
@@ -908,7 +907,9 @@ impl PbBuiltin {
                 crate::time_fn::calendar::date_format_in(date, format, Some(cols))
             }),
             Hour | Minute | Second | MicroSecond => Kernel::RpnOnly(None, &[EvalType::Duration]),
-            Year | Month | DayOfMonth | Quarter => Kernel::RpnOnly(None, &[EvalType::Datetime]),
+            Year | Month | DayOfMonth | Quarter | DayOfWeek | WeekDay | ToDays | ToSeconds => {
+                Kernel::RpnOnly(None, &[EvalType::Datetime])
+            }
             WeekWithMode | WeekWithoutMode => Kernel::Values(|values, ctx| {
                 crate::time_fn::week(values, ctx.default_week_format(), ctx)
             }),
@@ -1018,12 +1019,9 @@ impl PbBuiltin {
             Repeat => Kernel::Method(class_kernels::repeat),
             FindInSet => Kernel::Row(class_kernels::find_in_set),
             // builtin_time.go
-            WeekDay => Kernel::Values(crate::time_fn::weekday),
             GetFormat => Kernel::Values(|values, _| crate::time_fn::get_format_value(values)),
             DayName => Kernel::Values(crate::time_fn::dayname),
             TimeFormat => Kernel::Values(|values, _| crate::time_fn::time_format(values)),
-            ToDays => Kernel::Values(crate::time_fn::calendar::to_days),
-            ToSeconds => Kernel::Values(crate::time_fn::calendar::to_seconds),
             LastDay => Kernel::Method(class_kernels::last_day),
             // builtin_miscellaneous.go
             InetAton => Kernel::Values(|values, _| crate::builtin_ext::compare2::inet_aton(&values[0])),

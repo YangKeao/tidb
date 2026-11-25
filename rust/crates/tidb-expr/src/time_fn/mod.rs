@@ -467,23 +467,6 @@ fn zero_or_invalid_zero(time: tidb_datatype::Time) -> bool {
     time.is_zero() || time.invalid_zero()
 }
 
-/// `builtinDayOfWeekSig.evalInt`: Sunday is 1 through Saturday 7; an
-/// invalid zero date warns and is NULL.
-pub(crate) fn day_of_week(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(
-        checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?.map_or(
-            Datum::Null,
-            |time| {
-                let (year, month, day) = date_fields(time);
-                Datum::Int((days_from_civil(year, month, day) + 4).rem_euclid(7) + 1)
-            },
-        ),
-    )
-}
-
 /// `builtinDayOfYearSig.evalInt`: one-based day within the calendar year;
 /// an invalid zero date warns and is NULL.
 pub(crate) fn day_of_year(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
@@ -496,20 +479,6 @@ pub(crate) fn day_of_year(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, E
             // Go `builtinDayOfYearSig`: `arg.YearDay()`.
             |time| Datum::Int(i64::from(time.core_time().year_day())),
         ),
-    )
-}
-
-/// `builtinWeekDaySig.evalInt`: Monday is 0 through Sunday 6; a zero or
-/// invalid zero date warns and is NULL.
-pub(crate) fn weekday(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(
-        checked_date_arg(value, cols, zero_or_invalid_zero)?.map_or(Datum::Null, |time| {
-            let (year, month, day) = date_fields(time);
-            Datum::Int((days_from_civil(year, month, day) + 3).rem_euclid(7))
-        }),
     )
 }
 

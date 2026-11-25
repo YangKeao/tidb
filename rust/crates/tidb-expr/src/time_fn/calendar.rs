@@ -300,59 +300,6 @@ pub(crate) fn timestamp_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
         .map_err(|error| crate::rpn::query_error(error.into()))
 }
 
-/// `TO_DAYS(date)`, implemented through the same zero-date day number used by
-/// `types.TimestampDiff("DAY", types.ZeroDate, date)`.  This preserves the
-/// source's year-zero `0000-01-01 -> 1` behavior; an invalid zero date, or a
-/// date with no day number, warns and is NULL (`builtinToDaysSig`).
-pub(crate) fn to_days(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(time) = super::checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?
-    else {
-        return Ok(Datum::Null);
-    };
-    let core = time.core_time();
-    let days = time_diff_daynr(
-        i64::from(core.year()),
-        u32::from(core.month()),
-        u32::from(core.day()),
-    );
-    if days == 0 {
-        crate::expression_errors::handle_truncate(cols, &format!("Incorrect datetime value: '{time}'"))?;
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::Int(days))
-}
-
-/// `TO_SECONDS(date)`, implemented through the same zero-date timestamp
-/// arithmetic as the Go builtin (`builtinToSecondsSig`).  Fractional seconds
-/// are deliberately ignored because the source's `SECOND` unit returns whole
-/// seconds; an invalid zero date, or a zero result, warns and is NULL.
-pub(crate) fn to_seconds(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(time) = super::checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?
-    else {
-        return Ok(Datum::Null);
-    };
-    let core = time.core_time();
-    let seconds = time_diff_daynr(
-        i64::from(core.year()),
-        u32::from(core.month()),
-        u32::from(core.day()),
-    ) * 86_400
-        + i64::from(core.hour()) * 3_600
-        + i64::from(core.minute()) * 60
-        + i64::from(core.second());
-    if seconds == 0 {
-        crate::expression_errors::handle_truncate(cols, &format!("Incorrect datetime value: '{time}'"))?;
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::Int(seconds))
-}
-
 /// `DATE_ADD`/`DATE_SUB` calendar arithmetic from current Go
 /// `baseDateArithmetical` and `types.ParseDurationValue`.
 ///
