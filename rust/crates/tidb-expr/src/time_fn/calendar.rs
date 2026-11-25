@@ -18,57 +18,6 @@ use crate::cast::to_i64_signed;
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, ErrorLevel, EvalError};
 
-/// The calendar `(year, month, day)` a *component* date-part function
-/// (`YEAR`/`MONTH`/`DAYOFMONTH`/`QUARTER`) reads, which in Go is the whole of
-/// the function body: `builtinYearSig`/`MonthSig`/`DayOfMonthSig`/`QuarterSig`
-/// return `date.Year()` / `date.Month()` / `date.Day()` off the value
-/// `EvalTime` handed them, with NO parsing and NO `InvalidZero` check -- so a
-/// zero datetime yields the stored `0` (confirmed against real TiDB's
-/// recorded `r/executor/executor.result` `TestZeroDateTimeCompatibility`:
-/// `YEAR(v1)`/`MONTH(v1)`/`DAYOFMONTH(v1)`/`QUARTER(v1)` over a zero-datetime
-/// column are all `0`).
-///
-/// Go can be that short because all four classes declare their argument
-/// `types.ETDatetime` (`builtin_time.go:1116`, `:1284`, `:1620`, `:5833`),
-/// which makes `newBaseBuiltinFuncWithTp` wrap it in `WrapWithCastAsTime`
-/// before the signature ever runs. [`crate::arg_eval_type`] is that wrap, so
-/// this function is now equally short: a temporal value or `NULL` is ALL that
-/// can arrive, and a string is decided by the cast -- one rule, in one place,
-/// instead of one per call site.
-pub(crate) fn component_date(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    match value {
-        Datum::Time(time) => {
-            let core = time.core_time();
-            Ok(Some((
-                i64::from(core.year()),
-                u32::from(core.month()),
-                u32::from(core.day()),
-            )))
-        }
-        Datum::Null => Ok(None),
-        // Unreachable through either evaluator: both apply the ETDatetime
-        // argument cast first. Refusing loudly keeps a future caller that
-        // forgets it from silently re-deriving a date of its own.
-        _ => Err(EvalError::Unsupported(
-            "a date-part argument reached the signature without its ETDatetime cast",
-        )),
-    }
-}
-
-/// The calendar `(year, month, day)` parsed from a single-argument
-/// date-part function's argument, honoring an already-typed `Datum::Time`
-/// (including a zero datetime) via [`component_date`]: `NULL` only if it does
-/// not coerce/parse as a valid date (see [`parse_date_ymd`]).
-pub(crate) fn date_part(
-    vals: &[Datum],
-    f: impl Fn((i64, u32, u32)) -> i64,
-) -> Result<Datum, EvalError> {
-    Ok(component_date(vals)?.map_or(Datum::Null, |ymd| Datum::Int(f(ymd))))
-}
-
 /// Parses a date or datetime string's calendar date into `(year, month,
 /// day)`, calendar-validated (month 1-12, day valid for that specific
 /// month/year, including leap years) — `None` if it doesn't look like one.

@@ -485,17 +485,6 @@ fn zero_or_invalid_zero(time: tidb_datatype::Time) -> bool {
     time.is_zero() || time.invalid_zero()
 }
 
-/// `builtinDayOfMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
-///
-/// The source returns the stored day field directly with no zero rejection,
-/// because `dayOfMonthFunctionClass` declares its argument
-/// `types.ETDatetime` (`builtin_time.go:1284`) and so receives a value
-/// `EvalTime` already produced non-NULL — see [`calendar::component_date`].
-pub(crate) fn day_of_month(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(calendar::component_date(vals)?
-        .map_or(Datum::Null, |(_, _, day)| Datum::Int(i64::from(day))))
-}
-
 /// `builtinDayOfWeekSig.evalInt`: Sunday is 1 through Saturday 7; an
 /// invalid zero date warns and is NULL.
 pub(crate) fn day_of_week(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
@@ -538,26 +527,6 @@ pub(crate) fn weekday(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalE
         checked_date_arg(value, cols, zero_or_invalid_zero)?.map_or(Datum::Null, |time| {
             let (year, month, day) = date_fields(time);
             Datum::Int((days_from_civil(year, month, day) + 3).rem_euclid(7))
-        }),
-    )
-}
-
-/// `builtinQuarterSig.evalInt` = `(date.Month() + 2) / 3`, returning 1-4 for
-/// a real date and `0` for a month-zero one — with no zero rejection, because
-/// `quarterFunctionClass` declares its argument `types.ETDatetime`
-/// (`builtin_time.go:5833`) and so receives a value `EvalTime` already
-/// produced non-NULL. Real TiDB's recorded `QUARTER(v1)` over a
-/// zero-datetime column is `0`; `gorun` confirms `QUARTER(20240000)` is `0`
-/// too, by the same stored month.
-///
-/// The month-zero string form no longer needs a parser of its own here: the
-/// ETDatetime cast ([`crate::arg_eval_type`]) is what decides a string, and
-/// it is `types.ParseTime` under the READ path's `IgnoreZeroInDate`, which
-/// keeps a zero month exactly as Go does.
-pub(crate) fn quarter(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        calendar::component_date(vals)?.map_or(Datum::Null, |(_, month, _)| {
-            Datum::Int(i64::from(month.div_ceil(3)))
         }),
     )
 }

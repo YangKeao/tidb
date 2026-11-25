@@ -868,11 +868,9 @@ impl PbBuiltin {
             JsonTypeSig | JsonUnquoteSig | JsonLengthSig | JsonObjectSig | JsonArraySig
             | JsonMergeSig | JsonSetSig | JsonInsertSig | JsonRemoveSig | JsonContainsSig
             | JsonValidJsonSig | JsonValidStringSig | JsonValidOthersSig => Kernel::Json,
-            DayOfMonth => Kernel::Values(|values, _| crate::time_fn::day_of_month(values)),
             DayOfWeek => Kernel::Values(crate::time_fn::day_of_week),
             DayOfYear => Kernel::Values(crate::time_fn::day_of_year),
             WeekOfYear => Kernel::Values(crate::time_fn::week_of_year_builtin),
-            Year => Kernel::Values(|values, _| crate::time_fn::calendar::date_part(values, |date| date.0)),
             MonthName => Kernel::Values(crate::time_fn::monthname),
             FromDays => Kernel::Values(from_days_values),
             MakeDate => Kernel::Values(make_date_values),
@@ -922,7 +920,7 @@ impl PbBuiltin {
                 crate::time_fn::calendar::time_part(values, |time| i64::from(time.2))
             }),
             MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
-            Month => Kernel::RpnOnly(None, &[EvalType::Datetime]),
+            Year | Month | DayOfMonth | Quarter => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             WeekWithMode | WeekWithoutMode => Kernel::Values(|values, ctx| {
                 crate::time_fn::week(values, ctx.default_week_format(), ctx)
             }),
@@ -1033,7 +1031,6 @@ impl PbBuiltin {
             FindInSet => Kernel::Row(class_kernels::find_in_set),
             // builtin_time.go
             WeekDay => Kernel::Values(crate::time_fn::weekday),
-            Quarter => Kernel::Values(|values, _| crate::time_fn::quarter(values)),
             GetFormat => Kernel::Values(|values, _| crate::time_fn::get_format_value(values)),
             DayName => Kernel::Values(crate::time_fn::dayname),
             TimeFormat => Kernel::Values(|values, _| crate::time_fn::time_format(values)),

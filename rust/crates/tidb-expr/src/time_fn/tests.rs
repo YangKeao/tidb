@@ -16,6 +16,11 @@
 
 use super::*;
 
+fn calendar_component(name: &str, args: &[Datum]) -> Result<Datum, EvalError> {
+    crate::tests::eval_builtin_func(name, args, &crate::NoColumns)
+        .unwrap_or(Err(EvalError::Unsupported("bad function arity")))
+}
+
 fn string_datum(value: &str) -> Datum {
     Datum::new_string_datum(value.to_string())
 }
@@ -163,7 +168,7 @@ fn calendar_part_source_vectors() {
     ];
     for (input, want) in day_of_month_cases {
         assert_eq!(
-            day_of_month(&datetime_str_arg(input)).unwrap(),
+            calendar_component("dayofmonth", &datetime_str_arg(input)).unwrap(),
             want,
             "{input}"
         );
@@ -182,13 +187,13 @@ fn calendar_part_source_vectors() {
     ];
     for (input, want) in quarter_cases {
         assert_eq!(
-            quarter(&datetime_str_arg(input)).unwrap(),
+            calendar_component("quarter", &datetime_str_arg(input)).unwrap(),
             Datum::Int(want),
             "{input}"
         );
     }
     assert_eq!(
-        quarter(&datetime_str_arg("2008-13-01")).unwrap(),
+        calendar_component("quarter", &datetime_str_arg("2008-13-01")).unwrap(),
         Datum::Null
     );
 
@@ -207,7 +212,7 @@ fn calendar_part_source_vectors() {
     }
 
     assert_eq!(
-        day_of_month(&datetime_arg(Datum::Null)).unwrap(),
+        calendar_component("dayofmonth", &datetime_arg(Datum::Null)).unwrap(),
         Datum::Null
     );
     assert_eq!(
@@ -222,9 +227,9 @@ fn calendar_part_source_vectors() {
         weekday(&datetime_arg(Datum::Null), &crate::NoColumns).unwrap(),
         Datum::Null
     );
-    assert_eq!(quarter(&datetime_arg(Datum::Null)).unwrap(), Datum::Null);
+    assert_eq!(calendar_component("quarter", &datetime_arg(Datum::Null)).unwrap(), Datum::Null);
     assert_eq!(
-        day_of_month(&datetime_arg(Datum::Int(20_240_315))).unwrap(),
+        calendar_component("dayofmonth", &datetime_arg(Datum::Int(20_240_315))).unwrap(),
         Datum::Int(15)
     );
     assert_eq!(
@@ -240,11 +245,11 @@ fn calendar_part_source_vectors() {
         Datum::Int(4)
     );
     assert_eq!(
-        quarter(&datetime_arg(Datum::Int(20_240_315))).unwrap(),
+        calendar_component("quarter", &datetime_arg(Datum::Int(20_240_315))).unwrap(),
         Datum::Int(1)
     );
     assert!(day_of_week(&[], &crate::NoColumns).is_err());
-    assert!(quarter(&[string_datum("2008-01-01"), Datum::Int(1)]).is_err());
+    assert!(calendar_component("quarter", &[string_datum("2008-01-01"), Datum::Int(1)]).is_err());
 }
 
 /// Exact scalar rows from `TestQuarter` at
@@ -265,16 +270,16 @@ fn quarter_source_vectors() {
         ("2008-00-01", 0),
     ] {
         assert_eq!(
-            quarter(&datetime_str_arg(input)).unwrap(),
+            calendar_component("quarter", &datetime_str_arg(input)).unwrap(),
             Datum::Int(want),
             "QUARTER({input:?})"
         );
     }
     assert_eq!(
-        quarter(&datetime_str_arg("2008-13-01")).unwrap(),
+        calendar_component("quarter", &datetime_str_arg("2008-13-01")).unwrap(),
         Datum::Null
     );
-    assert_eq!(quarter(&datetime_arg(Datum::Null)).unwrap(), Datum::Null);
+    assert_eq!(calendar_component("quarter", &datetime_arg(Datum::Null)).unwrap(), Datum::Null);
 }
 
 /// `TestZeroDateTimeCompatibility` in `r/executor/executor.result`: a
@@ -293,16 +298,16 @@ fn zero_datetime_column_matches_recorded_tidb() {
     // Stored-component extractors return the stored 0 for a typed zero
     // datetime (Go: `date.Year()`/`Month()`/`Day()`, `(Month()+2)/3`).
     assert_eq!(
-        calendar::date_part(std::slice::from_ref(&zero), |d| d.0).unwrap(),
+        calendar_component("year", std::slice::from_ref(&zero)).unwrap(),
         Datum::Int(0),
         "YEAR(zero-datetime)"
     );
     assert_eq!(crate::tests::builtin("month", std::slice::from_ref(&zero)).unwrap(), Datum::Int(0));
     assert_eq!(
-        day_of_month(std::slice::from_ref(&zero)).unwrap(),
+        calendar_component("dayofmonth", std::slice::from_ref(&zero)).unwrap(),
         Datum::Int(0)
     );
-    assert_eq!(quarter(std::slice::from_ref(&zero)).unwrap(), Datum::Int(0));
+    assert_eq!(calendar_component("quarter", std::slice::from_ref(&zero)).unwrap(), Datum::Int(0));
 
     // The day-of-week family rejects a zero date as NULL (Go:
     // `InvalidZero()` -> NULL + warning 1292), even when typed.
@@ -334,13 +339,13 @@ fn zero_datetime_column_matches_recorded_tidb() {
     // while the typed zero above is Go's early return and reaches the
     // signature intact.
     assert_eq!(
-        calendar::date_part(&datetime_str_arg("0000-00-00"), |d| d.0).unwrap(),
+        calendar_component("year", &datetime_str_arg("0000-00-00")).unwrap(),
         Datum::Null,
         "YEAR(\"0000-00-00\")"
     );
     assert_eq!(crate::tests::builtin("month", &datetime_str_arg("0000-00-00")).unwrap(), Datum::Null);
     assert_eq!(
-        quarter(&datetime_str_arg("0000-00-00")).unwrap(),
+        calendar_component("quarter", &datetime_str_arg("0000-00-00")).unwrap(),
         Datum::Null
     );
 
@@ -354,16 +359,16 @@ fn zero_datetime_column_matches_recorded_tidb() {
         .unwrap(),
     );
     assert_eq!(
-        calendar::date_part(std::slice::from_ref(&valid), |d| d.0).unwrap(),
+        calendar_component("year", std::slice::from_ref(&valid)).unwrap(),
         Datum::Int(2024)
     );
     assert_eq!(crate::tests::builtin("month", std::slice::from_ref(&valid)).unwrap(), Datum::Int(3));
     assert_eq!(
-        day_of_month(std::slice::from_ref(&valid)).unwrap(),
+        calendar_component("dayofmonth", std::slice::from_ref(&valid)).unwrap(),
         Datum::Int(15)
     );
     assert_eq!(
-        quarter(std::slice::from_ref(&valid)).unwrap(),
+        calendar_component("quarter", std::slice::from_ref(&valid)).unwrap(),
         Datum::Int(1)
     );
 }

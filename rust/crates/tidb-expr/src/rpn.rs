@@ -917,6 +917,12 @@ pub(crate) fn evaluate_required_kernel(
     if !reads_null && values.iter().any(Datum::is_null) {
         return Ok(Datum::Null);
     }
+    // A typed zero date from storage keeps its stored component on SQL reads.
+    if matches!(signature, Year | DayOfMonth)
+        && matches!(values.as_slice(), [Datum::Time(value)] if value.is_zero())
+    {
+        return Ok(Datum::Int(0));
+    }
     match (signature, values.as_slice()) {
         (
             VecL1DistanceSig | VecL2DistanceSig | VecNegativeInnerProductSig | VecCosineDistanceSig,
