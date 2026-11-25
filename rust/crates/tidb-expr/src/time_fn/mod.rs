@@ -32,7 +32,7 @@ pub(crate) mod extract;
 pub(crate) mod session_tz;
 pub(crate) mod time_diff;
 
-use self::calendar::{civil_from_days, days_from_civil, parse_date_ymd, week_core};
+use self::calendar::{civil_from_days, parse_date_ymd, week_core};
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 
@@ -653,27 +653,6 @@ pub(crate) fn monthname(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, Eva
         .map_or(Datum::Null, |(_, month, _)| {
             Datum::new_string_datum(MONTHS[(month - 1) as usize].to_string())
         }))
-}
-
-/// `builtinDayNameSig` in `pkg/expression/builtin_time.go`: an invalid zero
-/// date warns and is NULL.
-pub(crate) fn dayname(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    const DAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let time = checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?;
-    Ok(time.map(date_fields).map_or(Datum::Null, |(y, m, d)| {
-        Datum::new_string_datum(DAYS[(days_from_civil(y, m, d) + 4).rem_euclid(7) as usize].to_string())
-    }))
 }
 
 /// `builtinLastDaySig` in `pkg/expression/builtin_time.go`: a zero month,

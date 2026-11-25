@@ -861,6 +861,7 @@ impl PbBuiltin {
             DayOfYear => Kernel::Values(crate::time_fn::day_of_year),
             WeekOfYear => Kernel::Values(crate::time_fn::week_of_year_builtin),
             MonthName => Kernel::Values(crate::time_fn::monthname),
+            DayName => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             FromDays => Kernel::Values(from_days_values),
             MakeDate => Kernel::Values(make_date_values),
             MakeTime => Kernel::Method(make_time_method),
@@ -1020,7 +1021,6 @@ impl PbBuiltin {
             FindInSet => Kernel::Row(class_kernels::find_in_set),
             // builtin_time.go
             GetFormat => Kernel::Values(|values, _| crate::time_fn::get_format_value(values)),
-            DayName => Kernel::Values(crate::time_fn::dayname),
             TimeFormat => Kernel::Values(|values, _| crate::time_fn::time_format(values)),
             LastDay => Kernel::Method(class_kernels::last_day),
             // builtin_miscellaneous.go

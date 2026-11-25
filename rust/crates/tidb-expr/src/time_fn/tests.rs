@@ -324,7 +324,7 @@ fn zero_datetime_column_matches_recorded_tidb() {
         Datum::Null
     );
     assert_eq!(
-        dayname(std::slice::from_ref(&zero), &crate::NoColumns).unwrap(),
+        calendar_component("dayname", std::slice::from_ref(&zero)).unwrap(),
         Datum::Null
     );
     assert_eq!(
@@ -650,20 +650,20 @@ fn dayname_source_vectors() {
     ];
     for (input, want) in cases {
         assert_eq!(
-            dayname(&datetime_str_arg(input), &crate::NoColumns).unwrap(),
+            calendar_component("dayname", &datetime_str_arg(input)).unwrap(),
             want,
             "{input}"
         );
     }
     assert_eq!(
-        dayname(&datetime_arg(Datum::Null), &crate::NoColumns).unwrap(),
+        calendar_component("dayname", &datetime_arg(Datum::Null)).unwrap(),
         Datum::Null
     );
     assert_eq!(
-        dayname(&datetime_arg(Datum::Int(20_171_201)), &crate::NoColumns).unwrap(),
+        calendar_component("dayname", &datetime_arg(Datum::Int(20_171_201))).unwrap(),
         Datum::new_string_datum("Friday".to_string())
     );
-    assert!(dayname(&[], &crate::NoColumns).is_err());
+    assert!(calendar_component("dayname", &[]).is_err());
 }
 
 /// Full finite source table from `TestDateFormat` at line 604.  This is
