@@ -1253,7 +1253,12 @@ impl ScalarFunction {
     pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         if self.can_use_shared_row_program() {
             if let Some(value) = crate::rpn::try_evaluate_scalar_function(self, ctx, row)? {
-                return Ok(value);
+                // Go ScalarFunction.Eval reads FLOAT CAST via EvalReal. The
+                // projection writer performs the storage-width conversion.
+                return Ok(match value {
+                    Datum::Float32(real) if self.is_cast() => Datum::Real(real),
+                    value => value,
+                });
             }
         }
         self.eval_native(ctx, row)
@@ -1264,7 +1269,12 @@ impl ScalarFunction {
         // The selected SQL signature owns coercion when its operands are
         // polymorphic or retain an input domain different from the output.
         matches!(kernel, Kernel::Binary(..) | Kernel::Compare(..)
-            | Kernel::IntegerMod { .. } | Kernel::IntegerMultiply { .. })
+            | Kernel::IntegerMod { .. } | Kernel::IntegerMultiply { .. }
+            | Kernel::Cast {
+                source: EvalType::Int | EvalType::Real | EvalType::Decimal,
+                target: EvalType::Int | EvalType::Real | EvalType::Decimal,
+                in_union: false,
+            })
             && self.args.iter().all(|arg| {
                 arg.static_type().is_some_and(|field| {
                     matches!(field.eval_type(), EvalType::Int | EvalType::Decimal | EvalType::Real)
