@@ -357,33 +357,82 @@ pub(super) fn root_kernel(call: &Expr, ctx: &mut EvalContext) -> Result<RpnExpre
 
 // An internal annotation on the already decoded PB copy. The upstream
 // builder carries output declarations through its flattening and IN rewrites,
-// but its compiled callbacks no longer carry a ScalarFuncSig.
-const WIRE_INTEGER_DIVISION: u32 = 51000;
+// but its compiled callbacks no longer carry a ScalarFuncSig. Zero marks
+// decorated integer division. Positive markers hold a one-based host slot.
+const WIRE_CALLBACK: u32 = 51000;
+
+fn wire_cast_host(node: &Expr) -> Result<Option<super::HostCall>> {
+    use crate::distsql_builtin::pb_type_to_field_type;
+    use crate::scalar_function::{PbBuiltin, PreparedLocalBuiltin, ScalarFunction};
+    use tidb_proto::tipb::FieldType as WireField;
+
+    let sig = node.get_sig();
+    let [child] = node.get_children() else {
+        return Ok(None);
+    };
+    let year = i32::from(tidb_datatype::FieldTypeCode::Year.mysql_type());
+    // These casts use TiDB's warning and partial-date contract.
+    if !matches!(sig, ScalarFuncSig::CastStringAsReal | ScalarFuncSig::CastJsonAsReal)
+        && !(sig == ScalarFuncSig::CastIntAsTime && child.get_field_type().get_tp() == year)
+    {
+        return Ok(None);
+    }
+    let native_type = |field: &FieldType| -> Result<tidb_datatype::FieldType> {
+        let bytes = field.write_to_bytes().map_err(|err| error(err.to_string()))?;
+        let wire = <WireField as prost::Message>::decode(bytes.as_slice())
+            .map_err(|err| error(err.to_string()))?;
+        Ok(pb_type_to_field_type(&wire))
+    };
+    let source = native_type(child.get_field_type())?;
+    let target = native_type(node.get_field_type())?;
+    let sig = tidb_proto::tipb::ScalarFuncSig::try_from(sig.value())
+        .map_err(|err| error(err.to_string()))?;
+    let builtin = PbBuiltin::new(sig).ok_or_else(|| error("missing SQL cast signature"))?;
+    let operand = crate::expression::Expression::Column(crate::column::Column::new(0, source.clone()));
+    let scalar = ScalarFunction::from_pb(builtin, target, vec![operand])
+        .map_err(|err| error(format!("{err:?}")))?;
+    Ok(Some(super::HostCall {
+        output: node.get_field_type().clone(),
+        arguments: vec![source],
+        operation: super::HostOperation::LocalBuiltin(Box::new(PreparedLocalBuiltin::new(&scalar))),
+    }))
+}
 
 pub(super) fn build_wire(
     mut tree: Expr,
     ctx: &mut EvalContext,
     schema: &[FieldType],
     physical_fields: &[tidb_datatype::FieldType],
+    hosts: &mut Vec<super::HostCall>,
 ) -> Result<RpnExpression> {
-    fn prepare_declaration(node: &mut Expr) -> Result<()> {
+    fn prepare_declaration(node: &mut Expr, hosts: &mut Vec<super::HostCall>) -> Result<()> {
         if node.get_tp() == ExprType::MysqlBit && node.get_val().len() > 8 {
             return Err(error("BIT literal exceeds 64 bits"));
         }
-        if node.get_tp() == ExprType::ScalarFunc && node.get_sig() == ScalarFuncSig::IntDivideInt {
-            node.mut_field_type()
-                .mut_unknown_fields()
-                .add_varint(WIRE_INTEGER_DIVISION, 1);
+        if node.get_tp() == ExprType::ScalarFunc {
+            let binding = if node.get_sig() == ScalarFuncSig::IntDivideInt {
+                Some(0)
+            } else if let Some(host) = wire_cast_host(node)? {
+                hosts.push(host);
+                Some(hosts.len() as u64)
+            } else {
+                None
+            };
+            if let Some(binding) = binding {
+                node.mut_field_type()
+                    .mut_unknown_fields()
+                    .add_varint(WIRE_CALLBACK, binding);
+            }
         }
         for child in node.mut_children().iter_mut() {
-            prepare_declaration(child)?;
+            prepare_declaration(child, hosts)?;
         }
         Ok(())
     }
 
     // Decode/validate the complete declared tree and let the storage engine
     // choose eager versus short circuit nodes, including its depth budget.
-    prepare_declaration(&mut tree)?;
+    prepare_declaration(&mut tree, hosts)?;
     let program = RpnExpressionBuilder::build_from_expr_tree(tree, ctx, schema.len())?;
     Ok(adapt_wire_inputs(program, schema, physical_fields))
 }
@@ -417,31 +466,35 @@ fn adapt_wire_inputs(
                 metadata,
                 mut field_type,
                 args_len,
-            } if field_type
-                .get_unknown_fields()
-                .get(WIRE_INTEGER_DIVISION)
-                .is_some() =>
-            {
+            } if field_type.get_unknown_fields().get(WIRE_CALLBACK).is_some() => {
+                let binding = field_type
+                    .get_unknown_fields()
+                    .get(WIRE_CALLBACK)
+                    .expect("marked wire declaration")
+                    .varint[0];
                 field_type
                     .mut_unknown_fields()
                     .fields
                     .as_mut()
                     .expect("marked wire declaration")
-                    .remove(&WIRE_INTEGER_DIVISION);
-                adapted.push(callback(
-                    func_meta.name,
-                    meta(func_meta.name, decorated_kernel),
-                    args_len,
-                    field_type,
-                    Box::new(Kernel {
+                    .remove(&WIRE_CALLBACK);
+                let (name, callback_meta, metadata): (_, _, Box<dyn Any + Send>) = if binding == 0 {
+                    let name = func_meta.name;
+                    let kernel = Box::new(Kernel {
                         upstream: func_meta,
                         metadata,
                         diagnostic: None,
                         check_integer_zero_divisor: true,
                         signed_remainder: false,
                         decimal_arithmetic: None,
-                    }),
-                ));
+                    });
+                    (name, meta(name, decorated_kernel), kernel)
+                } else {
+                    let name = "TiDB wire cast";
+                    let slot = (binding - 1) as usize;
+                    (name, meta(name, host_call), Box::new(slot))
+                };
+                adapted.push(callback(name, callback_meta, args_len, field_type, metadata));
             }
             node => adapted.push(node),
         }
@@ -1739,7 +1792,7 @@ mod tests {
             let mut ctx = EvalContext::new(std::sync::Arc::new(config));
             let original =
                 RpnExpressionBuilder::build_from_expr_tree(tree.clone(), &mut ctx, 0).unwrap();
-            let adapted = build_wire(tree, &mut ctx, &[], &[]).unwrap();
+            let adapted = build_wire(tree, &mut ctx, &[], &[], &mut Vec::new()).unwrap();
             assert_eq!(format!("{adapted:?}"), format!("{original:?}"));
             let [RpnExpressionNode::ShortCircuitFnCall { args, .. }] = adapted.as_ref() else {
                 panic!("expected a short-circuit root");
@@ -1759,6 +1812,6 @@ mod tests {
         let mut config = tidb_query_datatype::expr::EvalConfig::default();
         config.flag |= Flag::ENABLE_SHORT_CIRCUIT_EXPRESSION;
         let mut ctx = EvalContext::new(std::sync::Arc::new(config));
-        assert!(build_wire(tree, &mut ctx, &[], &[]).is_err());
+        assert!(build_wire(tree, &mut ctx, &[], &[], &mut Vec::new()).is_err());
     }
 }

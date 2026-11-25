@@ -472,14 +472,15 @@ impl WireExpressionExecution {
         else {
             return Ok(None);
         };
-        let program =
-            engine::build_wire(tree, &mut context, &schema, columns).map_err(query_error)?;
+        let mut host_calls = Vec::new();
+        let program = engine::build_wire(tree, &mut context, &schema, columns, &mut host_calls)
+            .map_err(query_error)?;
         Ok(Some(Self(PreparedExpression {
             program,
             batch_program: None,
             columns: columns.to_vec(),
             bindings: Vec::new(),
-            host_calls: Vec::new(),
+            host_calls,
             diagnostics: Vec::new(),
             schema,
             column_paths: Vec::new(),
@@ -535,9 +536,6 @@ fn bind_wire_fields(expr: &mut WireExpr, columns: &[FieldType]) -> Option<()> {
     }
     for child in &mut expr.children {
         bind_wire_fields(child, columns)?;
-    }
-    if expr.tp() == ExprType::ScalarFunc && !wire_cast_preserves_sql_contract(expr) {
-        return None;
     }
     if expr
         .field_type
@@ -607,22 +605,6 @@ fn bind_wire_fields(expr: &mut WireExpr, columns: &[FieldType]) -> Option<()> {
         }
     }
     Some(())
-}
-
-fn wire_cast_preserves_sql_contract(expr: &WireExpr) -> bool {
-    use tidb_proto::tipb::ScalarFuncSig;
-
-    let source = expr.children.first().and_then(|child| child.field_type.as_ref());
-    match expr.sig() {
-        // The typed request kernels retain SQL diagnostics and row order
-        // when numeric conversions produce warnings.
-        ScalarFuncSig::CastStringAsReal | ScalarFuncSig::CastJsonAsReal => false,
-        // YEAR converts to a partial date that is valid for comparison.
-        ScalarFuncSig::CastIntAsTime => source.is_none_or(|field| {
-            field.tp != Some(i32::from(FieldTypeCode::Year.mysql_type()))
-        }),
-        _ => true,
-    }
 }
 
 /// Go's typed Constant.VecEval forwards a deferred expression of the
