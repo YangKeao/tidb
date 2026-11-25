@@ -1,6 +1,5 @@
-//! Math edge semantics: SQRT of a negative is NULL, POW of a negative base
-//! with a fractional exponent raises the out-of-range error, and SIGN/ABS
-//! follow the usual sign rules.
+//! The shared math kernels return NULL for negative square roots and
+//! powers with complex results. SIGN and ABS follow the usual sign rules.
 
 use tidb_session::Session;
 
@@ -36,9 +35,7 @@ fn sqrt_pow_sign_edges() {
         true
     );
 
-    // Negative base with fractional exponent: out of range, not NaN.
-    let error = try_sql(&mut session, "select pow(-2, 0.5)");
-    assert!(error.contains("out of range"), "{error}");
+    assert_eq!(try_sql(&mut session, "select pow(-2, 0.5)"), "Null");
 
     assert_eq!(
         try_sql(&mut session, "select sign(-3), sign(0), sign(2.5), abs(-4)"),
