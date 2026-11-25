@@ -611,22 +611,7 @@ pub(crate) fn bin(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, Eva
     if vals.len() != 1 {
         return Err(EvalError::Unsupported("bad BIN arity"));
     }
-    let raw: Option<&[u8]> = match &vals[0] {
-        Datum::String(text) => Some(text.bytes()),
-        Datum::Bytes(text) => Some(text),
-        _ => None,
-    };
-    if let Some(text) = raw {
-        if radix_truncated(text) {
-            ctx.append_go_warning(
-                &tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL,
-                &format!(
-                    "Truncated incorrect INTEGER value: '{}'",
-                    String::from_utf8_lossy(text)
-                ),
-            );
-        }
-    }
+    warn_radix_truncation(&vals[0], ctx);
     let Some(bits) = radix_integer_bits(&vals[0])? else {
         return Ok(Datum::Null);
     };
@@ -787,6 +772,20 @@ fn radix_integer_bits(value: &Datum) -> Result<Option<u64>, EvalError> {
 /// go `StrToInt`/`StrToUint`: the cast warns `Truncated incorrect INTEGER
 /// value` when the text carries anything the numeric parse could not
 /// consume — a remainder after the digit run, or no digits at all.
+fn warn_radix_truncation(value: &Datum, ctx: &dyn crate::Columns) {
+    let bytes = match value {
+        Datum::String(text) => text.bytes(),
+        Datum::Bytes(text) => text.as_slice(),
+        _ => return,
+    };
+    if radix_truncated(bytes) {
+        ctx.append_go_warning(
+            &tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL,
+            &format!("Truncated incorrect INTEGER value: '{}'", String::from_utf8_lossy(bytes)),
+        );
+    }
+}
+
 fn radix_truncated(value: &[u8]) -> bool {
     let value = trim_go_space(value);
     let digits = if value.len() > 1 && value.starts_with(b"-") {
@@ -1495,22 +1494,7 @@ pub(crate) fn quote(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// signature: decimal/real/string values first take their MySQL integer
 /// coercion, whose statement warnings are outside this value-only domain.
 pub(crate) fn bit_count(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let raw: Option<&[u8]> = match &vals[0] {
-        Datum::String(text) => Some(text.bytes()),
-        Datum::Bytes(text) => Some(text),
-        _ => None,
-    };
-    if let Some(text) = raw {
-        if radix_truncated(text) {
-            ctx.append_go_warning(
-                &tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL,
-                &format!(
-                    "Truncated incorrect INTEGER value: '{}'",
-                    String::from_utf8_lossy(text)
-                ),
-            );
-        }
-    }
+    warn_radix_truncation(&vals[0], ctx);
     let bits = match &vals[0] {
         Datum::Null => return Ok(Datum::Null),
         Datum::Int(n) => *n as u64,
@@ -1525,8 +1509,8 @@ pub(crate) fn bit_count(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datu
         // Keep the scan byte-oriented too: Go strings/bytes may contain
         // malformed UTF-8 after an otherwise valid numeric prefix, and the
         // source conversion still consumes that prefix.
-        Datum::String(n) => bit_count_string_bytes(n.bytes()),
-        Datum::Bytes(n) => bit_count_string_bytes(n),
+        Datum::String(n) => radix_string_bits_bytes(n.bytes()),
+        Datum::Bytes(n) => radix_string_bits_bytes(n),
         Datum::MinNotNull | Datum::MaxValue => {
             return Err(EvalError::Unsupported("range sentinel BIT_COUNT argument"));
         }
@@ -1537,71 +1521,9 @@ pub(crate) fn bit_count(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datu
                 .value as u64
         }
     };
-    sdk_bit_count(bits as i64)
-}
-
-pub(super) fn sdk_bit_count(value: i64) -> Result<Datum, EvalError> {
-    tidb_query_expr::impl_other::bit_count(&value)
+    tidb_query_expr::impl_other::bit_count(&(bits as i64))
         .map(|value| value.map_or(Datum::Null, Datum::Int))
         .map_err(crate::rpn::query_error)
-}
-
-/// Coerces a raw string/bytes payload through the integer cast used by
-/// `builtinBitCountSig`. The source's cast selects `StrToUint` for a
-/// non-negative value, retaining all 64 bits, while a negative value uses
-/// `StrToInt` and clamps below `i64::MIN` to that endpoint. A positive value
-/// beyond `u64::MAX` likewise clamps to `u64::MAX` after the warning is
-/// handled, so all three source boundaries are represented before the
-/// population count runs.
-fn bit_count_string_bytes(raw: &[u8]) -> u64 {
-    // `strings.TrimSpace` runs before the source's sign check. Preserve its
-    // Unicode behavior for valid strings, and retain a byte-safe ASCII trim
-    // path for malformed Go string payloads.
-    let raw = match std::str::from_utf8(raw) {
-        Ok(s) => s.trim_start().as_bytes(),
-        Err(_) => raw
-            .iter()
-            .position(|byte| !byte.is_ascii_whitespace())
-            .map_or(&[][..], |start| &raw[start..]),
-    };
-    let negative = raw.len() > 1 && raw[0] == b'-';
-    let digits = if negative || raw.first() == Some(&b'+') {
-        &raw[1..]
-    } else {
-        raw
-    };
-    let digits = &digits[..digits
-        .iter()
-        .position(|byte| !byte.is_ascii_digit())
-        .unwrap_or(digits.len())];
-    if digits.is_empty() {
-        return 0;
-    }
-
-    let mut magnitude = 0u64;
-    let mut overflow = false;
-    for &digit in digits {
-        let next = magnitude
-            .checked_mul(10)
-            .and_then(|value| value.checked_add(u64::from(digit - b'0')));
-        let Some(next) = next else {
-            overflow = true;
-            break;
-        };
-        magnitude = next;
-    }
-
-    if negative {
-        if overflow || magnitude > i64::MAX as u64 {
-            i64::MIN as u64
-        } else {
-            (-(magnitude as i64)) as u64
-        }
-    } else if overflow {
-        u64::MAX
-    } else {
-        magnitude
-    }
 }
 
 /// `FORMAT(x, d)`: the two-argument English-locale spelling.  See
