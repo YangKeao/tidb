@@ -628,31 +628,14 @@ pub(crate) fn yearweek(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, Eval
 /// `builtinMonthNameSig` in `pkg/expression/builtin_time.go`: a zero date
 /// warns under NO_ZERO_DATE and is otherwise NULL, as a zero month is.
 pub(crate) fn monthname(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
     let [value] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
     };
     let no_zero_date = cols.date_modes().no_zero_date;
-    let time = checked_date_arg(value, cols, |time| time.is_zero() && no_zero_date)?;
-    Ok(time
-        .map(date_fields)
-        .filter(|&(_, month, _)| month != 0)
-        .map_or(Datum::Null, |(_, month, _)| {
-            Datum::new_string_datum(MONTHS[(month - 1) as usize].to_string())
-        }))
+    match checked_date_arg(value, cols, |time| time.is_zero() && no_zero_date)? {
+        Some(time) if time.core_time().month() != 0 => calendar::render_date_format(time, "%M"),
+        _ => Ok(Datum::Null),
+    }
 }
 
 /// `builtinLastDaySig` in `pkg/expression/builtin_time.go`: a zero month,

@@ -156,12 +156,6 @@ pub(crate) fn expand_year_for_time_diff(value: u32, digits: usize) -> i64 {
     expand_year(value, digits)
 }
 
-/// Go `calcDaynr` for `TIMEDIFF` datetime arithmetic, which permits zero
-/// month/day components under `IgnoreZeroInDate`.
-pub(crate) fn time_diff_daynr(year: i64, month: u32, day: u32) -> i64 {
-    tidb_datatype::calc_daynr(year, i64::from(month), i64::from(day))
-}
-
 /// Go `GetLastDay`: the days in `month` of `year`, `0` for an out-of-range
 /// month so a range check against it always fails.
 fn days_in_month(year: i64, month: u32) -> u32 {
@@ -1861,20 +1855,17 @@ pub(crate) fn date_format_in(
     fmt: &Datum,
     cols: Option<&dyn Columns>,
 ) -> Result<Datum, EvalError> {
-    let (Some(s), Some(fmt)) = (coerce_str(date)?, coerce_str(fmt)?) else {
-        return Ok(Datum::Null);
-    };
-    // Go (MySQL compatibility, #11203): the format mask "0" answers "0" for
-    // any time that evaluated, before the zero-date check below.
-    if fmt == "0" {
-        return Ok(Datum::new_string_datum("0"));
-    }
     if let Datum::Time(time) = date {
+        let Some(fmt) = coerce_str(fmt)? else {
+            return Ok(Datum::Null);
+        };
+        // Go answers "0" for any time that evaluated before checking zeros.
+        if fmt == "0" {
+            return Ok(Datum::new_string_datum("0"));
+        }
         let core = time.core_time();
-        if core.month() == 0 || core.day() == 0 {
-            // `InvalidZero`: a zero month or day. An integer/decimal zero
-            // (all fields zero, no fractional digits) is NULL without a
-            // warning; any other zero-in-date value warns 1292.
+        if time.invalid_zero() {
+            // Integer and decimal zero at FSP 0 return NULL silently.
             let all_zero = core.year() == 0
                 && core.hour() == 0
                 && core.minute() == 0
@@ -1885,12 +1876,19 @@ pub(crate) fn date_format_in(
                     handle_invalid_time(
                         cols,
                         1292,
-                        format!("Incorrect datetime value: '{s}'"),
+                        format!("Incorrect datetime value: '{time}'"),
                     )?;
                 }
             }
             return Ok(Datum::Null);
         }
+        return render_date_format(*time, &fmt);
+    }
+    let (Some(s), Some(fmt)) = (coerce_str(date)?, coerce_str(fmt)?) else {
+        return Ok(Datum::Null);
+    };
+    if fmt == "0" {
+        return Ok(Datum::new_string_datum("0"));
     }
     // Split off an optional time-of-day component.
     let (date_part, time_part) = match s.split_once(' ') {
@@ -1918,10 +1916,15 @@ pub(crate) fn date_format_in(
     }) else {
         return Ok(Datum::Null);
     };
+    render_date_format(time, &fmt)
+}
+
+pub(super) fn render_date_format(time: tidb_datatype::Time, fmt: &str) -> Result<Datum, EvalError> {
+    let core = time.core_time();
     // The SQL year-day calculation treats year zero as a common year.
     let adjusted_format;
-    let layout = if year == 0 && month > 2 && fmt.contains("%j") {
-        let ordinal = format!("{:03}", week_core(year, month, day).year_day());
+    let layout = if core.year() == 0 && core.month() > 2 && fmt.contains("%j") {
+        let ordinal = format!("{:03}", core.year_day());
         adjusted_format = fmt
             .split("%%")
             .map(|part| part.replace("%j", &ordinal))
@@ -1929,7 +1932,7 @@ pub(crate) fn date_format_in(
             .join("%%");
         adjusted_format.as_str()
     } else {
-        &fmt
+        fmt
     };
     let mut output = crate::rpn::to_query_time(time)
         .and_then(|time| time.date_format(layout).map_err(Into::into))
