@@ -496,113 +496,6 @@ fn strcmp_under(
     }))
 }
 
-/// `HEX(x)`: renders a numeric argument's implicit-integer bits as uppercase
-/// base-16 (`HEX(12.8)` = `D`, `HEX(-1)` = `FFFFFFFFFFFFFFFF`), or renders a
-/// string/binary-literal argument's bytes (`HEX('abc')` = `616263`).
-///
-/// This is deliberately a type-directed split, rather than formatting every
-/// value through `coerce_str`: TiDB's `TestHexFunc` proves that decimal and
-/// real values use the integer signature while ETString values retain their
-/// original bytes. Reusing `radix_integer_bits` keeps every numeric rounding
-/// and two's-complement edge on one source-defined conversion path.
-///
-/// # A `BIT` COLUMN is an integer argument, a bit LITERAL is not
-///
-/// `hexFunctionClass.getFunction` switches on `args[0].GetType().EvalType()`,
-/// and `mysql.TypeBit`'s eval type is `types.ETInt` -- so a `BIT(48)` column
-/// is hexed through `builtinHexIntArgSig`, which formats the VALUE and
-/// therefore drops the storage width's leading zero bytes. A bit LITERAL
-/// (`b'01000001'`) is a different type: Go stores it as `KindBinaryLiteral`
-/// typed `mysql.TypeVarString`, so it takes the string branch, and it only
-/// LOOKS like the integer answer because a literal carries no padding.
-/// Measured through `gorun` on `bit(48)` holding `0x00080A0D091A`:
-///
-/// ```text
-/// hex(b)          -> 80A0D091A     (int branch: value, no leading zeros)
-/// hex(concat(b))  -> 000000000041  (string branch on bit(48) x'0041')
-/// hex(x'0041')    -> 0041          (hex literal keeps both bytes)
-/// hex(b'01000001')-> 41            (bit literal is one byte to begin with)
-/// ```
-pub(crate) fn hex(vals: &[Datum]) -> Result<Datum, EvalError> {
-    match &vals[0] {
-        Datum::Null => Ok(Datum::Null),
-        Datum::Int(_)
-        | Datum::UInt(_)
-        | Datum::Decimal(_)
-        | Datum::Real(_)
-        | Datum::Float32(_)
-        | Datum::Bit(_) => {
-            let bits = radix_integer_bits(&vals[0])?.expect("non-NULL numeric HEX input");
-            sdk_hex(|writer| tidb_query_expr::impl_string::hex_int_arg(&(bits as i64), writer))
-        }
-        Datum::String(_)
-        | Datum::Bytes(_)
-        | Datum::BinaryLiteral(_)
-        | Datum::Duration(_)
-        | Datum::Enum(_, _)
-        | Datum::Set(_, _)
-        | Datum::Time(_)
-        | Datum::Json(_) => hex_string_value(&vals[0]),
-        Datum::Raw(value) => sdk_hex(|writer| tidb_query_expr::impl_string::hex_str_arg(value, writer)),
-        Datum::MinNotNull | Datum::MaxValue => {
-            Err(EvalError::Unsupported("range sentinel HEX argument"))
-        }
-        other => {
-            let bytes = other
-                .to_bytes()
-                .map_err(|_| EvalError::Unsupported("HEX argument conversion"))?;
-            sdk_hex(|writer| tidb_query_expr::impl_string::hex_str_arg(&bytes, writer))
-        }
-    }
-}
-
-fn hex_string_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = coerce_str_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    sdk_hex(|writer| tidb_query_expr::impl_string::hex_str_arg(&bytes, writer))
-}
-
-fn sdk_hex(
-    encode: impl FnOnce(tidb_query_datatype::codec::data_type::BytesWriter)
-        -> tidb_query_common::Result<tidb_query_datatype::codec::data_type::BytesGuard>,
-) -> Result<Datum, EvalError> {
-    Ok(sdk_bytes(encode)?.map_or(Datum::Null, Datum::new_string_datum))
-}
-
-/// Go `hexFunctionClass.getFunction`: select the string or integer signature
-/// from the argument's declared eval type, then apply the corresponding
-/// build-time argument cast before evaluating the body.
-pub(crate) fn hex_with_type(
-    vals: &[Datum],
-    arg_type: Option<&FieldType>,
-    ctx: &dyn crate::Columns,
-) -> Result<Datum, EvalError> {
-    use tidb_datatype::EvalType;
-
-    let Some(arg_type) = arg_type else {
-        return hex(vals);
-    };
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad HEX arity"));
-    };
-    match arg_type.eval_type() {
-        EvalType::String
-        | EvalType::Datetime
-        | EvalType::Timestamp
-        | EvalType::Duration
-        | EvalType::Json => {
-            let value = crate::cast::cast_arg_as_string(value, Some(arg_type), ctx)?;
-            hex_string_value(&value)
-        }
-        EvalType::Int | EvalType::Real | EvalType::Decimal => {
-            let value = crate::cast::cast_arg_as_int(value, Some(arg_type), ctx)?;
-            hex(&[value])
-        }
-        _ => Err(EvalError::Unsupported("HEX argument eval type")),
-    }
-}
-
 /// `BIN(n)`: the base-2 form of an implicitly-cast integer as an unsigned
 /// 64-bit value.  TiDB's `binFunctionClass` requests `ETInt`, so strings use
 /// their leading integer run, decimals round half-up, and reals round
@@ -2072,9 +1965,13 @@ mod format_tests {
 
 #[cfg(test)]
 mod hex_bit_column_tests {
-    use super::hex;
-    use crate::Datum;
+    use crate::{Datum, EvalError};
     use tidb_datatype::BinaryLiteral;
+
+    fn hex(args: &[Datum]) -> Result<Datum, EvalError> {
+        crate::tests::eval_builtin_func("hex", args, &crate::NoColumns)
+            .expect("valid HEX arity")
+    }
 
     fn bit(bytes: &[u8]) -> Datum {
         Datum::Bit(BinaryLiteral::from(bytes.to_vec()))

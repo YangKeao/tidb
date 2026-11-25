@@ -41,11 +41,6 @@ fn field_method(function: &ScalarFunction, values: &[Datum], ctx: &dyn Columns) 
     crate::string_fn::field_with_collation(values, function.derived_collation(), ctx)
 }
 
-/// Go `builtinHexStrArgSig` / `builtinHexIntArgSig` over the argument's type.
-fn hex_method(function: &ScalarFunction, values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::string_fn::hex_with_type(values, function.args.first().and_then(Expression::static_type), ctx)
-}
-
 /// Go `builtinFromDaysSig.evalTime`: a DATE.
 fn from_days_values(values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let date = crate::time_fn::calendar::from_days(values)?;
@@ -883,7 +878,14 @@ impl PbBuiltin {
             Strcmp => Kernel::Method(strcmp_method),
             Elt => Kernel::Values(|values, _| crate::string_fn::elt(values)),
             FieldInt | FieldReal | FieldString => Kernel::Method(field_method),
-            HexStrArg | HexIntArg => Kernel::Method(hex_method),
+            HexStrArg => Kernel::RpnOnly(
+                Some(tidb_query_expr::impl_string::hex_str_arg_fn_meta),
+                &[EvalType::String],
+            ),
+            HexIntArg => Kernel::RpnOnly(
+                Some(tidb_query_expr::impl_string::hex_int_arg_fn_meta),
+                &[EvalType::Int],
+            ),
             Right => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::right_fn_meta), &[EvalType::String, EvalType::Int]),
             RightUtf8 => Kernel::Values(right_values),
             Space => Kernel::Values(crate::string_packet::space),
