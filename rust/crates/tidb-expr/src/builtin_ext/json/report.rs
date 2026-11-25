@@ -27,6 +27,7 @@
 //! because they read BinaryJSON's encoded layout, not its value.
 
 use serde_json::Value as Json;
+use std::sync::Arc;
 
 use super::value::parse_json_document_argument;
 use crate::builtin_ext::BuiltinFuncCache;
@@ -56,6 +57,27 @@ impl Clone for JsonSchemaCache {
 }
 
 impl JsonSchemaCache {
+    pub(crate) fn share(&self) -> Self {
+        Self(self.0.share())
+    }
+
+    fn prepare(
+        &self,
+        value: &Datum,
+        cache: bool,
+        ctx: &dyn Columns,
+    ) -> Result<Arc<Option<PreparedJsonSchema>>, EvalError> {
+        if value.is_null() {
+            return Ok(Arc::new(None));
+        }
+        if cache {
+            self.0
+                .get_or_init_cache(ctx.context_id(), || prepare_json_schema(value))
+        } else {
+            prepare_json_schema(value).map(Arc::new)
+        }
+    }
+
     pub(crate) fn eval(
         &self,
         args: &[Expression],
@@ -65,26 +87,67 @@ impl JsonSchemaCache {
         let [schema_arg, document_arg] = args else {
             return Err(EvalError::WrongParameterCount("json_schema_valid"));
         };
-        let schema_value = schema_arg.eval(ctx, row)?;
-        if schema_value.is_null() {
-            return Ok(Datum::Null);
-        }
-
-        if schema_arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT {
-            let schema = self
-                .0
-                .get_or_init_cache(ctx.context_id(), || prepare_json_schema(&schema_value))?;
-            let Some(schema) = schema.as_ref().as_ref() else {
-                return Ok(Datum::Null);
-            };
-            return validate_json_schema(schema, &document_arg.eval(ctx, row)?);
-        }
-
-        let schema = prepare_json_schema(&schema_value)?;
+        let schema = self.prepare(
+            &schema_arg.eval(ctx, row)?,
+            schema_arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT,
+            ctx,
+        )?;
         let Some(schema) = schema.as_ref() else {
             return Ok(Datum::Null);
         };
         validate_json_schema(schema, &document_arg.eval(ctx, row)?)
+    }
+}
+
+/// Schema and document are separate ordered operands of one shared program.
+/// The prepared row value stays private to that program. A new schema visit
+/// replaces any state left by a previous document error.
+pub(crate) struct JsonSchemaExecution {
+    constant_schema: bool,
+    cache: JsonSchemaCache,
+    current: std::sync::Mutex<Option<Arc<Option<PreparedJsonSchema>>>>,
+}
+
+impl JsonSchemaExecution {
+    pub(crate) fn new(constant_schema: bool, cache: JsonSchemaCache) -> Self {
+        Self {
+            constant_schema,
+            cache,
+            current: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn prepare_operand(
+        &self,
+        value: &Datum,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        let schema = self.cache.prepare(value, self.constant_schema, ctx)?;
+        let result = if schema.is_some() {
+            Datum::Int(1)
+        } else {
+            Datum::Null
+        };
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(schema);
+        Ok(result)
+    }
+
+    pub(crate) fn validate_operand(&self, document: &Datum) -> Result<Datum, EvalError> {
+        let prepared = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or(EvalError::Unsupported(
+                "JSON schema operand was not prepared",
+            ))?;
+        match prepared.as_ref().as_ref() {
+            Some(schema) => validate_json_schema(schema, document),
+            None => Ok(Datum::Null),
+        }
     }
 }
 

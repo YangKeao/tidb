@@ -258,20 +258,6 @@ pub(crate) fn parse_json_modify_paths(
     Ok(Some(paths))
 }
 
-/// `JSON_SET`, `JSON_INSERT` and `JSON_REPLACE` with a previously parsed
-/// path list.
-pub(super) fn json_modify_with_paths(
-    vals: &[Datum],
-    arg_types: &[Option<FieldType>],
-    mode: JsonModifyMode,
-    paths: &[JSONPathExpression],
-) -> Result<Datum, EvalError> {
-    let Some(document) = json_document(&vals[0], arg_types[0].as_ref())? else {
-        return Ok(Datum::Null);
-    };
-    json_modify_with_document(document, vals, arg_types, mode, paths)
-}
-
 /// `jsonModify` after the document and the paths: each value is evaluated,
 /// then `BinaryJSON.Modify` refuses a wildcard or range path (3149) before
 /// applying the pairs in order and refuses a result deeper than 100 (3157).

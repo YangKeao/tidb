@@ -23,32 +23,27 @@
 //!
 //! `COMPRESS`, `UNCOMPRESS`, and `UNCOMPRESSED_LENGTH` implement TiDB's binary
 //! framing: a 4-byte little-endian original-length prefix followed by a zlib
-//! stream. The compressed block layout is deliberately left to Rust's zlib
-//! encoder; SQL observes a standards-compliant stream and the framing, not a
-//! particular standard-library DEFLATE strategy. The inverse functions require
-//! a complete checksummed stream, cap inflation at the framed original length,
-//! and append TiDB's corruption warnings to the statement context.
+//! stream. COMPRESS uses TiKV's encoder. UNCOMPRESS
+//! requires a complete checksummed stream, caps inflation at the framed
+//! length, and appends TiDB's corruption warnings to the statement context.
 //!
 
 use flate2::{Decompress, FlushDecompress, Status};
-use md5::{Digest, Md5};
 use sha1::Sha1;
-use sha2::{Sha224, Sha256, Sha384, Sha512};
 
 use crate::{BlockEncryptionMode, Columns, Datum, EvalError};
 
 /// Dispatches this family's builtins; `None` if `name` isn't one of them.
 /// `SHA` is a true alias of `SHA1`: `builtin.go`'s `funcs` map registers
 /// both `ast.SHA` and `ast.SHA1` to the same `sha1FunctionClass`.
+#[cfg(test)]
 pub(crate) fn dispatch(
     name: &str,
     vals: &[Datum],
     ctx: &dyn Columns,
 ) -> Option<Result<Datum, EvalError>> {
     match (name, vals.len()) {
-        ("MD5", 1) => Some(hash_unary::<Md5>(&vals[0])),
-        ("SHA" | "SHA1", 1) => Some(hash_unary::<Sha1>(&vals[0])),
-        ("SHA2", 2) => Some(sha2_hash(&vals[0], &vals[1])),
+        ("MD5" | "SHA" | "SHA1" | "SHA2", _) => crate::tests::eval_builtin_func(name, vals, ctx),
         ("SM3", 1) => Some(sm3_hash(&vals[0])),
         ("RANDOM_BYTES", 1) => Some(random_bytes(&vals[0])),
         ("RANDOM_BYTES", _) => Some(Err(EvalError::WrongParameterCount("random_bytes"))),
@@ -56,44 +51,11 @@ pub(crate) fn dispatch(
         ("VALIDATE_PASSWORD_STRENGTH", 1) => Some(validate_password_strength(&vals[0], ctx)),
         ("ENCODE", 2) => Some(sql_encode(&vals[0], &vals[1])),
         ("DECODE", 2) => Some(sql_decode(&vals[0], &vals[1])),
-        ("COMPRESS", 1) => Some(compress(&vals[0])),
+        ("COMPRESS", 1) => crate::tests::eval_builtin_func(name, vals, ctx),
         ("UNCOMPRESS", 1) => Some(uncompress(&vals[0], ctx)),
-        ("UNCOMPRESSED_LENGTH", 1) => Some(uncompressed_length(&vals[0], ctx)),
+        ("UNCOMPRESSED_LENGTH", 1) => crate::tests::eval_builtin_func(name, vals, ctx),
         _ => None,
     }
-}
-
-/// `COMPRESS(payload)`. Empty input remains empty. Non-empty input is framed
-/// as the original byte length followed by a zlib stream. A trailing dot keeps
-/// a stream ending in ASCII space from being changed by SQL trailing-space
-/// handling, matching TiDB's public format.
-pub(crate) fn compress(arg: &Datum) -> Result<Datum, EvalError> {
-    let Some(payload) = sql_string_bytes(arg)? else {
-        return Ok(Datum::Null);
-    };
-    if payload.is_empty() {
-        return Ok(Datum::new_string_datum(Vec::new()));
-    }
-
-    // go's `deflate()` helper: zlib.NewWriter (level 6) + Write + Close —
-    // transcribed bit-exactly in [`go_flate`]; a generic rust zlib backend
-    // makes different encoder choices and diverges on the wire.
-    let compressed = crate::go_flate::go_zlib_deflate(&payload);
-    Ok(Datum::new_string_datum(frame_compressed(
-        payload.len() as u32,
-        compressed,
-    )))
-}
-
-fn frame_compressed(original_len: u32, compressed: Vec<u8>) -> Vec<u8> {
-    let append_suffix = compressed.last() == Some(&b' ');
-    let mut framed = Vec::with_capacity(4 + compressed.len() + usize::from(append_suffix));
-    framed.extend_from_slice(&original_len.to_le_bytes());
-    framed.extend_from_slice(&compressed);
-    if append_suffix {
-        framed.push(b'.');
-    }
-    framed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,28 +156,6 @@ pub(crate) fn uncompress(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalEr
         return Ok(Datum::Null);
     }
     Ok(Datum::new_string_datum(bytes))
-}
-
-/// `UNCOMPRESSED_LENGTH(payload)`. Port of
-/// `builtinUncompressedLengthSig.evalInt`: returns the 4-byte little-endian
-/// prefix as the original length. NULL yields NULL; empty or too-short/corrupted
-/// input yields 0.
-pub(crate) fn uncompressed_length(arg: &Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let Some(payload) = sql_string_bytes(arg)? else {
-        return Ok(Datum::Null);
-    };
-    if payload.is_empty() {
-        return Ok(Datum::Int(0));
-    }
-    if payload.len() <= 4 {
-        ctx.append_go_warning(
-            &crate::expression_errors::ERR_ZLIB_Z_DATA,
-            "ZLIB: Input data corrupted",
-        );
-        return Ok(Datum::Int(0));
-    }
-    let length = u32::from_le_bytes(payload[0..4].try_into().unwrap());
-    Ok(Datum::Int(i64::from(length)))
 }
 
 const AES_BLOCK_SIZE: usize = 16;
@@ -443,10 +383,6 @@ fn password_eval_error(error: tidb_password_validation::PwdError<EvalError>) -> 
     }
 }
 
-fn identity_username(identity: &str) -> &str {
-    identity.rsplit_once('@').map_or(identity, |(user, _)| user)
-}
-
 /// Go `builtinValidatePasswordStrengthSig.evalInt`: the user and session
 /// first; a password under four characters is 0 before the globals are
 /// read.
@@ -522,21 +458,6 @@ pub(crate) fn validate_password_strength_with_user(
     Ok(Datum::Int(100))
 }
 
-/// `MD5(str)` / `SHA(str)` / `SHA1(str)`: the digest of the argument's
-/// string bytes as lowercase hex (32 chars for MD5, 40 for SHA-1); `NULL`
-/// argument propagates to `NULL`. Port of `builtinMD5Sig.evalString` and
-/// `builtinSHA1Sig.evalString` (`pkg/expression/builtin_encryption.go`),
-/// which differ only in the hash used — both eval the argument as a string
-/// (numbers arrive as their decimal text) and hex-encode the sum.
-pub(crate) fn hash_unary<D: Digest>(v: &Datum) -> Result<Datum, EvalError> {
-    match hash_input(v)? {
-        Some(bytes) => Ok(Datum::new_string_datum(hex_lower(
-            D::digest(bytes.as_slice()).as_slice(),
-        ))),
-        None => Ok(Datum::Null),
-    }
-}
-
 /// `SM3(str)`: the parser-auth SM3 digest rendered as lowercase hex. TiDB's
 /// SQL builtin and password plugin deliberately share this digest owner.
 pub(crate) fn sm3_hash(value: &Datum) -> Result<Datum, EvalError> {
@@ -592,31 +513,6 @@ fn hash_input(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
                 .map_err(|_| EvalError::Unsupported("datum hash argument"))?,
         ),
     })
-}
-
-/// `SHA2(str, n)`: the SHA-2 family digest as lowercase hex. Port of
-/// `builtinSHA2Sig.evalString` (`pkg/expression/builtin_encryption.go`):
-/// `NULL` in either argument propagates; the switch over `n` maps
-/// `SHA0`(0) and `SHA256`(256) to SHA-256, `SHA224`/`SHA384`/`SHA512` to
-/// their hashes, and leaves the hasher nil for EVERY other value — which
-/// the Go code returns as `NULL` (not an error). Its function class declares
-/// the second argument `ETInt`, so [`encryption_int_argument`] ports that implicit cast
-/// before applying the switch.
-pub(crate) fn sha2_hash(arg: &Datum, len: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = hash_input(arg)? else {
-        return Ok(Datum::Null);
-    };
-    let Some(n) = encryption_int_argument(len)? else {
-        return Ok(Datum::Null);
-    };
-    let hex = match n {
-        0 | 256 => hex_lower(Sha256::digest(bytes.as_slice()).as_slice()),
-        224 => hex_lower(Sha224::digest(bytes.as_slice()).as_slice()),
-        384 => hex_lower(Sha384::digest(bytes.as_slice()).as_slice()),
-        512 => hex_lower(Sha512::digest(bytes.as_slice()).as_slice()),
-        _ => return Ok(Datum::Null),
-    };
-    Ok(Datum::new_string_datum(hex))
 }
 
 /// Ports the `ETInt` coercion requested by the encryption function classes.
@@ -707,7 +603,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    use super::{dispatch, frame_compressed, inflate};
+    use super::{dispatch, inflate};
     use crate::{Columns, Datum, Decimal, EvalError};
 
     fn call(name: &str, vals: &[Datum]) -> Datum {
@@ -967,12 +863,9 @@ mod tests {
             bytes_of(&large)
         );
 
-        // The suffix rule is part of the SQL framing, independent of which
-        // inputs a particular zlib implementation happens to encode that way.
-        assert_eq!(
-            frame_compressed(1, vec![0x78, b' ']),
-            vec![1, 0, 0, 0, 0x78, b' ', b'.']
-        );
+        // Adler-32 for one 0x1f byte ends with 0x20.
+        let trailing_space = call("COMPRESS", &[Datum::new_bytes_datum([0x1f])]);
+        assert!(bytes_of(&trailing_space).ends_with(b" ."));
 
         // compress('hello') = LE(5) + zlib stream.
         let hello = hex_bytes("05000000789CCA48CDC9C907040000FFFF062C0215");
@@ -986,7 +879,7 @@ mod tests {
         );
 
         // Empty input -> empty string / 0.
-        assert_eq!(call("COMPRESS", &[s("")]), s(""));
+        assert_eq!(call("COMPRESS", &[s("")]), Datum::new_bytes_datum([]));
         assert_eq!(call("UNCOMPRESS", &[s("")]), s(""));
         assert_eq!(call("UNCOMPRESSED_LENGTH", &[s("")]), Datum::Int(0));
 
@@ -1462,5 +1355,14 @@ mod tests {
         assert!(dispatch("COMPRESS", &[s("a"), s("b")], &ctx).is_none());
         assert!(dispatch("UNCOMPRESS", &[], &ctx).is_none());
         assert!(dispatch("UNCOMPRESSED_LENGTH", &[s("a"), s("b")], &ctx).is_none());
+    }
+}
+
+
+pub(crate) fn aes_operand_count(mode: BlockEncryptionMode, arg_count: usize) -> Option<usize> {
+    if mode.iv_required() {
+        (arg_count == 3).then_some(3)
+    } else {
+        (2..=3).contains(&arg_count).then_some(2)
     }
 }

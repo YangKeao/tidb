@@ -75,20 +75,6 @@ pub(super) fn json_extract(
         .map_or(Datum::Null, Datum::Json))
 }
 
-/// `JSON_TYPE(json_doc)`, port of `builtinJSONTypeSig.evalString`.
-pub(super) fn json_type(
-    vals: &[Datum],
-    arg_types: &[Option<FieldType>],
-) -> Result<Datum, EvalError> {
-    let Some(document) = document(vals, arg_types)? else {
-        return Ok(Datum::Null);
-    };
-    document
-        .type_name()
-        .map(|name| Datum::new_string_datum(name.to_owned()))
-        .map_err(binary_json_error)
-}
-
 /// `JSON_LENGTH(json_doc [, path])`, port of `builtinJSONLengthSig.evalInt`:
 /// a scalar is 1, an array or object its element count.
 pub(super) fn json_length(
@@ -128,19 +114,6 @@ pub(super) fn json_keys(
         return Ok(Datum::Null);
     }
     target.keys().map(Datum::Json).map_err(binary_json_error)
-}
-
-/// `JSON_DEPTH(json_doc)`, port of `builtinJSONDepthSig.evalInt`
-/// (`BinaryJSON.GetElemDepth`: a scalar or empty container is 1).
-pub(crate) fn json_depth(
-    value: &Datum,
-    field_type: Option<&FieldType>,
-) -> Result<Datum, EvalError> {
-    let Some(document) = json_document(value, field_type)? else {
-        return Ok(Datum::Null);
-    };
-    let depth = document.element_depth().map_err(binary_json_error)?;
-    Ok(Datum::Int(i64::try_from(depth).unwrap_or(i64::MAX)))
 }
 
 /// `JSON_STORAGE_SIZE(json_doc)`, port of `builtinJSONStorageSizeSig.evalInt`:

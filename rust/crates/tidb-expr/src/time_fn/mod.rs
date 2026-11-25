@@ -25,13 +25,14 @@
 
 pub(crate) mod add_sub;
 pub(crate) mod calendar;
+pub(crate) mod date_arithmetic;
 pub(crate) mod convert_tz;
 pub(crate) mod duration_parse;
 pub(crate) mod extract;
 pub(crate) mod session_tz;
 pub(crate) mod time_diff;
 
-use self::calendar::{civil_from_days, days_from_civil, parse_date_ymd, week_core};
+use self::calendar::{civil_from_days, parse_date_ymd, week_core};
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, EvalError};
 
@@ -272,24 +273,6 @@ pub(crate) fn utc_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, Eval
     )))
 }
 
-/// `builtinMicroSecondSig.evalInt`: read the fractional component of the
-/// ETDuration argument. Go deliberately suppresses a duration-cast error and
-/// returns NULL, unlike `TIME()` which reports the same truncation through the
-/// statement context.
-pub(crate) fn microsecond(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let fsp = duration_parse::get_fsp(&value);
-    Ok(match duration_parse::parse_duration(&value, fsp) {
-        Ok(duration) => Datum::Int(duration.micro_second()),
-        Err(_) => Datum::Null,
-    })
-}
-
 /// Go `builtinTimeSig.evalDuration`: `types.ParseDuration` at the text's
 /// written FSP. `ErrTruncatedWrongVal` goes through `tc.HandleTruncate` and
 /// the result stays whatever `ParseDuration` answered with it: the value
@@ -484,111 +467,6 @@ fn zero_or_invalid_zero(time: tidb_datatype::Time) -> bool {
     time.is_zero() || time.invalid_zero()
 }
 
-/// `builtinMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
-///
-/// The source returns the stored month field directly with no zero
-/// rejection, because `monthFunctionClass` declares its argument
-/// `types.ETDatetime` (`builtin_time.go:1116`) and so receives a value
-/// `EvalTime` already produced non-NULL — see [`calendar::component_date`].
-pub(crate) fn month(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(calendar::component_date(vals)?
-        .map_or(Datum::Null, |(_, month, _)| Datum::Int(i64::from(month))))
-}
-
-/// `builtinDayOfMonthSig.evalInt` in `pkg/expression/builtin_time.go`.
-///
-/// The source returns the stored day field directly with no zero rejection,
-/// because `dayOfMonthFunctionClass` declares its argument
-/// `types.ETDatetime` (`builtin_time.go:1284`) and so receives a value
-/// `EvalTime` already produced non-NULL — see [`calendar::component_date`].
-pub(crate) fn day_of_month(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(calendar::component_date(vals)?
-        .map_or(Datum::Null, |(_, _, day)| Datum::Int(i64::from(day))))
-}
-
-/// `builtinDayOfWeekSig.evalInt`: Sunday is 1 through Saturday 7; an
-/// invalid zero date warns and is NULL.
-pub(crate) fn day_of_week(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(
-        checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?.map_or(
-            Datum::Null,
-            |time| {
-                let (year, month, day) = date_fields(time);
-                Datum::Int((days_from_civil(year, month, day) + 4).rem_euclid(7) + 1)
-            },
-        ),
-    )
-}
-
-/// `builtinDayOfYearSig.evalInt`: one-based day within the calendar year;
-/// an invalid zero date warns and is NULL.
-pub(crate) fn day_of_year(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(
-        checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?.map_or(
-            Datum::Null,
-            // Go `builtinDayOfYearSig`: `arg.YearDay()`.
-            |time| Datum::Int(i64::from(time.core_time().year_day())),
-        ),
-    )
-}
-
-/// `builtinWeekDaySig.evalInt`: Monday is 0 through Sunday 6; a zero or
-/// invalid zero date warns and is NULL.
-pub(crate) fn weekday(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(
-        checked_date_arg(value, cols, zero_or_invalid_zero)?.map_or(Datum::Null, |time| {
-            let (year, month, day) = date_fields(time);
-            Datum::Int((days_from_civil(year, month, day) + 3).rem_euclid(7))
-        }),
-    )
-}
-
-/// `builtinQuarterSig.evalInt` = `(date.Month() + 2) / 3`, returning 1-4 for
-/// a real date and `0` for a month-zero one — with no zero rejection, because
-/// `quarterFunctionClass` declares its argument `types.ETDatetime`
-/// (`builtin_time.go:5833`) and so receives a value `EvalTime` already
-/// produced non-NULL. Real TiDB's recorded `QUARTER(v1)` over a
-/// zero-datetime column is `0`; `gorun` confirms `QUARTER(20240000)` is `0`
-/// too, by the same stored month.
-///
-/// The month-zero string form no longer needs a parser of its own here: the
-/// ETDatetime cast ([`crate::arg_eval_type`]) is what decides a string, and
-/// it is `types.ParseTime` under the READ path's `IgnoreZeroInDate`, which
-/// keeps a zero month exactly as Go does.
-pub(crate) fn quarter(vals: &[Datum]) -> Result<Datum, EvalError> {
-    Ok(
-        calendar::component_date(vals)?.map_or(Datum::Null, |(_, month, _)| {
-            Datum::Int(i64::from(month.div_ceil(3)))
-        }),
-    )
-}
-
-/// `builtinWeekWithModeSig` / `builtinWeekWithoutModeSig` in
-/// `pkg/expression/builtin_time.go`. Only the no-mode branch uses the
-/// supplied session `default_week_format`; a caller with no session passes
-/// TiDB's default zero.
-/// `WEEKOFYEAR(date)`. Port of `builtinWeekOfYearSig.evalInt`, which is
-/// `date.Week(3)` — the ISO-like mode-3 week number. Zero and invalid dates are
-/// NULL after a warning, matching `week`.
-pub(crate) fn week_of_year_builtin(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(date) = checked_date_arg(value, cols, zero_or_invalid_zero)?.map(date_fields) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(week_core(date.0, date.1, date.2).week(3))))
-}
-
 /// `TIDB_PARSE_TSO_LOGICAL(tso)`. Port of `builtinTidbParseTsoLogicalSig` =
 /// `oracle.ExtractLogical`: the low 18 bits of the timestamp oracle value. A
 /// non-positive or NULL argument yields NULL. Session-independent (the physical
@@ -683,87 +561,6 @@ pub(crate) fn week(
         default_week_format
     };
     Ok(Datum::Int(i64::from(week_core(date.0, date.1, date.2).week(mode as u8))))
-}
-
-/// `builtinYearWeekWithModeSig` / `builtinYearWeekWithoutModeSig` in
-/// `pkg/expression/builtin_time.go`.
-pub(crate) fn yearweek(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !(1..=2).contains(&vals.len()) {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    // The one-argument signature checks only InvalidZero, which a zero date
-    // also is.
-    let rejects = if vals.len() == 2 {
-        zero_or_invalid_zero
-    } else {
-        tidb_datatype::Time::invalid_zero
-    };
-    let Some(date) = checked_date_arg(&vals[0], cols, rejects)?.map(date_fields) else {
-        return Ok(Datum::Null);
-    };
-    let mode = if vals.len() == 2 {
-        int_arg(&vals[1])?.unwrap_or(0)
-    } else {
-        0
-    };
-    let (year, number) = week_core(date.0, date.1, date.2).year_week(mode as u8);
-    let result = i64::from(year) * 100 + i64::from(number);
-    Ok(Datum::Int(if result < 0 {
-        i64::from(u32::MAX)
-    } else {
-        result
-    }))
-}
-
-/// `builtinMonthNameSig` in `pkg/expression/builtin_time.go`: a zero date
-/// warns under NO_ZERO_DATE and is otherwise NULL, as a zero month is.
-pub(crate) fn monthname(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let no_zero_date = cols.date_modes().no_zero_date;
-    let time = checked_date_arg(value, cols, |time| time.is_zero() && no_zero_date)?;
-    Ok(time
-        .map(date_fields)
-        .filter(|&(_, month, _)| month != 0)
-        .map_or(Datum::Null, |(_, month, _)| {
-            Datum::new_string_datum(MONTHS[(month - 1) as usize].to_string())
-        }))
-}
-
-/// `builtinDayNameSig` in `pkg/expression/builtin_time.go`: an invalid zero
-/// date warns and is NULL.
-pub(crate) fn dayname(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    const DAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let time = checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?;
-    Ok(time.map(date_fields).map_or(Datum::Null, |(y, m, d)| {
-        Datum::new_string_datum(DAYS[(days_from_civil(y, m, d) + 4).rem_euclid(7) as usize].to_string())
-    }))
 }
 
 /// `builtinLastDaySig` in `pkg/expression/builtin_time.go`: a zero month,
@@ -966,14 +763,6 @@ fn format_time_diff(micros: i64, fsp: usize) -> String {
         "{sign}{hours:02}:{minutes:02}:{seconds:02}.{fraction:0width$}",
         width = fsp
     )
-}
-
-/// `builtinTimeToSecSig` in `pkg/expression/builtin_time.go`.
-pub(crate) fn time_to_sec(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    Ok(duration(&vals[0])?.map_or(Datum::Null, |(seconds, _)| Datum::Int(seconds)))
 }
 
 /// `builtinSecToTimeSig` in `pkg/expression/builtin_time.go`.
@@ -1180,7 +969,8 @@ pub(crate) fn period_add(vals: &[Datum]) -> Result<Datum, EvalError> {
             "Incorrect arguments to period_add".to_owned(),
         ));
     }
-    let sum = (period_to_month(period as u64) as i64).wrapping_add(months);
+    let start = tidb_query_datatype::codec::mysql::Time::period_to_month(period as u64);
+    let sum = (start as i64).wrapping_add(months);
     Ok(Datum::Int(month_to_period(sum as u64) as i64))
 }
 
@@ -1198,29 +988,13 @@ pub(crate) fn period_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
             "Incorrect arguments to period_diff".to_owned(),
         ));
     }
-    // Go subtracts the uint64 month totals before converting to int64.
-    Ok(Datum::Int(
-        period_to_month(period1 as u64).wrapping_sub(period_to_month(period2 as u64)) as i64,
-    ))
+    tidb_query_expr::impl_time::period_diff(Some(&period1), Some(&period2))
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 fn valid_period(period: i64) -> bool {
     period >= 0 && period % 100 != 0 && period % 100 <= 12
-}
-
-/// Exact `period2Month` from `pkg/expression/builtin_time.go`.
-fn period_to_month(period: u64) -> u64 {
-    if period == 0 {
-        return 0;
-    }
-    let mut year = period / 100;
-    let month = period % 100;
-    if year < 70 {
-        year += 2_000;
-    } else if year < 100 {
-        year += 1_900;
-    }
-    year.wrapping_mul(12).wrapping_add(month).wrapping_sub(1)
 }
 
 /// Exact `month2Period` from `pkg/expression/builtin_time.go`.

@@ -2606,53 +2606,6 @@ fn is_invalid_json_for_func_index(error: &EvalError) -> bool {
     matches!(error, EvalError::Conversion(terror) if terror.code() == tidb_terror::TerrorCode::new(3903))
 }
 
-/// Maps `MyDecimal.FromString`'s non-overflow parse dispositions to the
-/// warning emitted by Go's string-to-decimal cast signature. The parsed value
-/// is still retained (including a valid prefix); only a completely invalid or
-/// truncated suffix contributes this statement warning.
-pub(crate) fn report_decimal_input_truncation(v: &Datum, ctx: &dyn crate::Columns) {
-    let text = match v {
-        Datum::String(value) => value.as_utf8().ok(),
-        Datum::Bytes(value) => std::str::from_utf8(value).ok(),
-        _ => None,
-    };
-    let Some(text) = text else {
-        return;
-    };
-    let trimmed = text.trim();
-    let (_, parse_error) = Decimal::parse_mysql(trimmed);
-    if matches!(
-        parse_error,
-        Some(tidb_datatype::DecimalParseError::Overflow)
-    ) {
-        // go's string-to-decimal sig hands the parse's ErrOverflow straight
-        // to `ec.HandleError` without format args, so the appended row keeps
-        // the raw "%s value is out of range in '%s'" template (oracle:
-        // CAST('1e300' AS DECIMAL)). The value is still retained (saturated);
-        // the production clamp below reports its own formatted row.
-        ctx.append_go_warning(
-            &tidb_datatype::types_errors::ERR_OVERFLOW,
-            "%s value is out of range in '%s'",
-        );
-    }
-    if matches!(
-        parse_error,
-        Some(
-            tidb_datatype::DecimalParseError::Truncated
-                | tidb_datatype::DecimalParseError::BadNumber
-                | tidb_datatype::DecimalParseError::TruncatedWrongValue
-        )
-    ) {
-        ctx.append_go_warning(
-            &tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL,
-            &format!(
-                "Truncated incorrect DECIMAL value: '{}'",
-                tidb_datatype::warning_subject_byte_cap(trimmed)
-            ),
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;

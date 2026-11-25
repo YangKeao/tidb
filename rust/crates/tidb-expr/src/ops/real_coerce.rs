@@ -56,26 +56,8 @@ pub(super) fn float_binary(
     let a = to_f64(l);
     let b = to_f64(r);
     Ok(match op {
-        Plus => finite_float(a + b)?,
-        Minus => finite_float(a - b)?,
-        Mul => finite_float(a * b)?,
-        Div => {
-            if b == 0.0 {
-                crate::expression_errors::handle_division_by_zero(ctx)?;
-                Datum::Null
-            } else {
-                finite_float(a / b)?
-            }
-        }
+        Plus | Minus | Mul | Div | Mod => return real_arithmetic(op, a, b, ctx),
         IntDiv => unreachable!("DIV evaluates decimal operands before real dispatch"),
-        Mod => {
-            if b == 0.0 {
-                crate::expression_errors::handle_division_by_zero(ctx)?;
-                Datum::Null
-            } else {
-                finite_float(a % b)?
-            }
-        }
         Eq => bool_int(a == b),
         Ge => bool_int(a >= b),
         Gt => bool_int(a > b),
@@ -90,17 +72,52 @@ pub(super) fn float_binary(
                 (Some(x), Some(y)) => (x, y),
                 _ => return Err(EvalError::IntOverflow),
             };
-            match op {
-                BitAnd => Datum::UInt((ai as u64) & (bi as u64)),
-                BitOr => Datum::UInt((ai as u64) | (bi as u64)),
-                BitXor => Datum::UInt((ai as u64) ^ (bi as u64)),
-                LeftShift => Datum::UInt(shift_left(ai as u64, bi as u64)),
-                RightShift => Datum::UInt(shift_right(ai as u64, bi as u64)),
-                _ => unreachable!("guarded by outer match"),
-            }
+            return integer_bitwise(op, ai, bi);
         }
         LogicAnd | LogicOr | LogicXor | NullEq => unreachable!("handled by caller"),
     })
+}
+
+fn real_arithmetic(
+    op: BinaryOp,
+    left: f64,
+    right: f64,
+    ctx: &dyn tidb_exprctx::context::Columns,
+) -> Result<Datum, EvalError> {
+    use BinaryOp::{Div, Minus, Mod, Mul, Plus};
+    use tidb_query_datatype::{codec::data_type::Real, expr::EvalContext};
+    use tidb_query_expr::impl_arithmetic::{
+        ArithmeticOp, ArithmeticOpWithCtx, RealDivide, RealMinus, RealMod, RealMultiply, RealPlus,
+    };
+
+    if matches!(op, Div | Mod) && right == 0.0 {
+        crate::expression_errors::handle_division_by_zero(ctx)?;
+        return Ok(Datum::Null);
+    }
+    // The SDK's ordered real carrier cannot represent NaN. Preserve the
+    // native arithmetic contract for non-finite inputs.
+    if !left.is_finite() || !right.is_finite() {
+        return finite_float(match op {
+            Plus => left + right,
+            Minus => left - right,
+            Mul => left * right,
+            Div => left / right,
+            Mod => left % right,
+            _ => unreachable!("real arithmetic operator"),
+        });
+    }
+    let left = Real::new(left).expect("finite operand");
+    let right = Real::new(right).expect("finite operand");
+    let value = match op {
+        Plus => RealPlus::calc(&left, &right),
+        Minus => RealMinus::calc(&left, &right),
+        Mul => RealMultiply::calc(&left, &right),
+        Div => RealDivide::calc(&mut EvalContext::default(), &left, &right),
+        Mod => RealMod::calc(&left, &right),
+        _ => unreachable!("real arithmetic operator"),
+    }
+    .map_err(|_| EvalError::FloatOverflow)?;
+    value.map_or(Ok(Datum::Null), |value| finite_float(value.into_inner()))
 }
 
 // Keep its operands in their own domains: converting a Decimal/UInt partner to

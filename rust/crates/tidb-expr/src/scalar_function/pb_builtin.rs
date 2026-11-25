@@ -20,7 +20,9 @@ use tidb_exprctx::context::{Columns, EvalError};
 use crate::expression::{ConstLevel, Expression};
 use tidb_ast::BinaryOp;
 use tidb_chunk::row::Row;
-use tidb_datatype::{Datum, EvalType, FieldType, VectorFloat32};
+use tidb_datatype::{Datum, EvalType, FieldType};
+#[cfg(test)]
+use tidb_datatype::VectorFloat32;
 use tidb_proto::tipb::ScalarFuncSig;
 
 pub(crate) type ValuesKernel = fn(&[Datum], &dyn Columns) -> Result<Datum, EvalError>;
@@ -28,20 +30,10 @@ pub(crate) type ValuesKernel = fn(&[Datum], &dyn Columns) -> Result<Datum, EvalE
 /// collator or an argument's field type -- beside the argument values.
 pub(crate) type MethodKernel = fn(&ScalarFunction, &[Datum], &dyn Columns) -> Result<Datum, EvalError>;
 
-/// Go `builtinStrcmpSig`: the comparison under `b.collation`.
-fn strcmp_method(function: &ScalarFunction, values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::string_fn::strcmp_with_collation(values, function.derived_collation())
-}
-
 /// Go `builtinFieldStringSig` compares under `b.collation`; the int and real
 /// signatures read arguments their class already cast.
 fn field_method(function: &ScalarFunction, values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     crate::string_fn::field_with_collation(values, function.derived_collation(), ctx)
-}
-
-/// Go `builtinHexStrArgSig` / `builtinHexIntArgSig` over the argument's type.
-fn hex_method(function: &ScalarFunction, values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::string_fn::hex_with_type(values, function.args.first().and_then(Expression::static_type), ctx)
 }
 
 /// Go `builtinFromDaysSig.evalTime`: a DATE.
@@ -388,14 +380,6 @@ fn grouping_method(function: &ScalarFunction, values: &[Datum], _: &dyn Columns)
     Ok(Datum::UInt(metadata.eval(grouping_id as u64)))
 }
 
-fn ltrim_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::builtin_ext::string2::ltrim(&values[0])
-}
-
-fn rtrim_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::builtin_ext::string2::rtrim(&values[0])
-}
-
 fn left_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     crate::string_fn::str_take(values, true)
 }
@@ -406,10 +390,6 @@ fn lpad_values(values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> 
 
 fn rpad_values(values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
     crate::string_packet::pad(values, false, ctx)
-}
-
-fn unhex_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::string_fn::unhex(values)
 }
 
 fn oct_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
@@ -472,7 +452,7 @@ fn trim_row(function: &ScalarFunction, ctx: &dyn Columns, row: Row<'_>) -> Resul
     let binary = matches!(value, Datum::Bytes(_));
     let text = crate::coerce::coerce_str_bytes(&value)?;
     let remove = crate::coerce::coerce_str_bytes(&remstr)?;
-    Ok(crate::string_fn::trim_value(text, remove, direction, binary))
+    crate::string_fn::trim_value(text, remove, direction, binary)
 }
 
 /// Go `builtinConvertSig.evalString`.
@@ -502,34 +482,6 @@ fn convert_row(function: &ScalarFunction, ctx: &dyn Columns, row: Row<'_>) -> Re
 fn right_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     crate::string_fn::str_take(values, false)
 }
-
-/// Go `builtinCeil*Sig` / `builtinFloor*Sig`: an `*IntToInt` or `*Real`
-/// signature keeps its argument's domain; a `*DecTo*` one answers the
-/// signature's own result domain.
-fn ceil_values(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, true, None, ctx)
-}
-
-fn floor_values(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, false, None, ctx)
-}
-
-fn ceil_dec_to_int(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, true, Some(false), ctx)
-}
-
-fn ceil_dec_to_dec(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, true, Some(true), ctx)
-}
-
-fn floor_dec_to_int(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, false, Some(false), ctx)
-}
-
-fn floor_dec_to_dec(values: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::ceil_floor_with_result_domain(values, false, Some(true), ctx)
-}
-
 
 /// Go `builtinConvSig.evalString`'s first switch: a binary literal, or a
 /// cast over a hybrid-typed or binary-literal argument, is read as its bits.
@@ -562,20 +514,13 @@ fn conv_bit_literal(
     }
 }
 
-fn md5_values(values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::builtin_ext::crypto::dispatch("MD5", values, ctx)
-        .unwrap_or(Err(EvalError::Unsupported("protobuf MD5 arity")))
-}
-
-fn crc32_values(values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::crc32(values)
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Kernel {
+    /// A TiKV-owned computation. TiDB only adapts the typed SQL values.
+    RpnOnly(Option<fn() -> tidb_query_expr::RpnFnMeta>, &'static [EvalType]),
     Binary(BinaryOp, EvalType),
     /// Go comparisons evaluate both typed operands before applying NULL semantics.
-    Compare(BinaryOp, EvalType),
+    StringCompare(BinaryOp),
     In(EvalType),
     Like,
     Ilike,
@@ -593,16 +538,8 @@ pub(crate) enum Kernel {
     IntegerMultiply {
         unsigned: bool,
     },
-    IsNull(EvalType),
-    /// `negate` is `UnaryNot`; `keep_null` separates Go's `*IsTrueWithNull`
-    /// (NULL stays NULL) from `*IsTrue` / `*IsFalse` (NULL is 0, Go
-    /// `builtinIntIsTrueSig{keepNull: false}`); `falsity` is `*IsFalse`.
-    Truth {
-        negate: bool,
-        domain: EvalType,
-        keep_null: bool,
-        falsity: bool,
-    },
+    // SQL vector truth tests do not have a protobuf signature.
+    VectorTruth { keep_null: bool, falsity: bool },
     /// Go `builtinCoalesce*Sig`: the first non-NULL argument, each read in
     /// the result's evaluation type.
     Coalesce(EvalType),
@@ -652,12 +589,32 @@ pub(crate) struct PbBuiltin {
     pub(super) kernel: Kernel,
 }
 
+macro_rules! rpn_comparison {
+    ($carrier:ty, $domain:ident, $operator:ty) => {
+        Kernel::RpnOnly(
+            Some(tidb_query_expr::impl_compare::compare_fn_meta::<
+                tidb_query_expr::impl_compare::BasicComparer<$carrier, $operator>,
+            >),
+            &[EvalType::$domain; 2],
+        )
+    };
+}
+
 impl PbBuiltin {
     pub(crate) fn signature(self) -> ScalarFuncSig {
         self.signature
     }
 
     pub(crate) fn new(signature: ScalarFuncSig) -> Option<Self> {
+        use tidb_query_expr::impl_op::{
+            KeepNullOff, KeepNullOn, decimal_is_false_fn_meta, decimal_is_true_fn_meta,
+            int_is_false_fn_meta, int_is_true_fn_meta, real_is_false_fn_meta, real_is_true_fn_meta,
+            unary_not_decimal_fn_meta, unary_not_int_fn_meta, unary_not_real_fn_meta,
+        };
+        use tidb_query_datatype::codec::{data_type::{DateTime as QueryDateTime, Duration as QueryDuration, Real as QueryReal}, mysql::Decimal as QueryDecimal};
+        use tidb_query_expr::impl_compare::{
+            CmpOpEq, CmpOpGe, CmpOpGt, CmpOpLe, CmpOpLt, CmpOpNe, CmpOpNullEq, compare_json_fn_meta, compare_vector_float32_fn_meta,
+        };
         use ScalarFuncSig::*;
         let kernel = match signature {
             PlusInt => Kernel::Binary(BinaryOp::Plus, EvalType::Int),
@@ -688,59 +645,59 @@ impl PbBuiltin {
             ModIntUnsignedUnsigned => Kernel::IntegerMod {
                 unsigned: [true, true],
             },
-            LtInt => Kernel::Compare(BinaryOp::Lt, EvalType::Int),
-            LeInt => Kernel::Compare(BinaryOp::Le, EvalType::Int),
-            GtInt => Kernel::Compare(BinaryOp::Gt, EvalType::Int),
-            GeInt => Kernel::Compare(BinaryOp::Ge, EvalType::Int),
-            EqInt => Kernel::Compare(BinaryOp::Eq, EvalType::Int),
-            NeInt => Kernel::Compare(BinaryOp::Ne, EvalType::Int),
-            LtReal => Kernel::Compare(BinaryOp::Lt, EvalType::Real),
-            LeReal => Kernel::Compare(BinaryOp::Le, EvalType::Real),
-            GtReal => Kernel::Compare(BinaryOp::Gt, EvalType::Real),
-            GeReal => Kernel::Compare(BinaryOp::Ge, EvalType::Real),
-            EqReal => Kernel::Compare(BinaryOp::Eq, EvalType::Real),
-            NeReal => Kernel::Compare(BinaryOp::Ne, EvalType::Real),
-            LtDecimal => Kernel::Compare(BinaryOp::Lt, EvalType::Decimal),
-            LeDecimal => Kernel::Compare(BinaryOp::Le, EvalType::Decimal),
-            GtDecimal => Kernel::Compare(BinaryOp::Gt, EvalType::Decimal),
-            GeDecimal => Kernel::Compare(BinaryOp::Ge, EvalType::Decimal),
-            EqDecimal => Kernel::Compare(BinaryOp::Eq, EvalType::Decimal),
-            NeDecimal => Kernel::Compare(BinaryOp::Ne, EvalType::Decimal),
-            LtString => Kernel::Compare(BinaryOp::Lt, EvalType::String),
-            LeString => Kernel::Compare(BinaryOp::Le, EvalType::String),
-            GtString => Kernel::Compare(BinaryOp::Gt, EvalType::String),
-            GeString => Kernel::Compare(BinaryOp::Ge, EvalType::String),
-            EqString => Kernel::Compare(BinaryOp::Eq, EvalType::String),
-            NeString => Kernel::Compare(BinaryOp::Ne, EvalType::String),
-            LtTime => Kernel::Compare(BinaryOp::Lt, EvalType::Datetime),
-            LeTime => Kernel::Compare(BinaryOp::Le, EvalType::Datetime),
-            GtTime => Kernel::Compare(BinaryOp::Gt, EvalType::Datetime),
-            GeTime => Kernel::Compare(BinaryOp::Ge, EvalType::Datetime),
-            EqTime => Kernel::Compare(BinaryOp::Eq, EvalType::Datetime),
-            NeTime => Kernel::Compare(BinaryOp::Ne, EvalType::Datetime),
+            LtInt => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            LeInt => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            GtInt => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            GeInt => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            EqInt => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            NeInt => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            LtReal => rpn_comparison!(QueryReal, Real, CmpOpLt),
+            LeReal => rpn_comparison!(QueryReal, Real, CmpOpLe),
+            GtReal => rpn_comparison!(QueryReal, Real, CmpOpGt),
+            GeReal => rpn_comparison!(QueryReal, Real, CmpOpGe),
+            EqReal => rpn_comparison!(QueryReal, Real, CmpOpEq),
+            NeReal => rpn_comparison!(QueryReal, Real, CmpOpNe),
+            LtDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpLt),
+            LeDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpLe),
+            GtDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpGt),
+            GeDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpGe),
+            EqDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpEq),
+            NeDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpNe),
+            LtString => Kernel::StringCompare(BinaryOp::Lt),
+            LeString => Kernel::StringCompare(BinaryOp::Le),
+            GtString => Kernel::StringCompare(BinaryOp::Gt),
+            GeString => Kernel::StringCompare(BinaryOp::Ge),
+            EqString => Kernel::StringCompare(BinaryOp::Eq),
+            NeString => Kernel::StringCompare(BinaryOp::Ne),
+            LtTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpLt),
+            LeTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpLe),
+            GtTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpGt),
+            GeTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpGe),
+            EqTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpEq),
+            NeTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpNe),
             InInt => Kernel::In(EvalType::Int),
             InString => Kernel::In(EvalType::String),
-            LtDuration => Kernel::Compare(BinaryOp::Lt, EvalType::Duration),
-            LeDuration => Kernel::Compare(BinaryOp::Le, EvalType::Duration),
-            GtDuration => Kernel::Compare(BinaryOp::Gt, EvalType::Duration),
-            GeDuration => Kernel::Compare(BinaryOp::Ge, EvalType::Duration),
-            EqDuration => Kernel::Compare(BinaryOp::Eq, EvalType::Duration),
-            NeDuration => Kernel::Compare(BinaryOp::Ne, EvalType::Duration),
-            NullEqDuration => Kernel::Compare(BinaryOp::NullEq, EvalType::Duration),
-            LtJson => Kernel::Compare(BinaryOp::Lt, EvalType::Json),
-            LeJson => Kernel::Compare(BinaryOp::Le, EvalType::Json),
-            GtJson => Kernel::Compare(BinaryOp::Gt, EvalType::Json),
-            GeJson => Kernel::Compare(BinaryOp::Ge, EvalType::Json),
-            EqJson => Kernel::Compare(BinaryOp::Eq, EvalType::Json),
-            NeJson => Kernel::Compare(BinaryOp::Ne, EvalType::Json),
-            NullEqJson => Kernel::Compare(BinaryOp::NullEq, EvalType::Json),
-            LtVectorFloat32 => Kernel::Compare(BinaryOp::Lt, EvalType::VectorFloat32),
-            LeVectorFloat32 => Kernel::Compare(BinaryOp::Le, EvalType::VectorFloat32),
-            GtVectorFloat32 => Kernel::Compare(BinaryOp::Gt, EvalType::VectorFloat32),
-            GeVectorFloat32 => Kernel::Compare(BinaryOp::Ge, EvalType::VectorFloat32),
-            EqVectorFloat32 => Kernel::Compare(BinaryOp::Eq, EvalType::VectorFloat32),
-            NeVectorFloat32 => Kernel::Compare(BinaryOp::Ne, EvalType::VectorFloat32),
-            NullEqVectorFloat32 => Kernel::Compare(BinaryOp::NullEq, EvalType::VectorFloat32),
+            LtDuration => rpn_comparison!(QueryDuration, Duration, CmpOpLt),
+            LeDuration => rpn_comparison!(QueryDuration, Duration, CmpOpLe),
+            GtDuration => rpn_comparison!(QueryDuration, Duration, CmpOpGt),
+            GeDuration => rpn_comparison!(QueryDuration, Duration, CmpOpGe),
+            EqDuration => rpn_comparison!(QueryDuration, Duration, CmpOpEq),
+            NeDuration => rpn_comparison!(QueryDuration, Duration, CmpOpNe),
+            NullEqDuration => rpn_comparison!(QueryDuration, Duration, CmpOpNullEq),
+            LtJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpLt>), &[EvalType::Json; 2]),
+            LeJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpLe>), &[EvalType::Json; 2]),
+            GtJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpGt>), &[EvalType::Json; 2]),
+            GeJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpGe>), &[EvalType::Json; 2]),
+            EqJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpEq>), &[EvalType::Json; 2]),
+            NeJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpNe>), &[EvalType::Json; 2]),
+            NullEqJson => Kernel::RpnOnly(Some(compare_json_fn_meta::<CmpOpNullEq>), &[EvalType::Json; 2]),
+            LtVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpLt>), &[EvalType::VectorFloat32; 2]),
+            LeVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpLe>), &[EvalType::VectorFloat32; 2]),
+            GtVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpGt>), &[EvalType::VectorFloat32; 2]),
+            GeVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpGe>), &[EvalType::VectorFloat32; 2]),
+            EqVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpEq>), &[EvalType::VectorFloat32; 2]),
+            NeVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpNe>), &[EvalType::VectorFloat32; 2]),
+            NullEqVectorFloat32 => Kernel::RpnOnly(Some(compare_vector_float32_fn_meta::<CmpOpNullEq>), &[EvalType::VectorFloat32; 2]),
             InReal => Kernel::In(EvalType::Real),
             InDecimal => Kernel::In(EvalType::Decimal),
             InTime => Kernel::In(EvalType::Datetime),
@@ -753,11 +710,11 @@ impl PbBuiltin {
             LogicalAnd => Kernel::Logic(BinaryOp::LogicAnd),
             LogicalOr => Kernel::Logic(BinaryOp::LogicOr),
             LogicalXor => Kernel::Logic(BinaryOp::LogicXor),
-            NullEqInt => Kernel::Compare(BinaryOp::NullEq, EvalType::Int),
-            NullEqReal => Kernel::Compare(BinaryOp::NullEq, EvalType::Real),
-            NullEqDecimal => Kernel::Compare(BinaryOp::NullEq, EvalType::Decimal),
-            NullEqString => Kernel::Compare(BinaryOp::NullEq, EvalType::String),
-            NullEqTime => Kernel::Compare(BinaryOp::NullEq, EvalType::Datetime),
+            NullEqInt => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            NullEqReal => rpn_comparison!(QueryReal, Real, CmpOpNullEq),
+            NullEqDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpNullEq),
+            NullEqString => Kernel::StringCompare(BinaryOp::NullEq),
+            NullEqTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpNullEq),
             BitAndSig => Kernel::Binary(BinaryOp::BitAnd, EvalType::Int),
             BitOrSig => Kernel::Binary(BinaryOp::BitOr, EvalType::Int),
             BitXorSig => Kernel::Binary(BinaryOp::BitXor, EvalType::Int),
@@ -765,103 +722,28 @@ impl PbBuiltin {
             RightShift => Kernel::Binary(BinaryOp::RightShift, EvalType::Int),
             BitNegSig => Kernel::Unary(tidb_ast::UnaryOp::BitNeg),
             UnaryMinusInt | UnaryMinusDecimal | UnaryMinusReal => Kernel::Unary(tidb_ast::UnaryOp::Minus),
-            IntIsNull => Kernel::IsNull(EvalType::Int),
-            RealIsNull => Kernel::IsNull(EvalType::Real),
-            DecimalIsNull => Kernel::IsNull(EvalType::Decimal),
-            StringIsNull => Kernel::IsNull(EvalType::String),
-            TimeIsNull => Kernel::IsNull(EvalType::Datetime),
-            DurationIsNull => Kernel::IsNull(EvalType::Duration),
-            VectorFloat32IsNull => Kernel::IsNull(EvalType::VectorFloat32),
-            UnaryNotInt => Kernel::Truth {
-                negate: true,
-                domain: EvalType::Int,
-                keep_null: true,
-                falsity: false,
-            },
-            UnaryNotReal => Kernel::Truth {
-                negate: true,
-                domain: EvalType::Real,
-                keep_null: true,
-                falsity: false,
-            },
-            UnaryNotDecimal => Kernel::Truth {
-                negate: true,
-                domain: EvalType::Decimal,
-                keep_null: true,
-                falsity: false,
-            },
-            IntIsTrueWithNull => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Int,
-                keep_null: true,
-                falsity: false,
-            },
-            RealIsTrueWithNull => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Real,
-                keep_null: true,
-                falsity: false,
-            },
-            DecimalIsTrueWithNull => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Decimal,
-                keep_null: true,
-                falsity: false,
-            },
-            IntIsTrue => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Int,
-                keep_null: false,
-                falsity: false,
-            },
-            RealIsTrue => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Real,
-                keep_null: false,
-                falsity: false,
-            },
-            DecimalIsTrue => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Decimal,
-                keep_null: false,
-                falsity: false,
-            },
-            IntIsFalse => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Int,
-                keep_null: false,
-                falsity: true,
-            },
-            RealIsFalse => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Real,
-                keep_null: false,
-                falsity: true,
-            },
-            DecimalIsFalse => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Decimal,
-                keep_null: false,
-                falsity: true,
-            },
-            IntIsFalseWithNull => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Int,
-                keep_null: true,
-                falsity: true,
-            },
-            RealIsFalseWithNull => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Real,
-                keep_null: true,
-                falsity: true,
-            },
-            DecimalIsFalseWithNull => Kernel::Truth {
-                negate: false,
-                domain: EvalType::Decimal,
-                keep_null: true,
-                falsity: true,
-            },
+            IntIsNull => Kernel::RpnOnly(None, &[EvalType::Int]),
+            RealIsNull => Kernel::RpnOnly(None, &[EvalType::Real]),
+            DecimalIsNull => Kernel::RpnOnly(None, &[EvalType::Decimal]),
+            StringIsNull => Kernel::RpnOnly(None, &[EvalType::String]),
+            TimeIsNull => Kernel::RpnOnly(None, &[EvalType::Datetime]),
+            DurationIsNull => Kernel::RpnOnly(None, &[EvalType::Duration]),
+            VectorFloat32IsNull => Kernel::RpnOnly(None, &[EvalType::VectorFloat32]),
+            UnaryNotInt => Kernel::RpnOnly(Some(unary_not_int_fn_meta), &[EvalType::Int]),
+            UnaryNotReal => Kernel::RpnOnly(Some(unary_not_real_fn_meta), &[EvalType::Real]),
+            UnaryNotDecimal => Kernel::RpnOnly(Some(unary_not_decimal_fn_meta), &[EvalType::Decimal]),
+            IntIsTrueWithNull => Kernel::RpnOnly(Some(int_is_true_fn_meta::<KeepNullOn>), &[EvalType::Int]),
+            RealIsTrueWithNull => Kernel::RpnOnly(Some(real_is_true_fn_meta::<KeepNullOn>), &[EvalType::Real]),
+            DecimalIsTrueWithNull => Kernel::RpnOnly(Some(decimal_is_true_fn_meta::<KeepNullOn>), &[EvalType::Decimal]),
+            IntIsTrue => Kernel::RpnOnly(Some(int_is_true_fn_meta::<KeepNullOff>), &[EvalType::Int]),
+            RealIsTrue => Kernel::RpnOnly(Some(real_is_true_fn_meta::<KeepNullOff>), &[EvalType::Real]),
+            DecimalIsTrue => Kernel::RpnOnly(Some(decimal_is_true_fn_meta::<KeepNullOff>), &[EvalType::Decimal]),
+            IntIsFalse => Kernel::RpnOnly(Some(int_is_false_fn_meta::<KeepNullOff>), &[EvalType::Int]),
+            RealIsFalse => Kernel::RpnOnly(Some(real_is_false_fn_meta::<KeepNullOff>), &[EvalType::Real]),
+            DecimalIsFalse => Kernel::RpnOnly(Some(decimal_is_false_fn_meta::<KeepNullOff>), &[EvalType::Decimal]),
+            IntIsFalseWithNull => Kernel::RpnOnly(Some(int_is_false_fn_meta::<KeepNullOn>), &[EvalType::Int]),
+            RealIsFalseWithNull => Kernel::RpnOnly(Some(real_is_false_fn_meta::<KeepNullOn>), &[EvalType::Real]),
+            DecimalIsFalseWithNull => Kernel::RpnOnly(Some(decimal_is_false_fn_meta::<KeepNullOn>), &[EvalType::Decimal]),
             CaseWhenString => Kernel::Case(EvalType::String),
             CaseWhenInt => Kernel::Case(EvalType::Int),
             CaseWhenReal => Kernel::Case(EvalType::Real),
@@ -892,30 +774,28 @@ impl PbBuiltin {
             CoalesceJson => Kernel::Coalesce(EvalType::Json),
             // Go `builtinLengthSig`: the argument's byte length, whatever its
             // collation -- `CharLength`'s binary spelling.
-            Length => Kernel::String {
-                operation: StringOp::Length,
-                binary: true,
-            },
-            CharLength => Kernel::String {
-                operation: StringOp::Length,
-                binary: true,
-            },
+            Length => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::length_fn_meta), &[EvalType::String]),
+            CharLength => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::char_length_fn_meta), &[EvalType::String]),
+            Ascii => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::ascii_fn_meta), &[EvalType::String]),
+            BitLength => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::bit_length_fn_meta), &[EvalType::String]),
+            Crc32 => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::crc32_fn_meta), &[EvalType::String]),
+            Md5 => Kernel::RpnOnly(Some(tidb_query_expr::impl_encryption::md5_fn_meta), &[EvalType::String]),
+            Sha1 => Kernel::RpnOnly(Some(tidb_query_expr::impl_encryption::sha1_fn_meta), &[EvalType::String]),
+            Sha2 => Kernel::RpnOnly(Some(tidb_query_expr::impl_encryption::sha2_fn_meta), &[EvalType::String, EvalType::Int]),
+            Replace => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::replace_fn_meta), &[EvalType::String; 3]),
+            UnHex => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::unhex_fn_meta), &[EvalType::String]),
+            LTrim => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::ltrim_fn_meta), &[EvalType::String]),
+            RTrim => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::rtrim_fn_meta), &[EvalType::String]),
             CharLengthUtf8 => Kernel::String {
                 operation: StringOp::Length,
                 binary: false,
             },
-            Upper => Kernel::String {
-                operation: StringOp::Upper,
-                binary: true,
-            },
+            Upper => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::upper_fn_meta), &[EvalType::String]),
             UpperUtf8 => Kernel::String {
                 operation: StringOp::Upper,
                 binary: false,
             },
-            Lower => Kernel::String {
-                operation: StringOp::Lower,
-                binary: true,
-            },
+            Lower => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::lower_fn_meta), &[EvalType::String]),
             LowerUtf8 => Kernel::String {
                 operation: StringOp::Lower,
                 binary: false,
@@ -932,107 +812,105 @@ impl PbBuiltin {
             FromBinary => Kernel::ConvertCharset { from_binary: true },
             // Go `absFunctionClass`: one signature per argument evaluation
             // type; the planner has already cast the argument to it.
-            AbsInt | AbsUInt | AbsReal | AbsDecimal => Kernel::Values(crate::math_fn::abs),
+            AbsInt => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::abs_int_fn_meta), &[EvalType::Int]),
+            AbsUInt => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::abs_uint_fn_meta), &[EvalType::Int]),
+            AbsReal => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::abs_real_fn_meta), &[EvalType::Real]),
+            AbsDecimal => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::abs_decimal_fn_meta), &[EvalType::Decimal]),
             // Go `builtinMD5Sig`, `builtinCRC32Sig`, `builtinConcatWSSig`:
             // the root tier's evaluators over the argument values.
-            Sqrt => Kernel::Values(crate::math_fn::sqrt),
-            Exp => Kernel::Values(crate::math_fn::exp),
-            Log1Arg | Log2Args => Kernel::Values(crate::math_fn::log),
-            Log2 => Kernel::Values(crate::math_fn::log2),
-            Log10 => Kernel::Values(crate::math_fn::log10),
-            Radians => Kernel::Values(crate::math_fn::radians),
-            Degrees => Kernel::Values(crate::math_fn::degrees),
-            Sign => Kernel::Values(crate::math_fn::sign),
-            CeilIntToInt | CeilReal => Kernel::Values(ceil_values),
-            FloorIntToInt | FloorReal => Kernel::Values(floor_values),
-            CeilDecToInt => Kernel::Values(ceil_dec_to_int),
-            CeilDecToDec => Kernel::Values(ceil_dec_to_dec),
-            FloorDecToInt => Kernel::Values(floor_dec_to_int),
-            FloorDecToDec => Kernel::Values(floor_dec_to_dec),
-            VecDimsSig => Kernel::Values(|values, _| crate::builtin_ext::vec::dims(&values[0])),
-            VecL2NormSig => Kernel::Values(|values, _| crate::builtin_ext::vec::l2_norm(&values[0])),
+            Sqrt => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::sqrt_fn_meta), &[EvalType::Real]),
+            Exp => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Log1Arg => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Log2Args => Kernel::RpnOnly(None, &[EvalType::Real; 2]),
+            Log2 => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Log10 => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Radians => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Degrees => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Sign => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::sign_fn_meta), &[EvalType::Real]),
+            CeilIntToInt => Kernel::RpnOnly(
+                Some(tidb_query_expr::impl_math::ceil_fn_meta::<tidb_query_expr::impl_math::CeilIntToInt>),
+                &[EvalType::Int],
+            ),
+            FloorIntToInt => Kernel::RpnOnly(
+                Some(tidb_query_expr::impl_math::floor_fn_meta::<tidb_query_expr::impl_math::FloorIntToInt>),
+                &[EvalType::Int],
+            ),
+            CeilReal => Kernel::RpnOnly(None, &[EvalType::Real]),
+            FloorReal => Kernel::RpnOnly(None, &[EvalType::Real]),
+            CeilDecToInt => Kernel::RpnOnly(None, &[EvalType::Decimal]),
+            CeilDecToDec => Kernel::RpnOnly(None, &[EvalType::Decimal]),
+            FloorDecToInt => Kernel::RpnOnly(None, &[EvalType::Decimal]),
+            FloorDecToDec => Kernel::RpnOnly(None, &[EvalType::Decimal]),
+            VecDimsSig => Kernel::RpnOnly(Some(tidb_query_expr::impl_vec::vec_dims_fn_meta), &[EvalType::VectorFloat32]),
+            VecL2NormSig => Kernel::RpnOnly(None, &[EvalType::VectorFloat32]),
             VecAsTextSig => Kernel::Values(|values, _| crate::builtin_ext::vec::as_text(&values[0])),
-            VecL1DistanceSig => Kernel::Values(|values, _| {
-                crate::builtin_ext::vec::distance(&values[0], &values[1], VectorFloat32::l1_distance)
-            }),
-            VecL2DistanceSig => Kernel::Values(|values, _| {
-                crate::builtin_ext::vec::distance(&values[0], &values[1], VectorFloat32::l2_distance)
-            }),
-            VecNegativeInnerProductSig => Kernel::Values(|values, _| {
-                crate::builtin_ext::vec::distance(&values[0], &values[1], VectorFloat32::negative_inner_product)
-            }),
-            VecCosineDistanceSig => Kernel::Values(|values, _| {
-                crate::builtin_ext::vec::distance(&values[0], &values[1], VectorFloat32::cosine_distance)
-            }),
+            VecL1DistanceSig | VecL2DistanceSig | VecNegativeInnerProductSig | VecCosineDistanceSig => {
+                Kernel::RpnOnly(None, &[EvalType::VectorFloat32; 2])
+            }
             Uuid => Kernel::Values(|_, _| crate::builtin_ext::misc::uuid_v1()),
             UuidTimestamp => Kernel::Values(|values, _| crate::builtin_ext::misc::uuid_timestamp(&values[0])),
             UuidVersion => Kernel::Values(|values, _| crate::builtin_ext::misc::uuid_version(&values[0])),
             SysDateWithoutFsp | SysDateWithFsp => Kernel::Method(sys_date_method),
             RandWithSeedFirstGen => Kernel::Row(rand_row),
-            Sha1 => Kernel::Values(|values, _| crate::builtin_ext::crypto::hash_unary::<sha1::Sha1>(&values[0])),
-            Sha2 => Kernel::Values(|values, _| crate::builtin_ext::crypto::sha2_hash(&values[0], &values[1])),
-            UncompressedLength => Kernel::Values(|values, ctx| {
-                crate::builtin_ext::crypto::uncompressed_length(&values[0], ctx)
-            }),
-            JsonTypeSig | JsonUnquoteSig | JsonLengthSig | JsonObjectSig | JsonArraySig
+
+
+            UncompressedLength => Kernel::RpnOnly(None, &[EvalType::String]),
+            JsonTypeSig | JsonDepthSig | JsonValidJsonSig => Kernel::RpnOnly(None, &[EvalType::Json]),
+            JsonUnquoteSig => Kernel::RpnOnly(None, &[EvalType::String]),
+            JsonValidOthersSig => Kernel::RpnOnly(None, &[]),
+            JsonLengthSig | JsonObjectSig | JsonArraySig | JsonQuoteSig
             | JsonMergeSig | JsonSetSig | JsonInsertSig | JsonRemoveSig | JsonContainsSig
-            | JsonValidJsonSig | JsonValidStringSig | JsonValidOthersSig => Kernel::Json,
-            DayOfMonth => Kernel::Values(|values, _| crate::time_fn::day_of_month(values)),
-            DayOfWeek => Kernel::Values(crate::time_fn::day_of_week),
-            DayOfYear => Kernel::Values(crate::time_fn::day_of_year),
-            WeekOfYear => Kernel::Values(crate::time_fn::week_of_year_builtin),
-            Year => Kernel::Values(|values, _| crate::time_fn::calendar::date_part(values, |date| date.0)),
-            MonthName => Kernel::Values(crate::time_fn::monthname),
+            | JsonValidStringSig => Kernel::Json,
+            DayOfYear => Kernel::RpnOnly(None, &[EvalType::Datetime]),
+            WeekOfYear => Kernel::RpnOnly(None, &[EvalType::Datetime]),
+            MonthName => Kernel::RpnOnly(None, &[EvalType::Datetime]),
+            DayName => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             FromDays => Kernel::Values(from_days_values),
             MakeDate => Kernel::Values(make_date_values),
             MakeTime => Kernel::Method(make_time_method),
-            TimeToSec => Kernel::Values(|values, _| crate::time_fn::time_to_sec(values)),
-            Ascii => Kernel::Values(|values, _| crate::string_fn::ascii(values)),
-            BitLength => Kernel::Values(|values, _| crate::string_fn::bit_length(values)),
-            Reverse | ReverseUtf8 => Kernel::Values(|values, _| crate::string_fn::reverse(values)),
-            Replace => Kernel::Values(|values, _| crate::string_fn::replace(values)),
-            Strcmp => Kernel::Method(strcmp_method),
+            TimeToSec => Kernel::RpnOnly(None, &[EvalType::Duration]),
+
+
+            Reverse => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::reverse_fn_meta), &[EvalType::String]),
+            ReverseUtf8 => Kernel::Values(|values, _| crate::string_fn::reverse(values)),
+            Strcmp => Kernel::RpnOnly(None, &[EvalType::String; 2]),
             Elt => Kernel::Values(|values, _| crate::string_fn::elt(values)),
             FieldInt | FieldReal | FieldString => Kernel::Method(field_method),
-            HexStrArg | HexIntArg => Kernel::Method(hex_method),
-            LTrim => Kernel::Values(ltrim_values),
-            RTrim => Kernel::Values(rtrim_values),
-            Right | RightUtf8 => Kernel::Values(right_values),
+            HexStrArg => Kernel::RpnOnly(
+                Some(tidb_query_expr::impl_string::hex_str_arg_fn_meta),
+                &[EvalType::String],
+            ),
+            HexIntArg => Kernel::RpnOnly(
+                Some(tidb_query_expr::impl_string::hex_int_arg_fn_meta),
+                &[EvalType::Int],
+            ),
+            Right => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::right_fn_meta), &[EvalType::String, EvalType::Int]),
+            RightUtf8 => Kernel::Values(right_values),
             Space => Kernel::Values(crate::string_packet::space),
-            Md5 => Kernel::Values(md5_values),
-            Crc32 => Kernel::Values(crc32_values),
+
+
             Concat => Kernel::Values(crate::string_fn::concat_with_context),
             ConcatWs => Kernel::Values(crate::string_fn::concat_ws_with_context),
-            Acos => Kernel::Values(crate::math_fn::acos),
-            Asin => Kernel::Values(crate::math_fn::asin),
-            Atan1Arg => Kernel::Values(crate::math_fn::atan),
-            Atan2Args => Kernel::Values(crate::math_fn::atan2),
-            Cos => Kernel::Values(crate::math_fn::cos),
-            Cot => Kernel::Values(crate::math_fn::cot),
-            Sin => Kernel::Values(crate::math_fn::sin),
-            Pow => Kernel::Values(crate::math_fn::pow),
-            Pi => Kernel::Values(|values, _| crate::math_fn::pi(values)),
+            Acos => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Asin => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Atan1Arg => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Atan2Args => Kernel::RpnOnly(None, &[EvalType::Real; 2]),
+            Cos => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Cot => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Sin => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Pow => Kernel::RpnOnly(None, &[EvalType::Real; 2]),
+            Pi => Kernel::RpnOnly(None, &[]),
             Conv => Kernel::Conv,
-            RoundInt | RoundReal | RoundDec => Kernel::Round,
+            RoundInt => Kernel::RpnOnly(None, &[EvalType::Int]),
+            RoundReal => Kernel::RpnOnly(None, &[EvalType::Real]),
+            RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),
-            DateDiff => Kernel::Values(|values, _| crate::time_fn::calendar::date_diff(values)),
-            DateFormatSig => Kernel::Values(|values, cols| {
-                let [date, format] = values else {
-                    return Err(EvalError::WrongParameterCount("date_format"));
-                };
-                crate::time_fn::calendar::date_format_in(date, format, Some(cols))
-            }),
-            Hour => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.0))
-            }),
-            Minute => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.1))
-            }),
-            Second => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.2))
-            }),
-            MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
-            Month => Kernel::Values(|values, _| crate::time_fn::month(values)),
+            DateDiff => Kernel::RpnOnly(None, &[EvalType::Datetime; 2]),
+            DateFormatSig => Kernel::RpnOnly(None, &[EvalType::Datetime, EvalType::String]),
+            Hour | Minute | Second | MicroSecond => Kernel::RpnOnly(None, &[EvalType::Duration]),
+            Year | Month | DayOfMonth | Quarter | DayOfWeek | WeekDay | ToDays | ToSeconds => {
+                Kernel::RpnOnly(None, &[EvalType::Datetime])
+            }
             WeekWithMode | WeekWithoutMode => Kernel::Values(|values, ctx| {
                 crate::time_fn::week(values, ctx.default_week_format(), ctx)
             }),
@@ -1129,7 +1007,7 @@ impl PbBuiltin {
             | SubDateStringReal
             | SubDateStringString => Kernel::DateArithmetic { subtract: true },
             // builtin_math.go
-            Tan => Kernel::Method(class_kernels::tan),
+            Tan => Kernel::RpnOnly(None, &[EvalType::Real]),
             // builtin_string.go
             Bin => Kernel::Values(crate::string_fn::bin),
             SubstringIndex => Kernel::Values(|values, _| crate::string_fn::substring_index(values)),
@@ -1142,27 +1020,18 @@ impl PbBuiltin {
             Repeat => Kernel::Method(class_kernels::repeat),
             FindInSet => Kernel::Row(class_kernels::find_in_set),
             // builtin_time.go
-            WeekDay => Kernel::Values(crate::time_fn::weekday),
-            Quarter => Kernel::Values(|values, _| crate::time_fn::quarter(values)),
             GetFormat => Kernel::Values(|values, _| crate::time_fn::get_format_value(values)),
-            DayName => Kernel::Values(crate::time_fn::dayname),
             TimeFormat => Kernel::Values(|values, _| crate::time_fn::time_format(values)),
-            ToDays => Kernel::Values(crate::time_fn::calendar::to_days),
-            ToSeconds => Kernel::Values(crate::time_fn::calendar::to_seconds),
             LastDay => Kernel::Method(class_kernels::last_day),
             // builtin_miscellaneous.go
             InetAton => Kernel::Values(|values, _| crate::builtin_ext::compare2::inet_aton(&values[0])),
-            InetNtoa => Kernel::Values(|values, ctx| crate::builtin_ext::compare2::inet_ntoa(&values[0], ctx)),
+            InetNtoa => Kernel::RpnOnly(None, &[EvalType::Int]),
             Inet6Aton => Kernel::Values(|values, _| crate::builtin_ext::compare2::inet6_aton(&values[0])),
-            Inet6Ntoa => Kernel::Values(|values, _| crate::builtin_ext::compare2::inet6_ntoa(&values[0])),
-            IsIPv4 => Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv4_value(&values[0])),
-            IsIPv4Compat => {
-                Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv4_compat_value(&values[0]))
-            }
-            IsIPv4Mapped => {
-                Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv4_mapped_value(&values[0]))
-            }
-            IsIPv6 => Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv6_value(&values[0])),
+            Inet6Ntoa => Kernel::RpnOnly(None, &[EvalType::String]),
+            IsIPv4 => Kernel::RpnOnly(None, &[EvalType::String]),
+            IsIPv4Compat => Kernel::RpnOnly(None, &[EvalType::String]),
+            IsIPv4Mapped => Kernel::RpnOnly(None, &[EvalType::String]),
+            IsIPv6 => Kernel::RpnOnly(None, &[EvalType::String]),
             UuiDv4 => Kernel::Method(|_, _, _| crate::builtin_ext::misc::uuid_v4()),
             UuiDv7 => Kernel::Method(|_, _, _| crate::builtin_ext::misc::uuid_v7()),
             DecimalAnyValue | DurationAnyValue | IntAnyValue | JsonAnyValue | RealAnyValue
@@ -1170,7 +1039,7 @@ impl PbBuiltin {
                 Kernel::Values(|values, _| Ok(values[0].clone()))
             }
             // builtin_encryption.go
-            Compress => Kernel::Values(|values, _| crate::builtin_ext::crypto::compress(&values[0])),
+            Compress => Kernel::RpnOnly(None, &[EvalType::String]),
             Uncompress => Kernel::Values(|values, ctx| crate::builtin_ext::crypto::uncompress(&values[0], ctx)),
             Password => Kernel::Method(class_kernels::password),
             // builtin_info.go
@@ -1206,13 +1075,16 @@ impl PbBuiltin {
             Encode => Kernel::Values(|values, _| crate::builtin_ext::crypto::sql_encode(&values[0], &values[1])),
             Decode => Kernel::Values(|values, _| crate::builtin_ext::crypto::sql_decode(&values[0], &values[1])),
             // builtin_string.go
-            Left | LeftUtf8 => Kernel::Values(left_values),
+            Left => Kernel::RpnOnly(Some(tidb_query_expr::impl_string::left_fn_meta), &[EvalType::String, EvalType::Int]),
+            LeftUtf8 => Kernel::Values(left_values),
             Lpad | LpadUtf8 => Kernel::Values(lpad_values),
             Rpad | RpadUtf8 => Kernel::Values(rpad_values),
-            Locate2Args | Locate2ArgsUtf8 => Kernel::Method(locate_2_args_method),
-            Locate3Args | Locate3ArgsUtf8 => Kernel::Method(locate_3_args_method),
-            Instr | InstrUtf8 => Kernel::Method(instr_method),
-            UnHex => Kernel::Values(unhex_values),
+            Locate2Args => Kernel::RpnOnly(None, &[EvalType::String; 2]),
+            Locate2ArgsUtf8 => Kernel::Method(locate_2_args_method),
+            Locate3Args => Kernel::RpnOnly(None, &[EvalType::String, EvalType::String, EvalType::Int]),
+            Locate3ArgsUtf8 => Kernel::Method(locate_3_args_method),
+            Instr => Kernel::RpnOnly(None, &[EvalType::String; 2]),
+            InstrUtf8 => Kernel::Method(instr_method),
             OctInt | OctString => Kernel::Values(oct_values),
             ExportSet3Arg | ExportSet4Arg | ExportSet5Arg => Kernel::Values(export_set_values),
             MakeSet => Kernel::Values(make_set_values),
@@ -1225,12 +1097,11 @@ impl PbBuiltin {
             // builtin_math.go
             Rand => Kernel::Row(rand_const_row),
             RoundWithFracInt | RoundWithFracReal | RoundWithFracDec => Kernel::Round,
-            TruncateInt | TruncateUint | TruncateReal | TruncateDecimal => {
-                Kernel::Method(truncate_method)
-            }
+            TruncateInt | TruncateUint => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
+            TruncateReal | TruncateDecimal => Kernel::Method(truncate_method),
             // builtin_json.go
-            JsonMergePreserveSig | JsonArrayInsertSig | JsonContainsPathSig | JsonDepthSig
-            | JsonKeysSig | JsonKeys2ArgsSig | JsonPrettySig | JsonQuoteSig | JsonSearchSig
+            JsonMergePreserveSig | JsonArrayInsertSig | JsonContainsPathSig
+            | JsonKeysSig | JsonKeys2ArgsSig | JsonPrettySig | JsonSearchSig
             | JsonStorageFreeSig | JsonStorageSizeSig => Kernel::Json,
             // builtin_compare.go
             GreatestInt | GreatestReal | GreatestDecimal | GreatestString | GreatestTime
@@ -1276,7 +1147,8 @@ impl PbBuiltin {
             }
             ConvertTz => Kernel::Row(convert_tz_row),
             Time => Kernel::Values(crate::time_fn::time),
-            YearWeekWithMode | YearWeekWithoutMode => Kernel::Values(crate::time_fn::yearweek),
+            YearWeekWithMode => Kernel::RpnOnly(None, &[EvalType::Datetime, EvalType::Int]),
+            YearWeekWithoutMode => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             UnixTimestampCurrent => Kernel::Values(crate::time_fn::session_tz::unix_timestamp_current),
             TimestampAdd => Kernel::Values(crate::time_fn::add_sub::timestamp_add),
             _ => return None,
@@ -1310,13 +1182,95 @@ impl PbBuiltin {
     }
 
     /// Go signature value operations shared by `eval*` and `vecEval*`.
+    pub(super) fn eval_values_in(
+        self,
+        function: &ScalarFunction,
+        values: Vec<Datum>,
+        vectorized: bool,
+        ctx: &dyn Columns,
+    ) -> Result<Datum, EvalError> {
+        if vectorized {
+            use ScalarFuncSig::*;
+            if matches!(self.signature, StrToDateDate | StrToDateDatetime | StrToDateDuration) {
+                return str_to_date_of(function, &values, false, ctx);
+            }
+            if self.signature == UtcTimestampWithArg && values.first().is_some_and(Datum::is_null) {
+                return Ok(Datum::Null);
+            }
+            if matches!(self.signature, WeekWithMode | WeekWithoutMode) {
+                if let [Datum::Time(date), args @ ..] = values.as_slice() {
+                    let mode = match args.first() {
+                        Some(mode) => crate::arg_eval_type::eval_int(mode)?.unwrap_or(0),
+                        None => ctx.default_week_format(),
+                    };
+                    return crate::time_fn::calendar::week_vector_value(*date, mode, ctx);
+                }
+            }
+            if matches!(self.signature, GreatestString | LeastString) {
+                if values.iter().any(Datum::is_null) {
+                    return Ok(Datum::Null);
+                }
+                let collator = tidb_datatype::get_collator(function.derived_collation().name());
+                let want = if self.signature == GreatestString {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                };
+                let mut best: Option<Vec<u8>> = None;
+                for value in values {
+                    let candidate = crate::coerce::coerce_str_bytes(&value)?.expect("non-NULL string");
+                    if best.as_ref().is_none_or(|current| collator.compare(current, &candidate) != want) {
+                        best = Some(candidate);
+                    }
+                }
+                return Ok(best.map_or(Datum::Null, Datum::new_string_datum));
+            }
+            if self.signature == Repeat {
+                let flen = function.get_static_type().expect("REPEAT type").flen();
+                return crate::string_packet::repeat_in_mode(&values, Some(flen), ctx);
+            }
+            if self.signature == Password && values.first().is_some_and(Datum::is_null) {
+                return Ok(Datum::new_string_datum([]));
+            }
+            if let Some(sign) = crate::time_fn::add_sub::sign_of_signature(self.signature) {
+                return add_sub_time_of(function, &values, sign, false, ctx);
+            }
+        }
+        self.eval_values(function, values, ctx)
+    }
+
     pub(super) fn eval_values(self, function: &ScalarFunction, mut values: Vec<Datum>, ctx: &dyn Columns) -> Result<Datum, EvalError> {
         let args = &function.args;
         let kernel = self.kernel;
-        if values.iter().any(Datum::is_null) && !matches!(kernel, Kernel::Json | Kernel::Values(_) | Kernel::Method(_)) {
+        if values.iter().any(Datum::is_null) && !matches!(kernel, Kernel::Json | Kernel::RpnOnly(..) | Kernel::Values(_) | Kernel::Method(_)) {
             return Ok(Datum::Null);
         }
                 match kernel {
+                    Kernel::RpnOnly(meta, inputs) => {
+                        if let [Datum::Real(value) | Datum::Float32(value)] = values.as_slice() {
+                            if value.is_nan() {
+                                match self.signature {
+                                    ScalarFuncSig::Sign => return Ok(Datum::Int(0)),
+                                    ScalarFuncSig::Asin | ScalarFuncSig::Acos => return Ok(Datum::Null),
+                                    ScalarFuncSig::Sqrt | ScalarFuncSig::CeilReal | ScalarFuncSig::FloorReal
+                                    | ScalarFuncSig::Radians => return Ok(Datum::Real(*value)),
+                                    ScalarFuncSig::AbsReal => return Ok(Datum::Real(value.abs())),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        let value = crate::rpn::evaluate_required_kernel(
+                            function, self.signature, meta, inputs, values, ctx,
+                        )?;
+                        Ok(match value {
+                            Datum::String(value)
+                                if matches!(self.signature, ScalarFuncSig::Md5 | ScalarFuncSig::Sha1 | ScalarFuncSig::Sha2) =>
+                            {
+                                Datum::new_string_datum(value.into_bytes())
+                            }
+                            value => value,
+                        })
+                    },
                     Kernel::Values(eval) => eval(&values, ctx),
                     Kernel::Method(eval) => eval(function, &values, ctx),
                     Kernel::RegexpFamily(name) => function.eval_regexp_family(name, &values, ctx),
@@ -1363,7 +1317,6 @@ impl PbBuiltin {
                         match operation {
                             StringOp::Length => Ok(match &values[0] {
                                 Datum::Null => Datum::Null,
-                                Datum::Bytes(bytes) => Datum::Int(bytes.len() as i64),
                                 value => Datum::Int(
                                     crate::string_signature::StrUnits::of_with_signature(
                                         value, false,
@@ -1458,6 +1411,14 @@ impl PbBuiltin {
                 let field = function
                     .get_static_type()
                     .ok_or(EvalError::Unsupported("protobuf cast result type"))?;
+                if vectorized && source == EvalType::String && target == EvalType::Decimal {
+                    let bytes = crate::arg_eval_type::eval_string(&value)?.expect("non-NULL cast input");
+                    let leading = bytes.iter().copied().find(|b| !b.is_ascii_whitespace());
+                    if in_union && field.is_unsigned() && leading == Some(b'-') {
+                        return Ok(Datum::Decimal(tidb_datatype::Decimal::parse_mysql("0").0));
+                    }
+                    return super::cast_string_as_decimal(&bytes, field, ctx, true);
+                }
                 if matches!(target, EvalType::Int | EvalType::Real | EvalType::Decimal) {
                     return crate::cast::eval_numeric_cast_with_type(
                         value,
@@ -1535,20 +1496,22 @@ impl PbBuiltin {
                     Ok(value)
                 }
             }
-            Kernel::IsNull(domain) => {
-                Ok(Datum::Int(i64::from(typed_argument(0, domain)?.is_null())))
+            Kernel::RpnOnly(_, [domain]) if matches!(
+                self.signature,
+                ScalarFuncSig::IntIsNull | ScalarFuncSig::RealIsNull | ScalarFuncSig::DecimalIsNull
+                    | ScalarFuncSig::StringIsNull | ScalarFuncSig::TimeIsNull
+                    | ScalarFuncSig::DurationIsNull | ScalarFuncSig::VectorFloat32IsNull
+            ) => {
+                // Decoded coprocessor requests use the signature's typed
+                // read, which can emit conversion warnings before IS NULL.
+                self.eval_values(function, vec![typed_argument(0, *domain)?], ctx)
             }
-            Kernel::Truth {
-                negate,
-                domain,
-                keep_null,
-                falsity,
-            } => {
-                let value = typed_argument(0, domain)?;
+            Kernel::VectorTruth { keep_null, falsity } => {
+                let value = typed_argument(0, EvalType::VectorFloat32)?;
                 Ok(match crate::truthy_of(&value)? {
                     None if keep_null => Datum::Null,
                     None => Datum::Int(0),
-                    Some(value) => Datum::Int(i64::from(value ^ negate ^ falsity)),
+                    Some(value) => Datum::Int(i64::from(value ^ falsity)),
                 })
             }
             Kernel::Coalesce(domain) => {
@@ -1589,13 +1552,7 @@ impl PbBuiltin {
                 let Some(right) = crate::arg_eval_type::eval_int(&right)? else {
                     return Ok(Datum::Null);
                 };
-                // These Go signatures bake signedness into the implementation.
-                let result = if unsigned {
-                    (left as u64).checked_mul(right as u64).map(Datum::UInt)
-                } else {
-                    left.checked_mul(right).map(Datum::Int)
-                };
-                result.ok_or_else(|| {
+                crate::ops::integer_multiply(left, right, unsigned).map_err(|_| {
                     match super::arithmetic_overflow_expression(function, BinaryOp::Mul, ctx) {
                         Some(expression) => EvalError::DataOutOfRange {
                             value: if unsigned {
@@ -1655,13 +1612,24 @@ impl PbBuiltin {
                 let value = arg.eval(ctx, row)?;
                 crate::ops::eval_unary(op, value, crate::ops::Operand::Expr(arg), ctx)
             }
-            Kernel::Compare(op, domain) => {
-                if args.len() != 2 {
+            Kernel::StringCompare(op) => {
+                let [left, right] = args.as_slice() else {
                     return Err(EvalError::Unsupported("protobuf comparison arity"));
+                };
+                let left = eval_numeric_row(left, ctx, row, EvalType::String)?;
+                let right = eval_numeric_row(right, ctx, row, EvalType::String)?;
+                if crate::rpn::uses_native_comparison_collation(function.derived_collation()) {
+                    // These SQL collations need TiDB's comparison semantics.
+                    return function.eval_binary_values(op, left, right, ctx);
                 }
-                let left = eval_numeric_row(&args[0], ctx, row, domain)?;
-                let right = eval_numeric_row(&args[1], ctx, row, domain)?;
-                function.eval_binary_values(op, left, right, ctx)
+                crate::rpn::evaluate_required_kernel(
+                    function,
+                    self.signature,
+                    None,
+                    &[EvalType::String; 2],
+                    vec![left, right],
+                    ctx,
+                )
             }
             Kernel::In(domain) => {
                 let Some(first) = args.first() else {
@@ -1734,7 +1702,7 @@ impl PbBuiltin {
                     .map_err(|_| EvalError::Unsupported("invalid date interval unit"))?;
                 function.eval_date_arithmetic(unit, subtract, ctx, row)
             }
-            Kernel::Cast { source, target, in_union } => {
+            Kernel::Cast { source, target, .. } => {
                 if args.len() != 1 {
                     return Err(EvalError::Unsupported("protobuf cast arity"));
                 }
@@ -1761,7 +1729,7 @@ impl PbBuiltin {
                     // The root tier's evaluators read a NULL argument
                     // themselves: Go `builtinConcatWSSig` skips a NULL member
                     // and `builtinWeekWithModeSig` reads a NULL mode as 0.
-                    if value.is_null() && !matches!(kernel, Kernel::Json | Kernel::Values(_) | Kernel::Method(_)) {
+                    if value.is_null() && !matches!(kernel, Kernel::Json | Kernel::RpnOnly(..) | Kernel::Values(_) | Kernel::Method(_)) {
                         return Ok(Datum::Null);
                     }
                     values.push(value);
@@ -1861,6 +1829,16 @@ mod tests {
                 ),
                 FieldTypeCode::Duration,
             ),
+            EvalType::Json => return tipb::Expr {
+                tp: Some(tipb::ExprType::ScalarFunc as i32),
+                sig: Some(ScalarFuncSig::CastIntAsJson as i32),
+                children: vec![literal(EvalType::Int)],
+                field_type: Some(tipb::FieldType {
+                    tp: Some(i32::from(FieldTypeCode::Json.mysql_type())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
             EvalType::VectorFloat32 => (
                 Datum::VectorFloat32(VectorFloat32::parse("[1,2]").unwrap()),
                 FieldTypeCode::VectorFloat32,
@@ -1932,7 +1910,7 @@ mod tests {
             .map(|(sig, domains)| (*sig, &domains[..]))
             .chain(rounding.iter().map(|(sig, domains)| (*sig, &domains[..])));
         for (sig, arg_types) in rows {
-            let Some(Kernel::Values(_)) = PbBuiltin::new(sig).map(|builtin| builtin.kernel) else {
+            let Some(Kernel::Values(_) | Kernel::RpnOnly(..)) = PbBuiltin::new(sig).map(|builtin| builtin.kernel) else {
                 continue;
             };
             swept.insert(sig);
@@ -1950,10 +1928,16 @@ mod tests {
                         }
                     })
                     .collect();
-                let expect = if (sig, position) == (ScalarFuncSig::WeekWithMode, 1) {
-                    Datum::Int(7)
-                } else {
-                    Datum::Null
+                use ScalarFuncSig::*;
+                let expect = match (sig, position) {
+                    (WeekWithMode, 1) => Datum::Int(7),
+                    (IntIsNull | RealIsNull | DecimalIsNull | StringIsNull | TimeIsNull
+                    | DurationIsNull | JsonIsNull | VectorFloat32IsNull, _) => Datum::Int(1),
+                    (NullEqInt | NullEqReal | NullEqDecimal | NullEqTime | NullEqDuration
+                    | NullEqJson | NullEqJson | NullEqVectorFloat32 | IntIsTrue | RealIsTrue | DecimalIsTrue
+                    | IntIsFalse | RealIsFalse | DecimalIsFalse
+                    | IsIPv4 | IsIPv4Compat | IsIPv4Mapped | IsIPv6, _) => Datum::Int(0),
+                    _ => Datum::Null,
                 };
                 assert_eq!(eval(sig, children), expect, "{sig:?} {position}");
             }

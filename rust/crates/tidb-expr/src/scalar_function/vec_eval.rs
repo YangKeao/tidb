@@ -7,10 +7,12 @@ use crate::expression::Expression;
 use crate::{Columns, EvalError};
 use tidb_chunk::{chunk::Chunk, column::Column, row::Row};
 use tidb_datatype::{Datum, Decimal, EvalType, FieldType, FieldTypeCode};
+use tidb_proto::tipb::ScalarFuncSig;
 
-/// Go `ScalarFunction.VecEval*`: whether this signature has a migrated kernel.
+/// Go `ScalarFunction.VecEval*` eligibility. RPN-only kernels and the
+/// generic typed operations already declare their support.
 pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
-    if super::builtin_vec_vec::supported(function) {
+    if supports_vec(function) {
         return true;
     }
     if function
@@ -23,12 +25,15 @@ pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
     {
         return false;
     }
+    use ScalarFuncSig::*;
+    let sig = function.pb_code();
     matches!(
         function.pb_builtin.kernel,
-        Kernel::Binary(..)
+        Kernel::RpnOnly(..)
+            | Kernel::Binary(..)
             | Kernel::IntegerMultiply { .. }
             | Kernel::IntegerMod { .. }
-            | Kernel::Compare(..)
+            | Kernel::StringCompare(..)
             | Kernel::In(_)
             | Kernel::Case(_)
             | Kernel::Coalesce(_)
@@ -37,18 +42,289 @@ pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
             | Kernel::Cast { .. }
             | Kernel::Logic(_)
             | Kernel::Unary(_)
-            | Kernel::IsNull(_)
-            | Kernel::Truth { .. }
-    ) || super::builtin_math_vec::supported(function.pb_code())
-        || super::builtin_string_vec::supported(function)
-        || super::builtin_other_vec::supported(function)
-        || super::builtin_miscellaneous_vec::supported(function)
-        || super::builtin_time_vec::supported(function)
-        || super::builtin_encryption_vec::supported(function)
-        || super::builtin_like_vec::supported(function)
-        || super::builtin_info_vec::supported(function)
-        || super::builtin_json_vec::supported(function)
-        || super::builtin_compare_vec::supported(function.pb_code())
+            | Kernel::DateArithmetic { .. }
+    ) || matches!(
+        function.sig,
+        crate::builtin::SigFields::TimeLiteral { .. }
+            | crate::builtin::SigFields::DurationLiteral { .. }
+    ) || matches!(
+        sig,
+        GreatestInt
+            | GreatestReal
+            | GreatestDecimal
+            | GreatestString
+            | GreatestTime
+            | GreatestDate
+            | GreatestDuration
+            | GreatestCmpStringAsTime
+            | GreatestCmpStringAsDate
+            | LeastInt
+            | LeastReal
+            | LeastDecimal
+            | LeastString
+            | LeastTime
+            | LeastDate
+            | LeastDuration
+            | LeastCmpStringAsTime
+            | LeastCmpStringAsDate
+            | IntervalInt
+            | IntervalReal
+            | Exp
+            | Log1Arg
+            | Log10
+            | Degrees
+            | CeilIntToDec
+            | FloorIntToDec
+            | Atan1Arg
+            | Atan2Args
+            | Cos
+            | Cot
+            | Sin
+            | Tan
+            | Pow
+            | RoundInt
+            | RoundReal
+            | RoundDec
+            | RoundWithFracInt
+            | RoundWithFracReal
+            | RoundWithFracDec
+            | TruncateInt
+            | TruncateUint
+            | TruncateReal
+            | TruncateDecimal
+            | Rand
+            | RandWithSeedFirstGen
+            | CharLengthUtf8
+            | LowerUtf8
+            | UpperUtf8
+            | Substring2Args
+            | Substring3Args
+            | Substring2ArgsUtf8
+            | Substring3ArgsUtf8
+            | ToBinary
+            | FromBinary
+            | ReverseUtf8
+            | Elt
+            | FieldInt
+            | FieldReal
+            | FieldString
+            | RightUtf8
+            | Space
+            | Concat
+            | ConcatWs
+            | Bin
+            | SubstringIndex
+            | ToBase64
+            | FromBase64
+            | Quote
+            | Ord
+            | Repeat
+            | FindInSet
+            | LeftUtf8
+            | Lpad
+            | LpadUtf8
+            | Rpad
+            | RpadUtf8
+            | Locate2ArgsUtf8
+            | Locate3ArgsUtf8
+            | InstrUtf8
+            | OctInt
+            | OctString
+            | ExportSet3Arg
+            | ExportSet4Arg
+            | ExportSet5Arg
+            | MakeSet
+            | Format
+            | FormatWithLocale
+            | Insert
+            | InsertUtf8
+            | Trim1Arg
+            | Trim2Args
+            | Trim3Args
+            | Convert
+            | Char
+            | JsonTypeSig
+            | JsonUnquoteSig
+            | JsonLengthSig
+            | JsonObjectSig
+            | JsonArraySig
+            | JsonMergeSig
+            | JsonSetSig
+            | JsonInsertSig
+            | JsonRemoveSig
+            | JsonContainsSig
+            | JsonMemberOfSig
+            | JsonReplaceSig
+            | JsonArrayAppendSig
+            | JsonMergePatchSig
+            | JsonExtractSig
+            | JsonMergePreserveSig
+            | JsonArrayInsertSig
+            | JsonContainsPathSig
+            | JsonDepthSig
+            | JsonKeysSig
+            | JsonKeys2ArgsSig
+            | JsonPrettySig
+            | JsonQuoteSig
+            | JsonSearchSig
+            | JsonStorageFreeSig
+            | JsonStorageSizeSig
+            | LikeSig
+            | IlikeSig
+            | AesEncrypt
+            | AesEncryptIv
+            | AesDecrypt
+            | AesDecryptIv
+            | Compress
+            | Uncompress
+            | Encode
+            | Decode
+            | Date
+            | FromUnixTime1Arg
+            | FromUnixTime2Arg
+            | ExtractDatetime
+            | ExtractDuration
+            | TimeFormat
+            | UtcTimeWithArg
+            | UtcTimeWithoutArg
+            | UnixTimestampCurrent
+            | YearWeekWithoutMode
+            | YearWeekWithMode
+            | PeriodDiff
+            | PeriodAdd
+            | NowWithArg
+            | NowWithoutArg
+            | GetFormat
+            | LastDay
+            | StrToDateDate
+            | StrToDateDatetime
+            | StrToDateDuration
+            | FromDays
+            | WeekWithMode
+            | WeekWithoutMode
+            | MakeDate
+            | WeekOfYear
+            | UtcTimestampWithArg
+            | UtcTimestampWithoutArg
+            | UtcDate
+            | UnixTimestampDec
+            | UnixTimestampInt
+            | TimestampAdd
+            | DateFormatSig
+            | SecToTime
+            | CurrentDate
+            | MakeTime
+            | DayOfYear
+            | TimestampDiff
+            | CurrentTime0Arg
+            | CurrentTime1Arg
+            | Time
+            | MonthName
+            | SysDateWithFsp
+            | SysDateWithoutFsp
+            | ConvertTz
+            | Timestamp1Arg
+            | Timestamp2Args
+            | DurationDurationTimeDiff
+            | DurationStringTimeDiff
+            | StringDurationTimeDiff
+            | StringStringTimeDiff
+            | StringTimeTimeDiff
+            | TimeStringTimeDiff
+            | TimeTimeTimeDiff
+            | NullTimeDiff
+            | InetAton
+            | Inet6Aton
+            | IsIPv4
+            | IsUuid
+            | Uuid
+            | UuiDv4
+            | UuiDv7
+            | UuidVersion
+            | UuidTimestamp
+            | VitessHash
+            | DecimalAnyValue
+            | DurationAnyValue
+            | IntAnyValue
+            | JsonAnyValue
+            | RealAnyValue
+            | StringAnyValue
+            | TimeAnyValue
+    ) || crate::time_fn::add_sub::kinds_of_signature(sig).is_some()
+        || supports_info(function)
+        || match function.func_name.lowercase() {
+            "translate"
+            | "json_overlaps"
+            | "json_sum_crc32"
+            | "password"
+            | "random_bytes"
+            | "sm3"
+            | "validate_password_strength"
+            | "tidb_bounded_staleness"
+            | "tidb_parse_tso"
+            | "period_add"
+            | "period_diff"
+            | "curdate"
+            | "current_date"
+            | "utc_date"
+            | "name_const"
+            | "uuid_v4"
+            | "uuid_v7"
+            | "uuid_to_bin"
+            | "bin_to_uuid"
+            | "sleep"
+            | "bit_count"
+            | "getparam"
+            | "row" => true,
+            "getvar" | "setvar" => function.get_static_type().is_some_and(|field| {
+                matches!(
+                    field.eval_type(),
+                    EvalType::Int | EvalType::Real | EvalType::Decimal | EvalType::String
+                )
+            }),
+            _ => false,
+        }
+}
+
+// Vector eligibility is part of the Go expression contract. Execution uses
+// the prepared RPN program and these declarations describe supported APIs.
+fn supports_vec(function: &ScalarFunction) -> bool {
+    use ScalarFuncSig::*;
+    matches!(
+        function.pb_code(),
+        VecDimsSig
+            | VecL1DistanceSig
+            | VecL2DistanceSig
+            | VecNegativeInnerProductSig
+            | VecCosineDistanceSig
+            | VecL2NormSig
+            | VecAsTextSig
+    ) || function.func_name.lowercase() == "vec_from_text"
+}
+
+pub(super) fn supports_info(function: &ScalarFunction) -> bool {
+    if let crate::builtin::SigFields::Benchmark { const_loop_count } = function.sig {
+        return const_loop_count > 0;
+    }
+    matches!(
+        function.func_name.lowercase(),
+        "database"
+            | "schema"
+            | "connection_id"
+            | "tidb_version"
+            | "row_count"
+            | "current_user"
+            | "current_resource_group"
+            | "current_role"
+            | "user"
+            | "session_user"
+            | "system_user"
+            | "tidb_is_ddl_owner"
+            | "found_rows"
+            | "last_insert_id"
+            | "version"
+            | "tidb_decode_key"
+    )
 }
 
 /// Go `evalOneVec`: evaluate directly into the projection's owned result column.
@@ -218,73 +494,27 @@ pub(crate) fn eval_into(
             }
         }
         Expression::ScalarFunction(function) if has_kernel(function) => {
-            if function.pb_code() == tidb_proto::tipb::ScalarFuncSig::DayName
-                && matches!(target, EvalType::Int | EvalType::Real)
-            {
-                return super::builtin_time_vec::dayname_index(
-                    function, target, ctx, input, result,
-                );
-            }
-            if super::builtin_vec_vec::supported(function) {
-                return super::builtin_vec_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_other_vec::supported(function) {
-                return super::builtin_other_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_miscellaneous_vec::supported(function) {
-                return super::builtin_miscellaneous_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_time_vec::supported(function) {
-                return super::builtin_time_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_encryption_vec::supported(function) {
-                return super::builtin_encryption_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_like_vec::supported(function) {
-                return super::builtin_like_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_math_vec::supported(function.pb_code()) {
-                return super::builtin_math_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_string_vec::supported(function) {
-                return super::builtin_string_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_info_vec::supported(function) {
-                return super::builtin_info_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_json_vec::supported(function) {
-                return super::builtin_json_vec::eval(function, ctx, input, result);
-            }
-            if super::builtin_compare_vec::supported(function.pb_code()) {
-                return super::builtin_compare_vec::extremum(function, ctx, input, result);
-            }
-            return match function.pb_builtin.kernel {
-                Kernel::Compare(..) => {
-                    super::builtin_compare_vec::compare(function, ctx, input, result)
+            if function.get_static_type().is_some_and(|field| field.eval_type() == target) {
+                let mut row = 0;
+                if crate::rpn::PreparedExpression::try_eval_typed_batch(expression, ctx, input, |value| {
+                    if row == 0 {
+                        crate::chunk_executor::allocate(target, input.num_rows(), result);
+                    }
+                    put(result, row, target, &value)?;
+                    row += 1;
+                    Ok(())
+                })? {
+                    if row == 0 {
+                        crate::chunk_executor::allocate(target, 0, result);
+                    }
+                    return Ok(());
                 }
-                Kernel::In(_) => super::builtin_compare_vec::in_list(function, ctx, input, result),
-                Kernel::If(_) | Kernel::IfNull(_) | Kernel::Case(_) | Kernel::Coalesce(_) => {
-                    super::builtin_control_vec::eval(function, ctx, input, result)
-                }
-                Kernel::Cast { .. } => super::builtin_cast_vec::eval(function, ctx, input, result),
-                Kernel::Logic(_) => super::builtin_op_vec::logic(function, ctx, input, result),
-                Kernel::IsNull(_) | Kernel::Truth { .. } => {
-                    super::builtin_op_vec::predicate(function, ctx, input, result)
-                }
-                Kernel::Unary(_) => super::builtin_op_vec::unary(function, ctx, input, result),
-                _ => super::builtin_arithmetic_vec::eval(function, ctx, input, result),
-            };
+            }
         }
         Expression::ScalarSubQuery(_) => return Err(crate::scalar_subquery::vec_eval_error()),
-        _ => {}
+        _ => return Err(EvalError::Unsupported("signature has no vectorized implementation")),
     }
-    // Go `Column.VecEval*`: hybrid columns and FLOAT widening read typed
-    // cells; ordinary columns have already returned through CopyReconstruct.
-    if !matches!(expression, Expression::Column(_)) {
-        return Err(EvalError::Unsupported(
-            "signature has no vectorized implementation",
-        ));
-    }
+    // Go's typed read also handles hybrid columns and FLOAT widening.
     if target == EvalType::Int
         && expression
             .static_type()
@@ -308,99 +538,6 @@ pub(crate) fn eval_into(
     Ok(())
 }
 
-/// Go's fixed-arity vector loops: evaluate complete typed argument columns,
-/// reuse the designated result column, then apply the signature's cell operation.
-pub(super) fn map_arguments(
-    function: &ScalarFunction,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    result: &mut Column,
-    reuse: Option<usize>,
-    operation: impl FnMut(Vec<Datum>) -> Result<Datum, EvalError>,
-) -> Result<(), EvalError> {
-    map_arguments_in_order(
-        function,
-        ctx,
-        input,
-        result,
-        reuse,
-        &(0..function.args.len()).collect::<Vec<_>>(),
-        operation,
-    )
-}
-
-/// Go argument-column order for signatures such as `builtinFormatWithLocaleSig`.
-pub(super) fn map_arguments_in_order(
-    function: &ScalarFunction,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    result: &mut Column,
-    reuse: Option<usize>,
-    order: &[usize],
-    mut operation: impl FnMut(Vec<Datum>) -> Result<Datum, EvalError>,
-) -> Result<(), EvalError> {
-    let domain = function
-        .get_static_type()
-        .expect("builtin return type")
-        .eval_type();
-    let mut buffers = vec![Column::default(); function.args.len()];
-    for &i in order {
-        let arg = &function.args[i];
-        let target = arg.static_type().expect("cast argument type").eval_type();
-        let mut buffer = Column::default();
-        eval_into(
-            arg,
-            target,
-            ctx,
-            input,
-            if reuse == Some(i) {
-                &mut *result
-            } else {
-                &mut buffer
-            },
-        )?;
-        buffers[i] = buffer;
-    }
-    if reuse.is_none() {
-        crate::chunk_executor::allocate(domain, input.num_rows(), result);
-    }
-    for i in 0..input.num_rows() {
-        let values = function
-            .args
-            .iter()
-            .enumerate()
-            .map(|(j, arg)| {
-                let field = arg.static_type().expect("cast argument type");
-                value(
-                    if reuse == Some(j) {
-                        &*result
-                    } else {
-                        &buffers[j]
-                    },
-                    i,
-                    field.eval_type(),
-                    Some(field),
-                )
-            })
-            .collect();
-        put(result, i, domain, &operation(values)?)?;
-    }
-    Ok(())
-}
-
-/// Go `bufAllocator.get` followed by an argument's typed `VecEval*`.
-pub(super) fn argument(
-    expression: &Expression,
-    target: EvalType,
-    ctx: &dyn Columns,
-    input: &Chunk,
-) -> Result<Column, EvalError> {
-    let mut column = Column::default();
-    eval_into(expression, target, ctx, input, &mut column)?;
-    Ok(column)
-}
-
-/// Go typed column access (`Int64s`, `Float64s`, `Decimals`, `GetString`, ...).
 pub(crate) fn value(
     column: &Column,
     index: usize,
@@ -433,7 +570,7 @@ pub(crate) fn value(
 }
 
 /// Go typed result writes: fixed cells are updated in place, variable cells appended.
-pub(super) fn put(
+pub(crate) fn put(
     column: &mut Column,
     index: usize,
     target: EvalType,

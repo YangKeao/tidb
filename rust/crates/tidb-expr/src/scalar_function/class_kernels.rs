@@ -323,8 +323,7 @@ pub(crate) fn utc_date(function: &ScalarFunction, values: &[Datum], ctx: &dyn Co
 pub(crate) fn json_overlaps(function: &ScalarFunction, values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     let types: Vec<Option<FieldType>> =
         function.args.iter().map(|arg| arg.static_type().cloned()).collect();
-    crate::builtin_ext::json_dispatch_typed("JSON_OVERLAPS", values, &types)
-        .expect("the native JSON family registers JSON_OVERLAPS")
+    crate::builtin_ext::json::json_overlaps(values, &types)
 }
 
 /// Go `builtinJSONSchemaValidSig`: the compiled schema is cached per node.
@@ -656,11 +655,6 @@ pub(crate) fn multiply_vector_float32(function: &ScalarFunction, ctx: &dyn Colum
 /// A signature whose Go implementation is not ported.
 pub(crate) fn not_yet_ported(_: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     Err(EvalError::Unsupported("this scalar function is not yet ported"))
-}
-
-/// Go `builtinTanSig`.
-pub(crate) fn tan(function: &ScalarFunction, values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::tan(values, ctx).map_err(|error| super::math_overflow_error(function, error, ctx))
 }
 
 /// Go `builtinQuoteSig`: a NULL argument is the string `NULL`.

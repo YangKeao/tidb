@@ -18,57 +18,6 @@ use crate::cast::to_i64_signed;
 use crate::coerce::coerce_str;
 use crate::{Columns, Datum, ErrorLevel, EvalError};
 
-/// The calendar `(year, month, day)` a *component* date-part function
-/// (`YEAR`/`MONTH`/`DAYOFMONTH`/`QUARTER`) reads, which in Go is the whole of
-/// the function body: `builtinYearSig`/`MonthSig`/`DayOfMonthSig`/`QuarterSig`
-/// return `date.Year()` / `date.Month()` / `date.Day()` off the value
-/// `EvalTime` handed them, with NO parsing and NO `InvalidZero` check -- so a
-/// zero datetime yields the stored `0` (confirmed against real TiDB's
-/// recorded `r/executor/executor.result` `TestZeroDateTimeCompatibility`:
-/// `YEAR(v1)`/`MONTH(v1)`/`DAYOFMONTH(v1)`/`QUARTER(v1)` over a zero-datetime
-/// column are all `0`).
-///
-/// Go can be that short because all four classes declare their argument
-/// `types.ETDatetime` (`builtin_time.go:1116`, `:1284`, `:1620`, `:5833`),
-/// which makes `newBaseBuiltinFuncWithTp` wrap it in `WrapWithCastAsTime`
-/// before the signature ever runs. [`crate::arg_eval_type`] is that wrap, so
-/// this function is now equally short: a temporal value or `NULL` is ALL that
-/// can arrive, and a string is decided by the cast -- one rule, in one place,
-/// instead of one per call site.
-pub(crate) fn component_date(vals: &[Datum]) -> Result<Option<(i64, u32, u32)>, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    match value {
-        Datum::Time(time) => {
-            let core = time.core_time();
-            Ok(Some((
-                i64::from(core.year()),
-                u32::from(core.month()),
-                u32::from(core.day()),
-            )))
-        }
-        Datum::Null => Ok(None),
-        // Unreachable through either evaluator: both apply the ETDatetime
-        // argument cast first. Refusing loudly keeps a future caller that
-        // forgets it from silently re-deriving a date of its own.
-        _ => Err(EvalError::Unsupported(
-            "a date-part argument reached the signature without its ETDatetime cast",
-        )),
-    }
-}
-
-/// The calendar `(year, month, day)` parsed from a single-argument
-/// date-part function's argument, honoring an already-typed `Datum::Time`
-/// (including a zero datetime) via [`component_date`]: `NULL` only if it does
-/// not coerce/parse as a valid date (see [`parse_date_ymd`]).
-pub(crate) fn date_part(
-    vals: &[Datum],
-    f: impl Fn((i64, u32, u32)) -> i64,
-) -> Result<Datum, EvalError> {
-    Ok(component_date(vals)?.map_or(Datum::Null, |ymd| Datum::Int(f(ymd))))
-}
-
 /// Parses a date or datetime string's calendar date into `(year, month,
 /// day)`, calendar-validated (month 1-12, day valid for that specific
 /// month/year, including leap years) — `None` if it doesn't look like one.
@@ -121,109 +70,17 @@ pub(crate) fn parse_date_ymd(s: &str) -> Option<(i64, u32, u32)> {
     Some((year, month, day))
 }
 
-/// The `(hour, minute, second)` extracted from a single-argument time-part
-/// function's argument (`HOUR`/`MINUTE`/`SECOND`): `NULL` if it doesn't
-/// coerce to a string or doesn't parse (see [`parse_hms_extended`]).
-pub(crate) fn time_part(
-    vals: &[Datum],
-    f: impl Fn((u32, u32, u32)) -> i64,
+/// Go WEEK's vector kernel computes on partial dates with a zero component.
+pub(crate) fn week_vector_value(
+    date: tidb_datatype::Time,
+    mode: i64,
+    ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(s) = coerce_str(&vals[0])? else {
+    if date.is_zero() {
+        crate::expression_errors::handle_truncate(ctx, &format!("Incorrect datetime value: '{date}'"))?;
         return Ok(Datum::Null);
-    };
-    match parse_hms_extended(&s) {
-        Some(hms) => Ok(Datum::Int(f(hms))),
-        None => Ok(Datum::Null),
     }
-}
-
-/// Parses `HOUR`/`MINUTE`/`SECOND`'s single argument into `(hour, minute,
-/// second)`, following real TiDB's own two-path algorithm (confirmed via
-/// `goeval`, not assumed) depending on whether the value contains a `:`:
-///
-/// - WITH a `:`: an optional `[DATE ]` prefix (validated the SAME way
-///   [`parse_date_ymd`] validates a DATE, split on the FIRST whitespace —
-///   `'junk 10:30:45'`'s `junk` prefix makes the WHOLE value invalid, not
-///   just ignored) followed by a REQUIRED `H:M[:S]` time-of-day (`S`
-///   defaults to `0` if omitted). `H` may be MULTI-DIGIT and exceed 23 —
-///   TiDB's `TIME` domain is an ELAPSED-time range, not a wall-clock
-///   hour, confirmed up to its real documented maximum `838:59:59` (a
-///   larger `H`, even with `M`/`S` individually valid, clamps the WHOLE
-///   value to exactly `838:59:59` — not just the hour component,
-///   confirmed via `goeval`: `HOUR('900:30:15')` is `838` but
-///   `MINUTE('900:30:15')` is `59`, not `30`). `M`/`S` must each be
-///   `0..=59` or the WHOLE value is invalid (`NULL`), regardless of `H`'s
-///   own magnitude.
-/// - WITHOUT a `:` (including a bare `DATE`-only value — confirmed via
-///   `goeval` this is NOT `(0, 0, 0)`, a genuinely surprising real TiDB
-///   behavior, not a theoretical corner case this executor invented):
-///   the value's OWN leading contiguous run of ASCII digits (after
-///   trimming whitespace and an optional leading `-`, sign otherwise
-///   irrelevant since `HOUR`/`MINUTE`/`SECOND` always return a
-///   non-negative magnitude) is parsed as a plain integer `N` and
-///   reinterpreted as a right-aligned `HHMMSS`-style number: `SECOND = N
-///   % 100`, `MINUTE = (N / 100) % 100`, `HOUR = N / 10000` — the SAME
-///   rule an integer-literal argument like `HOUR(103045)` already uses,
-///   applied UNIFORMLY regardless of how many digits `N` has (so
-///   `HOUR('2024-01-15')` takes ONLY the leading `'2024'` — stopping at
-///   the first non-digit `-` — decoding to `HOUR=0, MINUTE=20,
-///   SECOND=24`, NOT the calendar date's own values at all). The SAME
-///   `0..=59`-for-`M`/`S`-or-invalid and clamp-to-`838:59:59` rules apply
-///   identically to the decoded `N`.
-fn parse_hms_extended(s: &str) -> Option<(u32, u32, u32)> {
-    let s = s.trim();
-    let s = s.strip_prefix('-').unwrap_or(s);
-    if s.contains(':') {
-        let time_str = match s.split_once(char::is_whitespace) {
-            Some((date_str, time_str)) => {
-                parse_date_ymd(date_str)?;
-                time_str.trim_start()
-            }
-            None => s,
-        };
-        let mut fields = time_str.splitn(3, ':');
-        let h: i64 = fields.next()?.parse().ok()?;
-        let m: u32 = fields.next()?.parse().ok()?;
-        let sec: u32 = match fields.next() {
-            Some(field) => {
-                let (whole, fraction) = field
-                    .split_once('.')
-                    .map_or((field, None), |(whole, fraction)| (whole, Some(fraction)));
-                if fraction.is_some_and(|digits| !digits.bytes().all(|byte| byte.is_ascii_digit()))
-                {
-                    return None;
-                }
-                whole.parse().ok()?
-            }
-            None => 0,
-        };
-        clamp_hms(h, m, sec)
-    } else {
-        let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
-        if digits.is_empty() {
-            return None;
-        }
-        let n: i64 = digits.parse().ok()?;
-        clamp_hms(n / 10_000, ((n / 100) % 100) as u32, (n % 100) as u32)
-    }
-}
-
-/// Shared by both of [`parse_hms_extended`]'s paths: rejects an
-/// out-of-range `m`/`sec`, else clamps `h` (and, if clamped, `m`/`sec`
-/// TOO) to TiDB's real documented `TIME` maximum, `838:59:59` (confirmed
-/// via `goeval`, not assumed, that an overflowing `h` clamps the WHOLE
-/// value, not just `h` alone).
-fn clamp_hms(h: i64, m: u32, sec: u32) -> Option<(u32, u32, u32)> {
-    if h < 0 || m > 59 || sec > 59 {
-        return None;
-    }
-    if h > 838 {
-        return Some((838, 59, 59));
-    }
-    Some((h as u32, m, sec))
+    Ok(Datum::Int(i64::from(date.core_time().week(mode as u8))))
 }
 
 /// Splits a string into the `(value, digit count)` of its maximal runs of
@@ -284,12 +141,6 @@ fn expand_year(value: u32, digits: usize) -> i64 {
 /// Expands a two-digit year using TiDB's date parsing window.
 pub(crate) fn expand_year_for_time_diff(value: u32, digits: usize) -> i64 {
     expand_year(value, digits)
-}
-
-/// Go `calcDaynr` for `TIMEDIFF` datetime arithmetic, which permits zero
-/// month/day components under `IgnoreZeroInDate`.
-pub(crate) fn time_diff_daynr(year: i64, month: u32, day: u32) -> i64 {
-    tidb_datatype::calc_daynr(year, i64::from(month), i64::from(day))
 }
 
 /// Go `GetLastDay`: the days in `month` of `year`, `0` for an out-of-range
@@ -378,205 +229,56 @@ pub(crate) fn from_days(vals: &[Datum]) -> Result<Datum, EvalError> {
     Ok(Datum::new_time(ret))
 }
 
-/// `DATEDIFF(date1, date2)`, ported from `builtinDateDiffSig.evalInt` in
-/// `pkg/expression/builtin_time.go`.  Both arguments are parsed as calendar
-/// dates; any time-of-day suffix is deliberately ignored, matching TiDB's
-/// `types.DateDiff` contract.  The value-only boundary returns `NULL` for a
-/// failed temporal conversion and has no warning/SQLMode state.
-pub(crate) fn date_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 2 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let (Some(left), Some(right)) = (coerce_str(&vals[0])?, coerce_str(&vals[1])?) else {
-        return Ok(Datum::Null);
-    };
-    let (Some((ly, lm, ld)), Some((ry, rm, rd))) = (parse_date_ymd(&left), parse_date_ymd(&right))
-    else {
-        return Ok(Datum::Null);
-    };
-    // Go `types.DateDiff`: `calcDaynr(t1) - calcDaynr(t2)`.
-    Ok(Datum::Int(
-        time_diff_daynr(ly, lm, ld) - time_diff_daynr(ry, rm, rd),
-    ))
-}
-
-#[derive(Clone, Copy)]
-struct TimestampDiffDateTime {
-    year: i64,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-    microsecond: u32,
-}
-
-/// Parses a strict DATE/DATETIME string for `TIMESTAMPDIFF`.
-fn parse_timestamp_diff_datetime(input: &str) -> Option<TimestampDiffDateTime> {
+/// Parse the calendar fields accepted by the SQL signature before sharing
+/// arithmetic with the storage engine.
+fn timestamp_diff_time(input: &str) -> Option<tidb_datatype::Time> {
     let input = input.trim();
     let (date, time) = input
         .split_once(char::is_whitespace)
         .or_else(|| input.split_once('T'))
-        .map_or((input, "00:00:00"), |(date, time)| (date, time.trim()));
+        .map_or((input, None), |(date, time)| (date, Some(time.trim())));
     let (year, month, day) = parse_date_ymd(date)?;
-    let (hour, minute, second, fraction) = parse_time_with_fraction(time)?;
-    let fsp = fraction.len();
-    let microsecond = fraction.parse::<u32>().ok().unwrap_or(0) * 10u32.pow(6 - fsp as u32);
-    Some(TimestampDiffDateTime {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        microsecond,
-    })
+    let (hour, minute, second, micros) = time_parts_with_micros(time)?;
+    tidb_datatype::Time::from_date_checked(
+        i32::try_from(year).ok()?,
+        month as i32,
+        day as i32,
+        hour as i32,
+        minute as i32,
+        second as i32,
+        micros as i32,
+        tidb_datatype::TimeType::DateTime,
+        6,
+    )
+    .ok()
 }
 
-/// `TIMESTAMPDIFF(unit, datetime_expr1, datetime_expr2)`, ported from
-/// `builtinTimestampDiffSig.evalInt` and `types.TimestampDiff`.  The Rust
-/// value boundary accepts scalar DATE/DATETIME strings and returns the exact
-/// integer result; typed temporal conversion, warning state, and SQL-mode
-/// handling remain at the caller boundary.
 pub(crate) fn timestamp_diff(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 3 {
+    use tidb_query_datatype::codec::mysql::time::IntervalUnit;
+
+    let [unit, left, right] = vals else {
         return Err(EvalError::Unsupported("bad function arity"));
-    }
+    };
     let (Some(unit), Some(left), Some(right)) = (
-        coerce_str(&vals[0])?,
-        coerce_str(&vals[1])?,
-        coerce_str(&vals[2])?,
+        coerce_str(unit)?,
+        coerce_str(left)?,
+        coerce_str(right)?,
     ) else {
         return Ok(Datum::Null);
     };
-    let Some(left) = parse_timestamp_diff_datetime(&left) else {
-        return Ok(Datum::Null);
-    };
-    let Some(right) = parse_timestamp_diff_datetime(&right) else {
-        return Ok(Datum::Null);
-    };
-
-    // Go `calcTimeTimeDiff` counts days with `calcDaynr`.
-    let left_day = time_diff_daynr(left.year, left.month, left.day);
-    let right_day = time_diff_daynr(right.year, right.month, right.day);
-    let left_clock = i64::from(left.hour) * 3_600_000_000
-        + i64::from(left.minute) * 60_000_000
-        + i64::from(left.second) * 1_000_000
-        + i64::from(left.microsecond);
-    let right_clock = i64::from(right.hour) * 3_600_000_000
-        + i64::from(right.minute) * 60_000_000
-        + i64::from(right.second) * 1_000_000
-        + i64::from(right.microsecond);
-    let delta = (right_day - left_day) * 86_400_000_000 + right_clock - left_clock;
-    let negative = delta < 0;
-    let absolute = delta.unsigned_abs();
-    let seconds = absolute / 1_000_000;
-    let microseconds = absolute % 1_000_000;
-    let sign = if negative { -1 } else { 1 };
-
-    let (begin, end) = if negative {
-        (right, left)
-    } else {
-        (left, right)
-    };
-    let months = if matches!(
-        unit.to_ascii_uppercase().as_str(),
-        "YEAR" | "QUARTER" | "MONTH"
-    ) {
-        let mut years = end.year - begin.year;
-        let date_before =
-            end.month < begin.month || (end.month == begin.month && end.day < begin.day);
-        if date_before {
-            years -= 1;
-        }
-        let mut months = 12 * years;
-        if date_before {
-            months += 12 - (i64::from(begin.month) - i64::from(end.month));
-        } else {
-            months += i64::from(end.month) - i64::from(begin.month);
-        }
-        if end.day < begin.day
-            || (end.day == begin.day
-                && (end.hour * 3_600 + end.minute * 60 + end.second
-                    < begin.hour * 3_600 + begin.minute * 60 + begin.second
-                    || (end.hour * 3_600 + end.minute * 60 + end.second
-                        == begin.hour * 3_600 + begin.minute * 60 + begin.second
-                        && end.microsecond < begin.microsecond)))
-        {
-            months -= 1;
-        }
-        months
-    } else {
-        0
-    };
-
-    let unit = unit.to_ascii_uppercase();
-    let result = match unit.as_str() {
-        "YEAR" => months / 12 * sign,
-        "QUARTER" => months / 3 * sign,
-        "MONTH" => months * sign,
-        "WEEK" => (seconds / 86_400 / 7) as i64 * sign,
-        "DAY" => (seconds / 86_400) as i64 * sign,
-        "HOUR" => (seconds / 3_600) as i64 * sign,
-        "MINUTE" => (seconds / 60) as i64 * sign,
-        "SECOND" => seconds as i64 * sign,
-        "MICROSECOND" => (seconds * 1_000_000 + microseconds) as i64 * sign,
-        _ => 0,
-    };
-    Ok(Datum::Int(result))
-}
-
-/// `TO_DAYS(date)`, implemented through the same zero-date day number used by
-/// `types.TimestampDiff("DAY", types.ZeroDate, date)`.  This preserves the
-/// source's year-zero `0000-01-01 -> 1` behavior; an invalid zero date, or a
-/// date with no day number, warns and is NULL (`builtinToDaysSig`).
-pub(crate) fn to_days(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(time) = super::checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?
+    let (Some(left), Some(right)) = (timestamp_diff_time(&left), timestamp_diff_time(&right))
     else {
         return Ok(Datum::Null);
     };
-    let core = time.core_time();
-    let days = time_diff_daynr(
-        i64::from(core.year()),
-        u32::from(core.month()),
-        u32::from(core.day()),
-    );
-    if days == 0 {
-        crate::expression_errors::handle_truncate(cols, &format!("Incorrect datetime value: '{time}'"))?;
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::Int(days))
-}
-
-/// `TO_SECONDS(date)`, implemented through the same zero-date timestamp
-/// arithmetic as the Go builtin (`builtinToSecondsSig`).  Fractional seconds
-/// are deliberately ignored because the source's `SECOND` unit returns whole
-/// seconds; an invalid zero date, or a zero result, warns and is NULL.
-pub(crate) fn to_seconds(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(time) = super::checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?
+    let Some(unit) = IntervalUnit::from_str(&unit).ok().filter(IntervalUnit::is_valid_for_timestamp)
     else {
-        return Ok(Datum::Null);
+        return Ok(Datum::Int(0));
     };
-    let core = time.core_time();
-    let seconds = time_diff_daynr(
-        i64::from(core.year()),
-        u32::from(core.month()),
-        u32::from(core.day()),
-    ) * 86_400
-        + i64::from(core.hour()) * 3_600
-        + i64::from(core.minute()) * 60
-        + i64::from(core.second());
-    if seconds == 0 {
-        crate::expression_errors::handle_truncate(cols, &format!("Incorrect datetime value: '{time}'"))?;
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::Int(seconds))
+    let left = crate::rpn::to_query_time(left).map_err(crate::rpn::query_error)?;
+    let right = crate::rpn::to_query_time(right).map_err(crate::rpn::query_error)?;
+    left.timestamp_diff(&right, unit)
+        .map(Datum::Int)
+        .map_err(|error| crate::rpn::query_error(error.into()))
 }
 
 /// `DATE_ADD`/`DATE_SUB` calendar arithmetic from current Go
@@ -2130,186 +1832,64 @@ pub(crate) fn format_ymd_result(y: i64, m: u32, d: u32, time_suffix: Option<&str
 /// `%D` day-with-ordinal-suffix, and `%%` a literal `%`. An unknown `%X`
 /// emits `X` verbatim (matching MySQL).
 pub(crate) fn date_format(date: &Datum, fmt: &Datum) -> Result<Datum, EvalError> {
-    date_format_in(date, fmt, None)
-}
-
-/// [`date_format`] with the statement context Go's `builtinDateFormatSig`
-/// reports its invalid-time warning through.
-pub(crate) fn date_format_in(
-    date: &Datum,
-    fmt: &Datum,
-    cols: Option<&dyn Columns>,
-) -> Result<Datum, EvalError> {
     let (Some(s), Some(fmt)) = (coerce_str(date)?, coerce_str(fmt)?) else {
         return Ok(Datum::Null);
     };
-    // Go (MySQL compatibility, #11203): the format mask "0" answers "0" for
-    // any time that evaluated, before the zero-date check below.
     if fmt == "0" {
         return Ok(Datum::new_string_datum("0"));
-    }
-    if let Datum::Time(time) = date {
-        let core = time.core_time();
-        if core.month() == 0 || core.day() == 0 {
-            // `InvalidZero`: a zero month or day. An integer/decimal zero
-            // (all fields zero, no fractional digits) is NULL without a
-            // warning; any other zero-in-date value warns 1292.
-            let all_zero = core.year() == 0
-                && core.hour() == 0
-                && core.minute() == 0
-                && core.second() == 0
-                && core.microsecond() == 0;
-            if !(all_zero && time.fsp() == 0) {
-                if let Some(cols) = cols {
-                    handle_invalid_time(
-                        cols,
-                        1292,
-                        format!("Incorrect datetime value: '{s}'"),
-                    )?;
-                }
-            }
-            return Ok(Datum::Null);
-        }
     }
     // Split off an optional time-of-day component.
     let (date_part, time_part) = match s.split_once(' ') {
         Some((d, t)) => (d, Some(t)),
         None => (s.as_str(), None),
     };
-    // Go `builtinDateFormatSig` (MySQL compatibility, #11203): the format
-    // mask "0" answers "0" for any time that evaluated, the zero time
-    // included, before the zero-date check can turn the row into NULL.
-    if fmt == "0" && (date_part == "0000-00-00" || parse_date_ymd(date_part).is_some()) {
-        return Ok(Datum::new_string_datum("0"));
-    }
-    let Some((y, m, d)) = parse_date_ymd(date_part) else {
+    let Some((year, month, day)) = parse_date_ymd(date_part) else {
         return Ok(Datum::Null);
     };
-    let (h, mi, sec, fraction) =
-        time_part
-            .and_then(parse_time_with_fraction)
-            .unwrap_or((0, 0, 0, String::new()));
-
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    const WEEKDAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    // `days_from_civil + 4 (mod 7)` gives 0=Sunday .. 6=Saturday (the same
-    // offset `DAYOFWEEK` uses, verified against real TiDB).
-    let wd = (days_from_civil(y, m, d) + 4).rem_euclid(7) as usize;
-    // Go `%j`: `t.YearDay()`.
-    let doy = i64::from(week_core(y, m, d).year_day());
-    let h12 = ((h + 11) % 12) + 1;
-    let suffix = |n: u32| -> &'static str {
-        match (n % 100, n % 10) {
-            (11..=13, _) => "th",
-            (_, 1) => "st",
-            (_, 2) => "nd",
-            (_, 3) => "rd",
-            _ => "th",
-        }
+    let (hour, minute, second, micros) =
+        time_parts_with_micros(time_part).unwrap_or((0, 0, 0, 0));
+    let Some(time) = i32::try_from(year).ok().and_then(|year| {
+        tidb_datatype::Time::from_date_checked(
+            year,
+            month as i32,
+            day as i32,
+            hour as i32,
+            minute as i32,
+            second as i32,
+            micros as i32,
+            tidb_datatype::TimeType::DateTime,
+            6,
+        )
+        .ok()
+    }) else {
+        return Ok(Datum::Null);
     };
-    // Go's `convertDateFormat` writes a negative week-year through
-    // `uint32`, exposing MaxUint32 rather than a signed year such as `-001`.
-    let format_week_year = |year: i64| {
-        if year < 0 {
-            u32::MAX.to_string()
-        } else {
-            format!("{year:04}")
-        }
-    };
-
-    let mut out = String::new();
-    let mut chars = fmt.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            None => out.push('%'),
-            Some('Y') => out.push_str(&format!("{y:04}")),
-            Some('y') => out.push_str(&format!("{:02}", y.rem_euclid(100))),
-            Some('m') => out.push_str(&format!("{m:02}")),
-            Some('c') => out.push_str(&m.to_string()),
-            Some('d') => out.push_str(&format!("{d:02}")),
-            Some('e') => out.push_str(&d.to_string()),
-            Some('H') => out.push_str(&format!("{h:02}")),
-            Some('k') => out.push_str(&h.to_string()),
-            Some('h' | 'I') => out.push_str(&format!("{h12:02}")),
-            Some('l') => out.push_str(&h12.to_string()),
-            Some('i') => out.push_str(&format!("{mi:02}")),
-            Some('S' | 's') => out.push_str(&format!("{sec:02}")),
-            Some('f') => out.push_str(&format!("{fraction:0<6}")),
-            Some('p') => out.push_str(if h < 12 { "AM" } else { "PM" }),
-            Some('T') => out.push_str(&format!("{h:02}:{mi:02}:{sec:02}")),
-            Some('r') => out.push_str(&format!(
-                "{h12:02}:{mi:02}:{sec:02} {}",
-                if h < 12 { "AM" } else { "PM" }
-            )),
-            Some('W') => out.push_str(WEEKDAYS[wd]),
-            Some('a') => out.push_str(&WEEKDAYS[wd][..3]),
-            Some('w') => out.push_str(&wd.to_string()),
-            Some('M') => out.push_str(MONTHS[(m - 1) as usize]),
-            Some('b') => out.push_str(&MONTHS[(m - 1) as usize][..3]),
-            Some('j') => out.push_str(&format!("{doy:03}")),
-            Some('D') => out.push_str(&format!("{d}{}", suffix(d))),
-            // Go's `types.Time.DateFormat` maps these to `CoreTime.Week` /
-            // `YearWeek`, whose exact mode handling is ported in
-            // `week_of_year` above. `%U`/`%u` retain the week number's
-            // possible zero; `%V`/`%v` force the corresponding year-week
-            // mode and `%X`/`%x` render its possibly adjacent calendar year.
-            Some('U') => out.push_str(&format!("{:02}", week_core(y, m, d).week(0))),
-            Some('u') => out.push_str(&format!("{:02}", week_core(y, m, d).week(1))),
-            Some('V') => out.push_str(&format!("{:02}", week_core(y, m, d).week(2))),
-            Some('v') => out.push_str(&format!("{:02}", week_core(y, m, d).year_week(3).1)),
-            Some('X') => out.push_str(&format_week_year(i64::from(week_core(y, m, d).year_week(2).0))),
-            Some('x') => out.push_str(&format_week_year(i64::from(week_core(y, m, d).year_week(3).0))),
-            Some('%') => out.push('%'),
-            // An unknown specifier emits the letter verbatim (MySQL rule).
-            Some(other) => out.push(other),
-        }
-    }
-    Ok(Datum::new_string_datum(out))
+    render_date_format(time, &fmt)
 }
 
-#[cfg(test)]
-mod clock_source_tests {
-    use super::parse_hms_extended;
-
-    /// Go `TestClock` gives HOUR, MINUTE and SECOND all three fractional
-    /// source inputs. The fraction does not change those fields, but it must
-    /// not make the ETDuration cast NULL; the double-dot row stays invalid.
-    #[test]
-    fn test_clock_time_parts() {
-        for (input, expected) in [
-            ("10:10:10.123456", (10, 10, 10)),
-            ("11:11:11.11", (11, 11, 11)),
-            ("2010-10-10 11:11:11.11", (11, 11, 11)),
-        ] {
-            assert_eq!(parse_hms_extended(input), Some(expected));
-        }
-        assert_eq!(parse_hms_extended("2011-11-11 10:10:10.11.12"), None);
+pub(super) fn render_date_format(time: tidb_datatype::Time, fmt: &str) -> Result<Datum, EvalError> {
+    let core = time.core_time();
+    // The SQL year-day calculation treats year zero as a common year.
+    let adjusted_format;
+    let layout = if core.year() == 0 && core.month() > 2 && fmt.contains("%j") {
+        let ordinal = format!("{:03}", core.year_day());
+        adjusted_format = fmt
+            .split("%%")
+            .map(|part| part.replace("%j", &ordinal))
+            .collect::<Vec<_>>()
+            .join("%%");
+        adjusted_format.as_str()
+    } else {
+        fmt
+    };
+    let mut output = crate::rpn::to_query_time(time)
+        .and_then(|time| time.date_format(layout).map_err(Into::into))
+        .map_err(crate::rpn::query_error)?;
+    // The SQL evaluator preserves an unmatched trailing percent.
+    if fmt.bytes().rev().take_while(|&byte| byte == b'%').count() % 2 != 0 {
+        output.push('%');
     }
+    Ok(Datum::new_string_datum(output))
 }
 
 #[cfg(test)]

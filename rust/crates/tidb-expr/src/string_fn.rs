@@ -38,14 +38,22 @@ pub(crate) fn concat_with_context(
     vals: &[Datum],
     ctx: &dyn tidb_exprctx::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.is_empty() {
+    concat_from(vals.len(), |i| Ok(vals[i].clone()), ctx)
+}
+
+pub(crate) fn concat_from(
+    count: usize,
+    mut operand: impl FnMut(usize) -> Result<Datum, EvalError>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    if count == 0 {
         return Err(EvalError::Unsupported(
             "CONCAT requires at least one argument",
         ));
     }
     let mut out = Vec::new();
-    for v in vals {
-        match coerce_str_bytes(v)? {
+    for index in 0..count {
+        match coerce_str_bytes(&operand(index)?)? {
             Some(s) => {
                 if out.len().saturating_add(s.len()) as u64 > ctx.max_allowed_packet() {
                     crate::expression_errors::handle_allowed_packet_overflowed(ctx, "concat")?;
@@ -108,31 +116,6 @@ use tidb_charset::Collation;
             Ok(Datum::new_string_datum("\u{fffd}\u{fffd}"))
         );
     }
-}
-
-/// `ASCII(s)`: return the first byte of the evaluated string, not the first
-/// Unicode scalar value. Go's `EvalString` preserves binary arguments, so
-/// this uses byte-preserving coercion instead of a UTF-8-checked one.
-pub(crate) fn ascii(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(bytes.first().copied().unwrap_or(0))))
-}
-
-/// `BIT_LENGTH(s)`: count evaluated bytes and multiply by eight. This follows
-/// Go's `len(val)` contract for ordinary UTF-8 and binary values alike.
-pub(crate) fn bit_length(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int((bytes.len() as i64) * 8))
 }
 
 /// `LEFT`/`RIGHT`: the first or last `n` units, where `builtinLeftSig` and
@@ -271,13 +254,9 @@ pub(crate) fn locate(
     let (Some(needle), Some(haystack)) = (coerce_str_bytes(substr)?, coerce_str_bytes(str)?) else {
         return Ok(Datum::Null);
     };
-    if needle.is_empty() {
-        return Ok(Datum::Int(1));
-    }
-    let found = haystack
-        .windows(needle.len())
-        .position(|window| window == needle.as_slice());
-    Ok(Datum::Int(found.map_or(0, |index| index as i64 + 1)))
+    tidb_query_expr::impl_string::locate_2_args(&needle, &haystack)
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 /// `LOCATE(substr, str, pos)` — the three-argument signatures
@@ -323,18 +302,9 @@ pub(crate) fn locate_with_position(
     let start = position.wrapping_sub(1);
 
     if binary {
-        if start < 0 || start > hay.len() as i64 - needle.len() as i64 {
-            return Ok(Datum::Int(0));
-        }
-        if needle.is_empty() {
-            return Ok(Datum::Int(start + 1));
-        }
-        let found = hay[start as usize..]
-            .windows(needle.len())
-            .position(|window| window == needle.as_slice());
-        return Ok(Datum::Int(
-            found.map_or(0, |index| start + index as i64 + 1),
-        ));
+        return tidb_query_expr::impl_string::locate_3_args(&needle, &hay, &position)
+            .map(|value| value.map_or(Datum::Null, Datum::Int))
+            .map_err(crate::rpn::query_error);
     }
 
     // Under a case-insensitive collation Go lowers both strings BEFORE the
@@ -464,47 +434,14 @@ pub(crate) fn instr(
     })))
 }
 
-/// `REPLACE(str, from, to)`: every non-overlapping occurrence of `from` in
-/// `str` replaced by `to`. An empty `from` leaves `str` unchanged (matching
-/// MySQL, and avoiding a pathological empty-pattern replace). `NULL` if any
-/// argument is `NULL`.
-pub(crate) fn replace(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [value, from, to] = vals else {
-        return Err(EvalError::Unsupported("bad REPLACE arity"));
-    };
-    let (Some(s), Some(from), Some(to)) = (
-        coerce_str_bytes(value)?,
-        coerce_str_bytes(from)?,
-        coerce_str_bytes(to)?,
-    ) else {
-        return Ok(Datum::Null);
-    };
-    if from.is_empty() {
-        return Ok(string_result(value, s));
-    }
-    Ok(string_result(value, replace_bytes(&s, &from, &to)))
-}
-
-/// Replaces non-overlapping byte occurrences, matching Go's
-/// `strings.ReplaceAll` over an arbitrary Go string.  Keeping this byte based
-/// means binary arguments never pass through a lossy UTF-8 decode.
-fn replace_bytes(value: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(value.len());
-    let mut cursor = 0;
-    while cursor <= value.len() {
-        let Some(relative) = value[cursor..]
-            .windows(from.len())
-            .position(|window| window == from)
-        else {
-            out.extend_from_slice(&value[cursor..]);
-            break;
-        };
-        let start = cursor + relative;
-        out.extend_from_slice(&value[cursor..start]);
-        out.extend_from_slice(to);
-        cursor = start + from.len();
-    }
-    out
+pub(super) fn sdk_bytes(
+    operation: impl FnOnce(
+        tidb_query_datatype::codec::data_type::BytesWriter,
+    ) -> tidb_query_common::Result<tidb_query_datatype::codec::data_type::BytesGuard>,
+) -> Result<Option<Vec<u8>>, EvalError> {
+    use tidb_query_datatype::codec::data_type::{ChunkedVec, ChunkedVecBytes};
+    let output = operation(ChunkedVecBytes::with_capacity(1).into_writer()).map_err(crate::rpn::query_error)?;
+    Ok(output.into_inner().get(0).map(<[u8]>::to_vec))
 }
 
 /// Preserve binary result semantics when the source string is binary; normal
@@ -531,163 +468,11 @@ pub(crate) fn strcmp_with_collation(
     let (Some(a), Some(b)) = (coerce_str_bytes(left)?, coerce_str_bytes(right)?) else {
         return Ok(Datum::Null);
     };
-    strcmp_under(&a, &b, collation)
-}
-
-fn strcmp_under(
-    a: &[u8],
-    b: &[u8],
-    collation: tidb_charset::Collation,
-) -> Result<Datum, EvalError> {
-    Ok(Datum::Int(match collation.compare(a, b) {
+    Ok(Datum::Int(match collation.compare(&a, &b) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
         std::cmp::Ordering::Greater => 1,
     }))
-}
-
-/// `HEX(x)`: renders a numeric argument's implicit-integer bits as uppercase
-/// base-16 (`HEX(12.8)` = `D`, `HEX(-1)` = `FFFFFFFFFFFFFFFF`), or renders a
-/// string/binary-literal argument's bytes (`HEX('abc')` = `616263`).
-///
-/// This is deliberately a type-directed split, rather than formatting every
-/// value through `coerce_str`: TiDB's `TestHexFunc` proves that decimal and
-/// real values use the integer signature while ETString values retain their
-/// original bytes. Reusing `radix_integer_bits` keeps every numeric rounding
-/// and two's-complement edge on one source-defined conversion path.
-///
-/// # A `BIT` COLUMN is an integer argument, a bit LITERAL is not
-///
-/// `hexFunctionClass.getFunction` switches on `args[0].GetType().EvalType()`,
-/// and `mysql.TypeBit`'s eval type is `types.ETInt` -- so a `BIT(48)` column
-/// is hexed through `builtinHexIntArgSig`, which formats the VALUE and
-/// therefore drops the storage width's leading zero bytes. A bit LITERAL
-/// (`b'01000001'`) is a different type: Go stores it as `KindBinaryLiteral`
-/// typed `mysql.TypeVarString`, so it takes the string branch, and it only
-/// LOOKS like the integer answer because a literal carries no padding.
-/// Measured through `gorun` on `bit(48)` holding `0x00080A0D091A`:
-///
-/// ```text
-/// hex(b)          -> 80A0D091A     (int branch: value, no leading zeros)
-/// hex(concat(b))  -> 000000000041  (string branch on bit(48) x'0041')
-/// hex(x'0041')    -> 0041          (hex literal keeps both bytes)
-/// hex(b'01000001')-> 41            (bit literal is one byte to begin with)
-/// ```
-pub(crate) fn hex(vals: &[Datum]) -> Result<Datum, EvalError> {
-    match &vals[0] {
-        Datum::Null => Ok(Datum::Null),
-        Datum::Int(_)
-        | Datum::UInt(_)
-        | Datum::Decimal(_)
-        | Datum::Real(_)
-        | Datum::Float32(_)
-        | Datum::Bit(_) => {
-            let bits = radix_integer_bits(&vals[0])?.expect("non-NULL numeric HEX input");
-            Ok(Datum::new_string_datum(format!("{bits:X}")))
-        }
-        Datum::String(_)
-        | Datum::Bytes(_)
-        | Datum::BinaryLiteral(_)
-        | Datum::Duration(_)
-        | Datum::Enum(_, _)
-        | Datum::Set(_, _)
-        | Datum::Time(_)
-        | Datum::Json(_) => hex_string_value(&vals[0]),
-        Datum::Raw(value) => Ok(Datum::new_string_datum(
-            value
-                .iter()
-                .map(|byte| format!("{byte:02X}"))
-                .collect::<String>(),
-        )),
-        Datum::MinNotNull | Datum::MaxValue => {
-            Err(EvalError::Unsupported("range sentinel HEX argument"))
-        }
-        other => {
-            let bytes = other
-                .to_bytes()
-                .map_err(|_| EvalError::Unsupported("HEX argument conversion"))?;
-            Ok(Datum::new_string_datum(
-                bytes
-                    .iter()
-                    .map(|byte| format!("{byte:02X}"))
-                    .collect::<String>(),
-            ))
-        }
-    }
-}
-
-fn hex_string_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = coerce_str_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string_datum(
-        bytes
-            .iter()
-            .map(|byte| format!("{byte:02X}"))
-            .collect::<String>(),
-    ))
-}
-
-/// Go `hexFunctionClass.getFunction`: select the string or integer signature
-/// from the argument's declared eval type, then apply the corresponding
-/// build-time argument cast before evaluating the body.
-pub(crate) fn hex_with_type(
-    vals: &[Datum],
-    arg_type: Option<&FieldType>,
-    ctx: &dyn crate::Columns,
-) -> Result<Datum, EvalError> {
-    use tidb_datatype::EvalType;
-
-    let Some(arg_type) = arg_type else {
-        return hex(vals);
-    };
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad HEX arity"));
-    };
-    match arg_type.eval_type() {
-        EvalType::String
-        | EvalType::Datetime
-        | EvalType::Timestamp
-        | EvalType::Duration
-        | EvalType::Json => {
-            let value = crate::cast::cast_arg_as_string(value, Some(arg_type), ctx)?;
-            hex_string_value(&value)
-        }
-        EvalType::Int | EvalType::Real | EvalType::Decimal => {
-            let value = crate::cast::cast_arg_as_int(value, Some(arg_type), ctx)?;
-            hex(&[value])
-        }
-        _ => Err(EvalError::Unsupported("HEX argument eval type")),
-    }
-}
-
-/// `UNHEX(s)`: the inverse of `HEX` for a string — each hex pair becomes one
-/// byte in a binary datum (`UNHEX('4D7953514C')` carries `MySQL` bytes). An odd number of
-/// digits gets an implicit leading zero (`UNHEX('126')` = bytes `01 26`), as
-/// `builtinUnHexSig` does. `NULL` only when a digit is invalid; arbitrary
-/// decoded octets remain representable. The source signature is `ETString`,
-/// which is a byte-preserving Go string boundary, so malformed input bytes
-/// also follow the normal invalid-hex `NULL` path rather than becoming a Rust
-/// UTF-8 decoding error.
-pub(crate) fn unhex(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let Some(s) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let mut digits = Vec::with_capacity(s.len() + s.len() % 2);
-    if s.len() % 2 != 0 {
-        digits.push(b'0');
-    }
-    digits.extend_from_slice(&s);
-    let mut bytes = Vec::with_capacity(digits.len() / 2);
-    for pair in digits.as_chunks::<2>().0 {
-        let hi = hex_nibble(pair[0]);
-        let lo = hex_nibble(pair[1]);
-        match (hi, lo) {
-            (Some(h), Some(l)) => bytes.push((h << 4) | l),
-            _ => return Ok(Datum::Null),
-        }
-    }
-    Ok(Datum::new_bytes_datum(bytes))
 }
 
 /// `BIN(n)`: the base-2 form of an implicitly-cast integer as an unsigned
@@ -698,112 +483,40 @@ pub(crate) fn bin(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, Eva
     if vals.len() != 1 {
         return Err(EvalError::Unsupported("bad BIN arity"));
     }
-    let raw: Option<&[u8]> = match &vals[0] {
-        Datum::String(text) => Some(text.bytes()),
-        Datum::Bytes(text) => Some(text),
-        _ => None,
+    warn_radix_truncation(&vals[0], ctx);
+    let Some(bits) = radix_integer_bits(&vals[0])? else {
+        return Ok(Datum::Null);
     };
-    if let Some(text) = raw {
-        if radix_truncated(text) {
-            ctx.append_go_warning(
-                &tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL,
-                &format!(
-                    "Truncated incorrect INTEGER value: '{}'",
-                    String::from_utf8_lossy(text)
-                ),
-            );
-        }
-    }
-    Ok(radix_integer_bits(&vals[0])?
-        .map_or(Datum::Null, |bits| Datum::new_string_datum(format!("{bits:b}"))))
+    Ok(sdk_bytes(|writer| tidb_query_expr::impl_string::bin(&(bits as i64), writer))?
+        .map_or(Datum::Null, Datum::new_string_datum))
 }
 
-/// `OCT(n)`: the base-8 form of an integer as an unsigned 64-bit value.
-/// Go has two signatures here: the integer path renders the raw `u64` bits,
-/// while every non-integer source first goes through `builtinOctStringSig`.
-/// That second path is deliberately *not* the `BIN` integer cast: an empty
-/// original string is `NULL`, a whitespace-only/invalid nonempty string is
-/// zero, and a decimal-prefix overflow stays at `u64::MAX` even if it had a
-/// leading minus sign.  Keeping that conversion local makes those cases the
-/// normal signature split rather than test-specific exceptions.
-///
-/// The split is Go's own build-time test, and it is a SIGNATURE choice rather
-/// than an argument cast, which is why `OCT` is not a member of
-/// `crate::arg_eval_type`'s `types.ETInt` layer:
-///
-/// ```go
-/// if IsBinaryLiteral(args[0]) || args[0].GetType(ctx.GetEvalCtx()).EvalType() == types.ETInt {
-/// ```
-///
-/// (`builtin_string.go:3005`). `IsBinaryLiteral` is `con.Value.Kind() ==
-/// types.KindBinaryLiteral`, this tier's [`Datum::BinaryLiteral`], and
-/// `mysql.TypeBit`'s eval type is `types.ETInt`, this tier's [`Datum::Bit`];
-/// both therefore take the INTEGER signature and render their big-endian
-/// value. ENUM and SET do NOT -- their eval type is `types.ETString` until
-/// something adds `EnumSetAsIntFlag`, and `OCT` never does. Captured from
-/// real TiDB (`gorun`) over `enum('x','y','z')` holding `'y'`,
-/// `set('a','b','c')` holding `'a,c'` and `bit(8)` holding `b'00000011'`:
-/// `oct(e)` is `0` and `oct(s)` is `0` (the STRINGS parsed), while `oct(b)`
-/// is `3` and `oct(b'01000001')` is `101`.
+/// OCT formats raw integer bits or takes the decimal prefix of a string.
 pub(crate) fn oct(vals: &[Datum]) -> Result<Datum, EvalError> {
-    match &vals[0] {
-        Datum::Null => Ok(Datum::Null),
-        Datum::Int(value) => Ok(Datum::new_string_datum(format!("{:o}", *value as u64))),
-        Datum::UInt(value) => Ok(Datum::new_string_datum(format!("{value:o}"))),
-        Datum::Bit(bits) | Datum::BinaryLiteral(bits) => {
-            Ok(Datum::new_string_datum(format!("{:o}", bits.to_int().value())))
-        }
-        value => Ok(oct_string_bits(value)?
-            .map_or(Datum::Null, |bits| Datum::new_string_datum(format!("{bits:o}")))),
-    }
-}
+    use tidb_query_expr::impl_string::{oct_int, oct_string};
 
-/// The `ETString` conversion inside Go's `builtinOctStringSig`.
-/// `getValidPrefix(..., 10)` retains only a leading sign and decimal digits;
-/// `strconv.ParseUint` returns `MaxUint64` together with `ErrRange` on
-/// overflow.  A negative in-range magnitude is negated in the `u64` domain,
-/// but a negative overflow is intentionally left as `MaxUint64` by the Go
-/// implementation.
-fn oct_string_bits(value: &Datum) -> Result<Option<u64>, EvalError> {
-    let Some(value) = coerce_str_bytes(value)? else {
-        return Ok(None);
+    let output = match &vals[0] {
+        Datum::Null => return Ok(Datum::Null),
+        Datum::Int(value) => sdk_bytes(|writer| oct_int(value, writer))?,
+        Datum::UInt(value) => sdk_bytes(|writer| oct_int(&(*value as i64), writer))?,
+        Datum::Bit(bits) | Datum::BinaryLiteral(bits) => {
+            sdk_bytes(|writer| oct_int(&(bits.to_int().value() as i64), writer))?
+        }
+        value => {
+            let Some(bytes) = coerce_str_bytes(value)? else {
+                return Ok(Datum::Null);
+            };
+            if bytes.is_empty() {
+                return Ok(Datum::Null);
+            }
+            // Go trims Unicode whitespace. An originally nonempty string
+            // with no decimal prefix is still zero.
+            let trimmed = trim_go_space(&bytes);
+            let input = if trimmed.is_empty() { b"0" } else { trimmed };
+            sdk_bytes(|writer| oct_string(input, writer))?
+        }
     };
-    if value.is_empty() {
-        return Ok(None);
-    }
-    // Go's `EvalString` and `strings.TrimSpace` operate on byte strings. A
-    // valid UTF-8 value can use Rust's Unicode-equivalent `trim`; malformed
-    // bytes cannot be decoded, so trim the ASCII whitespace that Go also
-    // recognizes around such a payload and leave every other octet intact.
-    let value = trim_go_space(&value);
-    let prefix_len = value
-        .iter()
-        .enumerate()
-        .take_while(|(index, byte)| {
-            byte.is_ascii_digit() || (*index == 0 && matches!(byte, b'+' | b'-'))
-        })
-        .map(|(index, _)| index + 1)
-        .last()
-        .unwrap_or(0);
-    let prefix = &value[..prefix_len];
-    let prefix = prefix.strip_prefix(b"+").unwrap_or(prefix);
-    let (negative, digits) = match prefix.strip_prefix(b"-") {
-        Some(digits) => (true, digits),
-        None => (false, prefix),
-    };
-    if digits.is_empty() {
-        return Ok(Some(0));
-    }
-    let digits = std::str::from_utf8(digits).expect("OCT decimal prefix is ASCII");
-    let (bits, overflow) = match digits.parse::<u64>() {
-        Ok(bits) => (bits, false),
-        Err(_) => (u64::MAX, true),
-    };
-    Ok(Some(if negative && !overflow {
-        bits.wrapping_neg()
-    } else {
-        bits
-    }))
+    Ok(output.map_or(Datum::Null, Datum::new_string_datum))
 }
 
 /// Trims the same source-visible whitespace around an `ETString` value that
@@ -826,14 +539,6 @@ fn trim_go_space(bytes: &[u8]) -> &[u8] {
     &bytes[start..end]
 }
 
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
 
 /// `BIN`'s argument path.  This mirrors
 /// `newBaseBuiltinFuncWithTp(..., ETInt)` in Go: a non-negative string is
@@ -877,6 +582,20 @@ fn radix_integer_bits(value: &Datum) -> Result<Option<u64>, EvalError> {
 /// go `StrToInt`/`StrToUint`: the cast warns `Truncated incorrect INTEGER
 /// value` when the text carries anything the numeric parse could not
 /// consume — a remainder after the digit run, or no digits at all.
+fn warn_radix_truncation(value: &Datum, ctx: &dyn crate::Columns) {
+    let bytes = match value {
+        Datum::String(text) => text.bytes(),
+        Datum::Bytes(text) => text.as_slice(),
+        _ => return,
+    };
+    if radix_truncated(bytes) {
+        ctx.append_go_warning(
+            &tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL,
+            &format!("Truncated incorrect INTEGER value: '{}'", String::from_utf8_lossy(bytes)),
+        );
+    }
+}
+
 fn radix_truncated(value: &[u8]) -> bool {
     let value = trim_go_space(value);
     let digits = if value.len() > 1 && value.starts_with(b"-") {
@@ -1091,19 +810,27 @@ pub(crate) fn concat_ws_with_context(
     vals: &[Datum],
     ctx: &dyn tidb_exprctx::context::Columns,
 ) -> Result<Datum, EvalError> {
-    if vals.len() < 2 {
+    concat_ws_from(vals.len(), |i| Ok(vals[i].clone()), ctx)
+}
+
+pub(crate) fn concat_ws_from(
+    count: usize,
+    mut operand: impl FnMut(usize) -> Result<Datum, EvalError>,
+    ctx: &dyn crate::context::Columns,
+) -> Result<Datum, EvalError> {
+    if count < 2 {
         return Err(EvalError::Unsupported(
             "CONCAT_WS requires at least two arguments",
         ));
     }
-    let Some(sep) = coerce_str_bytes(&vals[0])? else {
+    let Some(sep) = coerce_str_bytes(&operand(0)?)? else {
         return Ok(Datum::Null);
     };
     let mut out = Vec::new();
     let mut have_part = false;
     let mut target_len = 0_u64;
-    for (index, value) in vals[1..].iter().enumerate() {
-        let Some(value) = coerce_str_bytes(value)? else {
+    for index in 0..count - 1 {
+        let Some(value) = coerce_str_bytes(&operand(index + 1)?)? else {
             continue;
         };
         target_len = target_len.saturating_add(value.len() as u64);
@@ -1123,70 +850,91 @@ pub(crate) fn concat_ws_with_context(
     Ok(Datum::new_string_datum(out))
 }
 
+/// Go's vector CONCAT_WS accounts for separator bytes by row index.
+pub(crate) fn concat_ws_columns<B: AsRef<[u8]>>(
+    rows: usize,
+    argc: usize,
+    cell: impl Fn(usize, usize) -> Option<B>,
+    ctx: &dyn crate::Columns,
+) -> Result<Vec<Option<Vec<u8>>>, EvalError> {
+    let separators: Vec<_> = (0..rows).map(|row| cell(0, row)).collect();
+    let mut output: Vec<_> = separators
+        .iter()
+        .map(|separator| separator.as_ref().map(|_| Vec::new()))
+        .collect();
+    let mut lengths = vec![0_usize; rows];
+    let mut has_value = vec![false; rows];
+    for column in 1..argc {
+        for row in 0..rows {
+            let (Some(bytes), Some(separator), Some(out)) = (
+                cell(column, row), &separators[row], &mut output[row],
+            ) else { continue };
+            let bytes = bytes.as_ref();
+            let separator = separator.as_ref();
+            lengths[row] += bytes.len() + if row > 1 { separator.len() } else { 0 };
+            if lengths[row] as u64 > ctx.max_allowed_packet() {
+                crate::expression_errors::handle_allowed_packet_overflowed(ctx, "concat_ws")?;
+                output[row] = None;
+                continue;
+            }
+            if has_value[row] {
+                out.extend_from_slice(separator);
+            }
+            out.extend_from_slice(bytes);
+            has_value[row] = true;
+        }
+    }
+    Ok(output)
+}
+
 /// `SUBSTRING_INDEX(str, delim, count)`: the substring before the `count`-th
 /// occurrence of `delim` — from the left for `count > 0`, from the right for
 /// `count < 0` (`SUBSTRING_INDEX('a.b.c.d', '.', -2)` = `c.d`). `count = 0`
 /// yields the empty string; `|count|` past the number of parts yields the
 /// whole string. `NULL` if any argument is `NULL`.
 pub(crate) fn substring_index(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let [value, delim_value, count_value] = vals else {
+    let [value_source, delim_value, count_value] = vals else {
         return Err(EvalError::Unsupported("bad SUBSTRING_INDEX arity"));
     };
-    let (Some(s), Some(delim)) = (coerce_str_bytes(value)?, coerce_str_bytes(delim_value)?) else {
+    let (Some(s), Some(delim)) = (coerce_str_bytes(value_source)?, coerce_str_bytes(delim_value)?) else {
         return Ok(Datum::Null);
     };
     if count_value == &Datum::Null {
         return Ok(Datum::Null);
     }
     if delim.is_empty() {
-        return Ok(string_result(value, Vec::new()));
+        return Ok(string_result(value_source, Vec::new()));
     }
     // A UInt64 above MaxInt64 is the source's unsigned ETInt overflow case;
     // builtinSubstringIndexSig returns the complete string before applying
     // the negative-count branch.  The ordinary signed path uses TiDB's
     // shared EvalInt coercion for strings, decimals, and reals.
     if matches!(count_value, Datum::UInt(n) if *n > i64::MAX as u64) {
-        return Ok(string_result(value, s));
+        return Ok(string_result(value_source, s));
     }
     let count = crate::cast::to_i64_signed(count_value);
-    if count == 0 {
-        return Ok(string_result(value, Vec::new()));
+    if count >= 0 {
+        return sdk_bytes(|writer| {
+            tidb_query_expr::impl_string::substring_index(&s, &delim, &count, writer)
+        })
+        .map(|value| value.map_or(Datum::Null, |bytes| string_result(value_source, bytes)));
     }
-    let parts = split_bytes(&s, &delim);
-    let (start, end) = if count > 0 {
-        (0, (count as usize).min(parts.len()))
-    } else if count == i64::MIN {
-        (0, parts.len())
-    } else {
-        let n = (-count) as usize;
-        (parts.len().saturating_sub(n), parts.len())
+    // Go counts nonoverlapping delimiters from left to right even for a
+    // negative count. The SDK searches from the right, and abs(MIN) overflows.
+    let Ok(count) = usize::try_from(count.unsigned_abs()) else {
+        return Ok(string_result(value_source, s));
     };
-    let mut out = Vec::new();
-    for (index, part) in parts[start..end].iter().enumerate() {
-        if index != 0 {
-            out.extend_from_slice(&delim);
-        }
-        out.extend_from_slice(part);
+    if count > s.len() {
+        return Ok(string_result(value_source, s));
     }
-    Ok(string_result(value, out))
-}
-
-fn split_bytes<'a>(value: &'a [u8], delim: &[u8]) -> Vec<&'a [u8]> {
-    debug_assert!(!delim.is_empty());
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut cursor = 0;
-    while cursor + delim.len() <= value.len() {
-        if &value[cursor..cursor + delim.len()] == delim {
-            parts.push(&value[start..cursor]);
-            cursor += delim.len();
-            start = cursor;
-        } else {
-            cursor += 1;
-        }
+    let mut starts = vec![0];
+    let mut remaining = s.as_slice();
+    while let Some(offset) = remaining.windows(delim.len()).position(|part| part == delim) {
+        remaining = &remaining[offset + delim.len()..];
+        starts.push(s.len() - remaining.len());
     }
-    parts.push(&value[start..]);
-    parts
+    let start = starts[starts.len().saturating_sub(count)];
+    Ok(string_result(value_source, s[start..].to_vec()))
 }
 
 /// `INSERT(str, pos, len, newstr)`: replaces the `len` characters of `str`
@@ -1364,54 +1112,12 @@ pub(crate) fn from_base64_with_packet_limit(
         .into_iter()
         .filter(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
         .collect();
-    if cleaned.is_empty() {
-        return Ok(Datum::new_bytes_datum(Vec::new()));
-    }
-    if !cleaned.len().is_multiple_of(4) {
-        return Ok(Datum::Null);
-    }
-    let val = |c: u8| -> Option<u8> {
-        match c {
-            b'A'..=b'Z' => Some(c - b'A'),
-            b'a'..=b'z' => Some(c - b'a' + 26),
-            b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    };
-    let mut bytes = Vec::new();
-    for (group_index, chunk) in cleaned.as_chunks::<4>().0.iter().enumerate() {
-        let last = group_index + 1 == cleaned.len() / 4;
-        let Some(a) = val(chunk[0]) else {
-            return Ok(Datum::Null);
-        };
-        let Some(b) = val(chunk[1]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((a << 2) | (b >> 4));
-        if chunk[2] == b'=' {
-            if !last || chunk[3] != b'=' || b & 0x0f != 0 {
-                return Ok(Datum::Null);
-            }
-            continue;
-        }
-        let Some(c) = val(chunk[2]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((b << 4) | (c >> 2));
-        if chunk[3] == b'=' {
-            if !last || c & 0x03 != 0 {
-                return Ok(Datum::Null);
-            }
-            continue;
-        }
-        let Some(d) = val(chunk[3]) else {
-            return Ok(Datum::Null);
-        };
-        bytes.push((c << 6) | d);
-    }
-    Ok(Datum::new_bytes_datum(bytes))
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    Ok(STANDARD
+        .decode(cleaned)
+        .ok()
+        .map_or(Datum::Null, Datum::new_bytes_datum))
 }
 
 #[cfg(test)]
@@ -1516,19 +1222,10 @@ pub(crate) fn ord_with_type(
 /// Go `expression.Quote`: `str` wrapped in single quotes with `'`, `\`, NUL
 /// and Ctrl-Z backslash-escaped.
 pub fn quote_str(str: &str) -> String {
-    let mut out = String::with_capacity(str.len() + 2);
-    out.push('\'');
-    for c in str.chars() {
-        match c {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\0' => out.push_str("\\0"),
-            '\x1a' => out.push_str("\\Z"),
-            _ => out.push(c),
-        }
-    }
-    out.push('\'');
-    out
+    let bytes = tidb_query_expr::impl_string::quote(Some(str.as_bytes()))
+        .expect("QUOTE accepts any byte string")
+        .expect("QUOTE returns quoted bytes");
+    String::from_utf8(bytes).expect("quoting UTF-8 preserves UTF-8")
 }
 
 /// `QUOTE(s)`: `s` wrapped in single quotes with `'`, `\`, NUL and Ctrl-Z
@@ -1565,22 +1262,7 @@ pub(crate) fn quote(vals: &[Datum]) -> Result<Datum, EvalError> {
 /// signature: decimal/real/string values first take their MySQL integer
 /// coercion, whose statement warnings are outside this value-only domain.
 pub(crate) fn bit_count(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let raw: Option<&[u8]> = match &vals[0] {
-        Datum::String(text) => Some(text.bytes()),
-        Datum::Bytes(text) => Some(text),
-        _ => None,
-    };
-    if let Some(text) = raw {
-        if radix_truncated(text) {
-            ctx.append_go_warning(
-                &tidb_datatype::types_errors::ERR_TRUNCATED_WRONG_VAL,
-                &format!(
-                    "Truncated incorrect INTEGER value: '{}'",
-                    String::from_utf8_lossy(text)
-                ),
-            );
-        }
-    }
+    warn_radix_truncation(&vals[0], ctx);
     let bits = match &vals[0] {
         Datum::Null => return Ok(Datum::Null),
         Datum::Int(n) => *n as u64,
@@ -1595,8 +1277,8 @@ pub(crate) fn bit_count(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datu
         // Keep the scan byte-oriented too: Go strings/bytes may contain
         // malformed UTF-8 after an otherwise valid numeric prefix, and the
         // source conversion still consumes that prefix.
-        Datum::String(n) => bit_count_string_bytes(n.bytes()),
-        Datum::Bytes(n) => bit_count_string_bytes(n),
+        Datum::String(n) => radix_string_bits_bytes(n.bytes()),
+        Datum::Bytes(n) => radix_string_bits_bytes(n),
         Datum::MinNotNull | Datum::MaxValue => {
             return Err(EvalError::Unsupported("range sentinel BIT_COUNT argument"));
         }
@@ -1607,65 +1289,9 @@ pub(crate) fn bit_count(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datu
                 .value as u64
         }
     };
-    Ok(Datum::Int(i64::from(bits.count_ones())))
-}
-
-/// Coerces a raw string/bytes payload through the integer cast used by
-/// `builtinBitCountSig`. The source's cast selects `StrToUint` for a
-/// non-negative value, retaining all 64 bits, while a negative value uses
-/// `StrToInt` and clamps below `i64::MIN` to that endpoint. A positive value
-/// beyond `u64::MAX` likewise clamps to `u64::MAX` after the warning is
-/// handled, so all three source boundaries are represented before the
-/// population count runs.
-fn bit_count_string_bytes(raw: &[u8]) -> u64 {
-    // `strings.TrimSpace` runs before the source's sign check. Preserve its
-    // Unicode behavior for valid strings, and retain a byte-safe ASCII trim
-    // path for malformed Go string payloads.
-    let raw = match std::str::from_utf8(raw) {
-        Ok(s) => s.trim_start().as_bytes(),
-        Err(_) => raw
-            .iter()
-            .position(|byte| !byte.is_ascii_whitespace())
-            .map_or(&[][..], |start| &raw[start..]),
-    };
-    let negative = raw.len() > 1 && raw[0] == b'-';
-    let digits = if negative || raw.first() == Some(&b'+') {
-        &raw[1..]
-    } else {
-        raw
-    };
-    let digits = &digits[..digits
-        .iter()
-        .position(|byte| !byte.is_ascii_digit())
-        .unwrap_or(digits.len())];
-    if digits.is_empty() {
-        return 0;
-    }
-
-    let mut magnitude = 0u64;
-    let mut overflow = false;
-    for &digit in digits {
-        let next = magnitude
-            .checked_mul(10)
-            .and_then(|value| value.checked_add(u64::from(digit - b'0')));
-        let Some(next) = next else {
-            overflow = true;
-            break;
-        };
-        magnitude = next;
-    }
-
-    if negative {
-        if overflow || magnitude > i64::MAX as u64 {
-            i64::MIN as u64
-        } else {
-            (-(magnitude as i64)) as u64
-        }
-    } else if overflow {
-        u64::MAX
-    } else {
-        magnitude
-    }
+    tidb_query_expr::impl_other::bit_count(&(bits as i64))
+        .map(|value| value.map_or(Datum::Null, Datum::Int))
+        .map_err(crate::rpn::query_error)
 }
 
 /// `FORMAT(x, d)`: the two-argument English-locale spelling.  See
@@ -1970,38 +1596,31 @@ fn append_char_integer(bytes: &mut Vec<u8>, mut value: i64) {
 /// own doc for the exact `None`/`Some` shape). `NULL` if either operand
 /// is `NULL`.
 pub(crate) fn trim_value(
-    str: Option<Vec<u8>>,
-    remstr: Option<Vec<u8>>,
+    text: Option<Vec<u8>>,
+    removal: Option<Vec<u8>>,
     direction: tidb_ast::TrimDirection,
     binary: bool,
-) -> Datum {
-    let (Some(mut str), Some(remstr)) = (str, remstr) else {
-        return Datum::Null;
+) -> Result<Datum, EvalError> {
+    let (Some(text), Some(removal)) = (text, removal) else {
+        return Ok(Datum::Null);
     };
-    if remstr.is_empty() {
-        return if binary {
-            Datum::new_bytes_datum(str)
-        } else {
-            Datum::new_string_datum(str)
-        };
-    }
-    use tidb_ast::TrimDirection::*;
-    if matches!(direction, Leading | Both) {
-        while str.starts_with(&remstr) {
-            str.drain(..remstr.len());
-        }
-    }
-    if matches!(direction, Trailing | Both) {
-        while str.ends_with(&remstr) {
-            let new_len = str.len() - remstr.len();
-            str.truncate(new_len);
-        }
-    }
-    if binary {
-        Datum::new_bytes_datum(str)
-    } else {
-        Datum::new_string_datum(str)
-    }
+    let direction = match direction {
+        tidb_ast::TrimDirection::Both => 1,
+        tidb_ast::TrimDirection::Leading => 2,
+        tidb_ast::TrimDirection::Trailing => 3,
+    };
+    sdk_bytes(|writer| {
+        tidb_query_expr::impl_string::trim_3_args(&text, &removal, &direction, writer)
+    })
+    .map(|result| {
+        result.map_or(Datum::Null, |bytes| {
+            if binary {
+                Datum::new_bytes_datum(bytes)
+            } else {
+                Datum::new_string_datum(bytes)
+            }
+        })
+    })
 }
 
 #[cfg(test)]
@@ -2221,9 +1840,13 @@ mod format_tests {
 
 #[cfg(test)]
 mod hex_bit_column_tests {
-    use super::hex;
-    use crate::Datum;
+    use crate::{Datum, EvalError};
     use tidb_datatype::BinaryLiteral;
+
+    fn hex(args: &[Datum]) -> Result<Datum, EvalError> {
+        crate::tests::eval_builtin_func("hex", args, &crate::NoColumns)
+            .expect("valid HEX arity")
+    }
 
     fn bit(bytes: &[u8]) -> Datum {
         Datum::Bit(BinaryLiteral::from(bytes.to_vec()))

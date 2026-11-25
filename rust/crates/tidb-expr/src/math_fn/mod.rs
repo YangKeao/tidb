@@ -15,17 +15,11 @@
 //! Source-family implementation for the currently translated portion of
 //! `pkg/expression/builtin_math.go`.
 //!
-//! ABS, SIGN, CEIL/FLOOR, ROUND/TRUNCATE, CONV, CRC32, and the
-//! transcendental functions, over already-evaluated argument values.
+//! ROUND/TRUNCATE, CONV, and SQL-specific transcendental functions over
+//! already-evaluated argument values.
 
-mod go_exp_log;
-mod go_trig;
-
-use std::cmp::Ordering;
-
-
-use crate::coerce::{coerce_str, coerce_str_bytes};
-use crate::ops::{finite_float, to_f64, to_f64_with_mysql_string};
+use crate::coerce::coerce_str;
+use crate::ops::{to_f64, to_f64_with_mysql_string};
 use crate::{Columns, Datum, EvalError, MysqlRng};
 
 
@@ -185,81 +179,6 @@ fn to_radix_upper(mut value: u64, radix: u32) -> String {
     String::from_utf8(out).unwrap()
 }
 
-/// `CRC32(str)`: the IEEE CRC-32 checksum (polynomial `0xEDB88320`) as an
-/// unsigned integer; `NULL` propagates.
-pub(crate) fn crc32(vals: &[Datum]) -> Result<Datum, EvalError> {
-    // Go's `builtinCRC32Sig.evalInt` hashes the byte sequence returned by
-    // `EvalString`; it does not require the bytes to be valid UTF-8.  This is
-    // observable for a non-legacy connection charset: the rewriter's
-    // `to_binary` wrapper hands CRC32 GBK bytes such as `D2 BB`, which must be
-    // hashed directly rather than rejected by a UTF-8 conversion.
-    let Some(bytes) = coerce_str_bytes(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    Ok(Datum::UInt(u64::from(!crc)))
-}
-
-/// `ABS(x)`. `absFunctionClass.getFunction` picks the signature from the
-/// argument's EVAL TYPE, not from a fixed list of kinds: `ETInt`, `ETDecimal`
-/// and `ETReal` each get their own sig, and EVERY remaining kind — string,
-/// enum, set, bit, temporal, json, `FLOAT` — evaluates as `ETReal` and lands
-/// on `builtinAbsRealSig`. So the last arm is a genuine signature, not a
-/// fallback: `ABS('12abc')` is 12, `ABS(<enum>)` its ordinal, and `ABS(f)`
-/// for a `FLOAT` column is the WIDENED double (captured: `ABS(0.1e0::float)`
-/// is `0.10000000149011612`, not `0.1`), which is why `Float32` produces
-/// `Real` here rather than staying `Float32` the way `CEIL` does.
-pub(crate) fn abs(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        // `builtinAbsIntSig` returns TiDB's BIGINT overflow error for the
-        // one signed value that cannot be represented by its positive
-        // counterpart.  Do not use `wrapping_abs`: that would silently turn
-        // ABS(MININT) back into MININT and diverge from the source contract.
-        // The message quotes the evaluated value (`abs(%d)`), not the source.
-        Datum::Int(value) => value
-            .checked_abs()
-            .map(Datum::Int)
-            .ok_or_else(|| EvalError::DataOutOfRange {
-                value: "BIGINT",
-                expression: format!("abs({value})"),
-            })?,
-        Datum::UInt(value) => Datum::UInt(*value),
-        Datum::Decimal(value) => Datum::Decimal(value.abs()),
-        Datum::Real(value) => Datum::Real(value.abs()),
-        other => Datum::Real(numeric_arg(other, ctx)?.expect("NULL handled above").abs()),
-    })
-}
-
-/// `SIGN(x)`. Like [`abs`], `signFunctionClass` selects per eval type and
-/// every kind outside `ETInt`/`ETDecimal` reaches `builtinSignSig`'s real
-/// form, so the catch-all is the ETReal signature (captured: `SIGN(b'11')`
-/// is 1, `SIGN(<enum>)` is 1).
-pub(crate) fn sign(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        Datum::Int(value) => Datum::Int(value.signum()),
-        Datum::UInt(value) => Datum::Int(i64::from(*value != 0)),
-        Datum::Decimal(value) => Datum::Int(value.signum()),
-        other => Datum::Int(sign_of_real(
-            numeric_arg(other, ctx)?.expect("NULL handled above"),
-        )),
-    })
-}
-
 /// Coerces one function argument to `f64`: `NULL` propagates (the `Ok(None)`
 /// case, for the caller to turn into `Datum::Null`). This is a port of the
 /// `EvalReal` argument coercion used by the signatures in
@@ -282,292 +201,6 @@ pub(crate) fn numeric_arg(v: &Datum, ctx: &dyn Columns) -> Result<Option<f64>, E
             .map(|converted| Some(converted.value))
             .map_err(|_| EvalError::Unsupported("numeric argument conversion")),
     }
-}
-
-/// `NULL` if `x <= 0` (MySQL's own domain check for `LN`/`LOG`/`LOG2`/
-/// `LOG10`), else `Ok(x.ln())`.
-fn checked_ln(x: f64) -> Datum {
-    if x <= 0.0 {
-        Datum::Null
-    } else {
-        Datum::Real(x.ln())
-    }
-}
-
-pub(crate) fn sqrt(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        // MySQL's own domain check: NULL for a negative argument, not an
-        // error (the OPPOSITE convention from POW/EXP's NaN-is-an-error
-        // rule below).
-        Some(x) if x < 0.0 => Datum::Null,
-        Some(x) => Datum::Real(x.sqrt()),
-        None => Datum::Null,
-    })
-}
-
-pub(crate) fn ln(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog1ArgSig`: a non-positive argument warns
-        // `ErrInvalidArgumentForLogarithm` (3020) on its way to NULL.
-        Some(x) if x <= 0.0 => {
-            ctx.append_go_warning(
-                &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                "Invalid argument for logarithm",
-            );
-            Datum::Null
-        }
-        Some(x) => checked_ln(x),
-        None => Datum::Null,
-    })
-}
-
-/// `LOG(x)` (1 argument, natural log — identical to `LN`) or `LOG(base,
-/// x)` (2 arguments, log base `base` of `x`).
-pub(crate) fn log(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    match vals {
-        [_] => ln(vals, ctx),
-        [b, x] => {
-            let (Some(base), Some(x)) = (numeric_arg(b, ctx)?, numeric_arg(x, ctx)?) else {
-                return Ok(Datum::Null);
-            };
-            if base <= 0.0 || base == 1.0 || x <= 0.0 {
-                // go `builtinLog2ArgSig`: the invalid base/argument warns
-                // ErrInvalidArgumentForLogarithm (3020) on its way to NULL.
-                ctx.append_go_warning(
-                    &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                    "Invalid argument for logarithm",
-                );
-                return Ok(Datum::Null);
-            }
-            Ok(Datum::Real(x.log(base)))
-        }
-        _ => Err(EvalError::Unsupported("bad function arity")),
-    }
-}
-
-pub(crate) fn log2(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog2Sig.evalReal`: a non-positive argument warns
-        // ErrInvalidArgumentForLogarithm (3020) on its way to NULL, exactly
-        // like the 1-arg ln/log10 signatures (oracle g-err3: log2('x')
-        // answers NULL with 1292 + 3020).
-        Some(x) if x <= 0.0 => {
-            ctx.append_go_warning(
-                &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                "Invalid argument for logarithm",
-            );
-            Datum::Null
-        }
-        Some(x) => Datum::Real(x.log2()),
-        None => Datum::Null,
-    })
-}
-
-pub(crate) fn log10(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog10Sig.evalReal`: a non-positive argument warns
-        // `ErrInvalidArgumentForLogarithm` (3020) on its way to NULL.
-        Some(x) if x <= 0.0 => {
-            ctx.append_go_warning(
-                &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                "Invalid argument for logarithm",
-            );
-            Datum::Null
-        }
-        Some(x) => Datum::Real(go_exp_log::go_log10(x)),
-        None => Datum::Null,
-    })
-}
-
-pub(crate) fn pow(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [base, exp] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let (Some(b), Some(e)) = (numeric_arg(base, ctx)?, numeric_arg(exp, ctx)?) else {
-        return Ok(Datum::Null);
-    };
-    let power = go_exp_log::go_pow(b, e);
-    if power.is_finite() {
-        return Ok(Datum::Real(power));
-    }
-    // Go `builtinPowSig.evalReal`: the message always names `pow` (also for
-    // POWER) and prints both operands as `FormatFloat(v, 'f', -1, 64)`.
-    Err(EvalError::DataOutOfRange {
-        value: "DOUBLE",
-        expression: format!(
-            "pow({}, {})",
-            tidb_goruntime::go_strconv::format_float(b, b'f', -1, 64),
-            tidb_goruntime::go_strconv::format_float(e, b'f', -1, 64)
-        ),
-    })
-}
-
-pub(crate) fn exp(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    match numeric_arg(v, ctx)? {
-        Some(x) => match go_exp_log::go_exp(x) {
-            value if value.is_finite() => Ok(Datum::Real(value)),
-            // go `builtinExpSig.evalReal` formats its overflow with the
-            // EVALUATED argument, not the source text (oracle g-err3:
-            // exp('2020-01-01') truncates to 2020 and errors `DOUBLE value
-            // is out of range in 'exp(2020)'`).
-            _ => Err(EvalError::DataOutOfRange {
-                value: "DOUBLE",
-                expression: format!("exp({})", tidb_datatype::format_float_g_shortest(x)),
-            }),
-        },
-        None => Ok(Datum::Null),
-    }
-}
-
-/// `PI()`: a niladic function returning the constant.
-pub(crate) fn pi(vals: &[Datum]) -> Result<Datum, EvalError> {
-    match vals {
-        [] => Ok(Datum::Real(std::f64::consts::PI)),
-        _ => Err(EvalError::Unsupported("bad function arity")),
-    }
-}
-
-/// The shape shared by every unary trig/`RADIANS`/`DEGREES` function with
-/// NO explicit MySQL domain check (unlike `ASIN`/`ACOS` below): `NULL` if
-/// the argument is `NULL`, else `f(x)` wrapped through `finite_float`.
-fn unary_finite(
-    vals: &[Datum],
-    ctx: &dyn Columns,
-    f: impl FnOnce(f64) -> f64,
-) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    match numeric_arg(v, ctx)? {
-        Some(x) => finite_float(f(x)),
-        None => Ok(Datum::Null),
-    }
-}
-
-pub(crate) fn sin(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_sin)
-}
-
-pub(crate) fn cos(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_cos)
-}
-
-pub(crate) fn tan(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_tan)
-}
-
-/// Go `builtinCotSig.evalReal`: a zero tangent or a non-finite cotangent is
-/// `ErrOverflow` quoting the EVALUATED argument as `FormatFloat(x, 'f', -1, 64)`.
-pub(crate) fn cot(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(x) = numeric_arg(v, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    let tan = go_trig::go_tan(x);
-    if tan != 0.0 {
-        let cot = 1.0 / tan;
-        if cot.is_finite() {
-            return Ok(Datum::Real(cot));
-        }
-    }
-    Err(EvalError::DataOutOfRange {
-        value: "DOUBLE",
-        expression: format!(
-            "cot({})",
-            tidb_goruntime::go_strconv::format_float(x, b'f', -1, 64)
-        ),
-    })
-}
-
-/// Go `builtinRadiansSig.evalReal`: `x * (math.Pi / 180)`, with no range check.
-pub(crate) fn radians(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => Datum::Real(x * (std::f64::consts::PI / 180.0)),
-        None => Datum::Null,
-    })
-}
-
-/// Go `builtinDegreesSig.evalReal`: `val * 180 / math.Pi` (that association,
-/// which differs from `val * (180 / Pi)` in the last place), with no range
-/// check: `DEGREES(1e308)` is `+Inf`.
-pub(crate) fn degrees(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => Datum::Real(x * 180.0 / std::f64::consts::PI),
-        None => Datum::Null,
-    })
-}
-
-/// `NULL` if `x` isn't in `[-1, 1]` (MySQL's own domain check for
-/// `ASIN`/`ACOS`, mirroring `SQRT`'s), else `Ok(f(x))`.
-fn asin_acos_domain(x: f64, f: impl FnOnce(f64) -> f64) -> Datum {
-    if (-1.0..=1.0).contains(&x) {
-        Datum::Real(f(x))
-    } else {
-        Datum::Null
-    }
-}
-
-pub(crate) fn asin(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => asin_acos_domain(x, f64::asin),
-        None => Datum::Null,
-    })
-}
-
-pub(crate) fn acos(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => asin_acos_domain(x, f64::acos),
-        None => Datum::Null,
-    })
-}
-
-/// `ATAN(x)` (1 argument) or `ATAN(y, x)` (2 arguments, exactly `ATAN2(y,
-/// x)` — same argument order, confirmed via `goeval`, not assumed).
-pub(crate) fn atan(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    match vals {
-        [_] => unary_finite(vals, ctx, go_trig::go_atan),
-        [_, _] => atan2(vals, ctx),
-        _ => Err(EvalError::Unsupported("bad function arity")),
-    }
-}
-
-pub(crate) fn atan2(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [y, x] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let (Some(y), Some(x)) = (numeric_arg(y, ctx)?, numeric_arg(x, ctx)?) else {
-        return Ok(Datum::Null);
-    };
-    finite_float(go_trig::go_atan2(y, x))
 }
 
 /// The value-level half of [`eval_rand`], shared with the chunk-row bridge
@@ -643,80 +276,6 @@ fn rand_string_seed(text: &str, datum: &Datum, cols: &dyn Columns) -> Result<i64
     Ok(seed)
 }
 
-/// Typed scalar evaluation for `CEIL`/`FLOOR`.
-///
-/// `decimal_result` is Go's build-time `retTp == ETDecimal` decision. The
-/// values-only path can still recover a stored column's declared shape from
-/// [`Decimal::declared_shape`], and uses the payload width only for an
-/// unstamped literal.
-pub(crate) fn ceil_floor_with_result_domain(
-    vals: &[Datum],
-    ceiling: bool,
-    decimal_result: Option<bool>,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match v {
-        Datum::Null => Datum::Null,
-        Datum::Int(i) => Datum::Int(*i),
-        Datum::UInt(i) => Datum::UInt(*i),
-        Datum::Decimal(d) => {
-            let r = d.ceil_floor(ceiling);
-            let declared_decimal_result = d
-                .declared_shape()
-                .map(|(flen, decimal)| flen - decimal > 18);
-            let payload_decimal_result = || {
-                d.coefficient_digits()
-                    .len()
-                    .saturating_sub(d.storage_scale() as usize)
-                    .max(1)
-                    > 18
-            };
-            if decimal_result
-                .or(declared_decimal_result)
-                .unwrap_or_else(payload_decimal_result)
-            {
-                Datum::Decimal(r)
-            } else {
-                match r.round_to_i64() {
-                    Some(i) => Datum::Int(i),
-                    None => Datum::Decimal(r),
-                }
-            }
-        }
-        Datum::Real(f) => Datum::Real(if ceiling { f.ceil() } else { f.floor() }),
-        Datum::Float32(f) => Datum::Float32(if ceiling { f.ceil() } else { f.floor() }),
-        // `ceilFunctionClass`/`floorFunctionClass` choose their real
-        // signatures for strings. Preserve the resulting FLOAT type in
-        // addition to the numeric-prefix coercion: CEIL('1.23') is 2.0,
-        // unlike CEIL(Decimal('1.23')) which has a DECIMAL signature.
-        Datum::String(_) | Datum::Bytes(_) => {
-            let f = to_f64_with_mysql_string(v, ctx)?;
-            Datum::Real(if ceiling { f.ceil() } else { f.floor() })
-        }
-        Datum::MinNotNull | Datum::MaxValue => {
-            return Err(EvalError::Unsupported("range sentinel numeric argument"));
-        }
-        other => {
-            let f = other
-                .to_f64()
-                .map_err(|_| EvalError::Unsupported("numeric argument conversion"))?
-                .value;
-            Datum::Real(if ceiling { f.ceil() } else { f.floor() })
-        }
-    })
-}
-
-fn sign_of_real(value: f64) -> i64 {
-    match value.partial_cmp(&0.0) {
-        Some(Ordering::Greater) => 1,
-        Some(Ordering::Less) => -1,
-        _ => 0,
-    }
-}
-
 /// The typed scalar path for decimal `ROUND`/`TRUNCATE`.
 ///
 /// Go's decimal signatures cap the row's requested scale by `b.tp.Decimal`,
@@ -737,23 +296,6 @@ pub(crate) fn round_or_truncate_with_result_decimal(
     if vals.contains(&Datum::Null) {
         return Ok(Datum::Null);
     }
-    // The integer TRUNCATE signatures inspect the scale FieldType before
-    // evaluating its value.  An unsigned scale is therefore always
-    // non-negative, even when its u64 bit pattern would become negative if
-    // narrowed to i64 (for example CAST(18446744073709551615 AS UNSIGNED));
-    // Go returns the integer input unchanged in that case.  Keep this type
-    // boundary explicit instead of letting the value-only scale cast invent
-    // a signed negative precision.
-    let unsigned_integer_scale = !round && matches!(vals.get(1), Some(Datum::UInt(_)));
-    // `builtinRoundIntSig.evalInt` is literally `return b.args[0].EvalInt(...)`:
-    // the ONE-argument integer ROUND is the identity, not a round trip through
-    // `f64`. The two-argument form is a different signature
-    // (`builtinRoundWithFracIntSig`) that really does go through `f64`, so the
-    // distinction is a signature boundary rather than an optimization.
-    // It is observable past `f64`'s 53-bit exact range: CAPTURED from TiDB,
-    // `ROUND(9223372036854775806)` is `9223372036854775806` while
-    // `ROUND(9223372036854775806, 0)` is `9223372036854775807`.
-    let int_round_is_identity = round && vals.len() == 1;
     let (v, d) = match vals {
         [v] if round => (v, 0i64),
         // The scale is Go's `types.ETInt` argument, cast by
@@ -764,41 +306,10 @@ pub(crate) fn round_or_truncate_with_result_decimal(
         _ => return Err(EvalError::Unsupported("bad function arity")),
     };
     Ok(match v {
-        Datum::Int(i) => {
-            if unsigned_integer_scale || int_round_is_identity {
-                Datum::Int(*i)
-            } else {
-                Datum::Int(if round {
-                    go_round_float(*i as f64, d) as i64
-                } else {
-                    go_truncate_int(*i, d)
-                })
-            }
-        }
-        Datum::UInt(i) => {
-            if unsigned_integer_scale || int_round_is_identity {
-                Datum::UInt(*i)
-            } else {
-                Datum::UInt(if round {
-                    // `builtinRoundWithFracIntSig` reads the argument through
-                    // `EvalInt` -- the SAME 64 bits, read as `int64` -- and
-                    // only the result FieldType carries UNSIGNED. Reading the
-                    // u64 as a magnitude instead diverges past `i64::MAX`:
-                    // CAPTURED from TiDB,
-                    // `ROUND(CAST(18446744073709551610 AS UNSIGNED), -1)` is
-                    // `18446744073709551606`, which is `-6` rounded to `-10`
-                    // and re-read unsigned, not `...610` rounded up.
-                    go_round_float(*i as i64 as f64, d) as i64 as u64
-                } else {
-                    // `builtinTruncateUintSig` operates on the original
-                    // uint64, not through `EvalReal`/f64.  The distinction is
-                    // observable at the u64 boundary: converting
-                    // 18446744073709551615 to f64 first loses enough low
-                    // digits to change the exact -10 result.
-                    go_truncate_uint(*i, d)
-                })
-            }
-        }
+        Datum::Int(i) => Datum::Int(go_round_float(*i as f64, d) as i64),
+        // ROUND's two-argument integer signature reads the unsigned bits
+        // as an i64 before rounding, then interprets the result as unsigned.
+        Datum::UInt(i) => Datum::UInt(go_round_float(*i as i64 as f64, d) as i64 as u64),
         Datum::Decimal(dec) => {
             // MySQL clamps a positive scale to DECIMAL's max (30); a
             // negative scale is used as-is (confirmed via `goeval`:
@@ -918,53 +429,10 @@ fn go_truncate_float(f: f64, dec: i64) -> f64 {
     tmp.trunc() / shift
 }
 
-/// `TRUNCATE(int, d)` ported from Go's `builtinTruncateIntSig`: a
-/// non-negative `d` is a no-op (an integer has nothing past the decimal
-/// point to truncate away); a negative `d` zeroes out the low `-d` decimal
-/// digits via truncating integer division — exact integer arithmetic, no
-/// `f64` round-trip (unlike `ROUND`). A `-d` past `i64`'s own range of exact
-/// powers of ten (`> 18`) falls back to `0`, matching what real MySQL's
-/// float-round-tripped `shift` would produce for any in-range value at that
-/// magnitude anyway, without replicating Go's own undefined float-to-int
-/// overflow behavior at that boundary.
-fn go_truncate_int(val: i64, dec: i64) -> i64 {
-    if dec >= 0 {
-        return val;
-    }
-    let shift = dec
-        .checked_neg()
-        .and_then(|n| u32::try_from(n).ok())
-        .and_then(|n| 10i64.checked_pow(n));
-    match shift {
-        Some(shift) => val / shift * shift,
-        None => 0,
-    }
-}
-
-/// `builtinTruncateUintSig`'s exact unsigned integer path.  As with the Go
-/// signature, a non-negative scale is a no-op and a negative scale divides by
-/// an integer power of ten before multiplying it back.  Powers that do not
-/// fit in `u64` produce zero for every in-range input, matching the quotient
-/// boundary without routing through lossy floating-point conversion.
-fn go_truncate_uint(val: u64, dec: i64) -> u64 {
-    if dec >= 0 {
-        return val;
-    }
-    let shift = dec
-        .checked_neg()
-        .and_then(|n| u32::try_from(n).ok())
-        .and_then(|n| 10u64.checked_pow(n));
-    match shift {
-        Some(shift) => val / shift * shift,
-        None => 0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
 
-    use super::{cot, log2, sin, sqrt};
     use crate::{Columns, Datum, EvalError};
 
     struct RandColumns {
@@ -1019,30 +487,27 @@ mod tests {
     #[test]
     fn real_math_signatures_coerce_mysql_string_prefixes() {
         assert_eq!(
-            sqrt(&[Datum::new_string_datum("4".to_owned())], &crate::NoColumns),
+            crate::tests::builtin("sqrt", &[Datum::new_string_datum("4")]),
             Ok(Datum::Real(2.0))
         );
         assert_eq!(
-            sin(
-                &[Datum::new_string_datum("not numeric".to_owned())],
-                &crate::NoColumns
-            ),
+            crate::tests::builtin("sin", &[Datum::new_string_datum("not numeric")]),
             Ok(Datum::Real(0.0))
         );
         assert_eq!(
-            log2(&[Datum::new_string_datum("4abc".to_owned())], &crate::NoColumns),
+            crate::tests::builtin("log2", &[Datum::new_string_datum("4abc")]),
             Ok(Datum::Real(2.0))
         );
         assert_eq!(
-            log2(&[Datum::new_string_datum("abc".to_owned())], &crate::NoColumns),
+            crate::tests::builtin("log2", &[Datum::new_string_datum("abc")]),
             Ok(Datum::Null)
         );
     }
 
     #[test]
-    fn cot_preserves_go_overflow_after_string_coercion() {
+    fn cot_overflows_after_string_coercion() {
         assert_eq!(
-            cot(&[Datum::new_string_datum("tidb".to_owned())], &crate::NoColumns),
+            crate::tests::builtin("cot", &[Datum::new_string_datum("tidb")]),
             Err(EvalError::DataOutOfRange {
                 value: "DOUBLE",
                 expression: "cot(0)".to_owned(),

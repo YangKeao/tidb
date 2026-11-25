@@ -484,61 +484,6 @@ pub(crate) fn builtin_return_type(name: &str, args: &[Expression]) -> Option<Fie
     Some(f.get_ret_tp())
 }
 
-fn datetime_return_type(fsp: i64, not_null: bool) -> Option<FieldType> {
-    if !(0..=6).contains(&fsp) {
-        return None;
-    }
-    let mut result = FieldType::new(FieldTypeCode::Datetime);
-    result.set_decimal(fsp);
-    result.set_flen(19 + if fsp == 0 { 0 } else { fsp + 1 });
-    if not_null {
-        result.add_flags(tidb_datatype::FieldTypeFlags::NOT_NULL);
-    }
-    set_binary_charset(&mut result);
-    Some(result)
-}
-
-fn date_return_type(args: &[Expression], arity: usize) -> Option<FieldType> {
-    if args.len() != arity {
-        return None;
-    }
-    let mut result = FieldType::new(FieldTypeCode::Date);
-    result.set_decimal(0);
-    result.set_flen(10);
-    set_binary_charset(&mut result);
-    Some(result)
-}
-
-fn duration_return_type(fsp: i64, base_flen: i64) -> Option<FieldType> {
-    if !(0..=6).contains(&fsp) {
-        return None;
-    }
-    let mut result = FieldType::new(FieldTypeCode::Duration);
-    result.set_decimal(fsp);
-    result.set_flen(base_flen + if fsp == 0 { 0 } else { fsp + 1 });
-    set_binary_charset(&mut result);
-    Some(result)
-}
-
-pub(crate) fn str_to_date_return_type(args: &[Expression]) -> Option<FieldType> {
-    let [_, format] = args else {
-        return None;
-    };
-    let Expression::Constant(format) = format else {
-        return datetime_return_type(6, false);
-    };
-    if matches!(&format.value, Datum::Null) {
-        return datetime_return_type(0, false);
-    }
-    let format = format.value.sql_string().ok()?;
-    let fsp = if format.contains("%f") { 6 } else { 0 };
-    match tidb_datatype::get_format_type(&format) {
-        (true, false) => duration_return_type(fsp, 10),
-        (false, true) => date_return_type(args, 2),
-        _ => datetime_return_type(fsp, false),
-    }
-}
-
 pub(crate) fn date_arithmetic_return_type(unit: &str, args: &[Expression]) -> Option<FieldType> {
     use tidb_datatype::EvalType;
     let [date, amount] = args else {

@@ -24,7 +24,6 @@
 //! double-quoted JSON string. The constructors take VALUE arguments, so
 //! `JSON_ARRAY('[1]')` is a one-element array holding the string `"[1]"`.
 
-use super::value::json_sql_string;
 use crate::coerce::coerce_str;
 use crate::{Datum, EvalError, JsonError};
 use tidb_datatype::FieldType;
@@ -48,40 +47,6 @@ pub(super) fn json_quote(v: &Datum) -> Result<Datum, EvalError> {
     Ok(Datum::new_string_datum(tidb_datatype::json_marshal_string_to(
         &String::from_utf8_lossy(bytes),
     )))
-}
-
-/// `JSON_UNQUOTE(str)`, port of `builtinJSONUnquoteSig.evalString`: a
-/// double-quoted argument that is not one valid JSON value (`json.Valid`) is
-/// 3140; otherwise `types.UnquoteString` removes the quotes and escapes.
-pub(super) fn json_unquote(v: &Datum) -> Result<Datum, EvalError> {
-    // A JSON argument reaches Go as its `CAST(.. AS CHAR)` text: a JSON
-    // string's content, any other value's canonical text.
-    if let Datum::Json(document) = v {
-        return match document.as_string() {
-            Some(bytes) => match std::str::from_utf8(bytes) {
-                Ok(text) => Ok(Datum::new_string_datum(text)),
-                Err(_) => Err(EvalError::Unsupported("invalid UTF-8 JSON string")),
-            },
-            None => Ok(Datum::new_string_datum(document.to_string())),
-        };
-    }
-    let Some(text) = json_sql_string(v)? else {
-        return if *v == Datum::Null {
-            Ok(Datum::Null)
-        } else {
-            Err(EvalError::Unsupported("JSON_UNQUOTE requires string"))
-        };
-    };
-    if text.len() >= 2
-        && text.starts_with('"')
-        && text.ends_with('"')
-        && !tidb_datatype::json_scanner::valid(text.as_bytes())
-    {
-        return Err(EvalError::Json(JsonError::InvalidText));
-    }
-    tidb_datatype::unquote_string(text)
-        .map(Datum::new_string_datum)
-        .map_err(super::modify::binary_json_error)
 }
 
 /// `JSON_ARRAY(value [, value] ...)`, port of `jsonArrayFunctionClass` and

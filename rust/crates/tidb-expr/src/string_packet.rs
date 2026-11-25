@@ -91,11 +91,8 @@ pub(crate) fn space(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, E
         crate::expression_errors::handle_allowed_packet_overflowed(ctx, "space")?;
         return Ok(Datum::Null);
     }
-    const MAX_BLOB_WIDTH: i64 = 16_777_216; // pkg/parser/mysql.MaxBlobWidth
-    if width > MAX_BLOB_WIDTH {
-        return Ok(Datum::Null);
-    }
-    Ok(Datum::new_string_datum(" ".repeat(width as usize)))
+    crate::string_fn::sdk_bytes(|writer| tidb_query_expr::impl_string::space(&width, writer))
+        .map(|value| value.map_or(Datum::Null, Datum::new_string_datum))
 }
 /// `LPAD(str, len, pad)` / `RPAD(str, len, pad)`: pad (or truncate) `str` to
 /// `len` characters using `pad` on the left/right. Ported from
@@ -312,37 +309,8 @@ pub(crate) fn to_base64(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datu
         crate::expression_errors::handle_allowed_packet_overflowed(ctx, "to_base64")?;
         return Ok(Datum::Null);
     }
-    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
-        out.push(A[(n >> 18 & 63) as usize] as char);
-        out.push(A[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            A[(n >> 6 & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            A[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    if out.len() > 76 {
-        let mut wrapped = String::with_capacity(out.len() + out.len() / 76);
-        for (i, chunk) in out.as_bytes().chunks(76).enumerate() {
-            if i > 0 {
-                wrapped.push('\n');
-            }
-            wrapped.push_str(std::str::from_utf8(chunk).unwrap());
-        }
-        out = wrapped;
-    }
-    Ok(Datum::new_string_datum(out))
+    crate::string_fn::sdk_bytes(|writer| tidb_query_expr::impl_string::to_base64(&bytes, writer))
+        .map(|value| value.map_or(Datum::Null, Datum::new_string_datum))
 }
 #[cfg(test)]
 mod space_tests {

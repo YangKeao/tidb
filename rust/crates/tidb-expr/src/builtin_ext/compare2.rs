@@ -15,7 +15,7 @@
 //! implementation in `pkg/expression/builtin_*.go`, cited per function.
 
 use std::cmp::Ordering;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use tidb_query_expr::impl_miscellaneous as sdk;
 use std::str::FromStr;
 
 use tidb_ast::BinaryOp;
@@ -723,8 +723,8 @@ pub(crate) fn inet_aton(value: &Datum) -> Result<Datum, EvalError> {
     let Some(text) = coerce_str(value)? else {
         return Ok(Datum::Null);
     };
-    match inet_aton_text(&text) {
-        Some(address) => Ok(Datum::UInt(address)),
+    match sdk::inet_aton(text.as_bytes()).map_err(crate::rpn::query_error)? {
+        Some(address) => Ok(Datum::UInt(address as u64)),
         // Go `evalInt`: `errWrongValueForType("string", val, "inet_aton")`
         // (1411); its `vecEvalInt` is `builtin_miscellaneous_vec.rs`'s.
         None => Err(EvalError::WrongValueForType {
@@ -733,73 +733,6 @@ pub(crate) fn inet_aton(value: &Datum) -> Result<Datum, EvalError> {
             function: "inet_aton",
         }),
     }
-}
-
-/// The address, or `None` where Go answers `errWrongValueForType`.
-fn inet_aton_text(text: &str) -> Option<u64> {
-    if text.is_empty() || text.ends_with('.') {
-        return None;
-    }
-    let mut result = 0_u64;
-    let mut byte_result = 0_u64;
-    let mut dots = 0_u8;
-    for byte in text.bytes() {
-        match byte {
-            b'0'..=b'9' => {
-                byte_result = byte_result * 10 + u64::from(byte - b'0');
-                if byte_result > 255 {
-                    return None;
-                }
-            }
-            b'.' => {
-                dots += 1;
-                if dots > 3 {
-                    return None;
-                }
-                result = (result << 8) + byte_result;
-                byte_result = 0;
-            }
-            _ => return None,
-        }
-    }
-    if dots == 1 {
-        result <<= 8;
-    }
-    if dots <= 2 {
-        result <<= 8;
-    }
-    Some((result << 8) + byte_result)
-}
-
-/// `INET_NTOA(expr)`: unsigned 32-bit integer to canonical dotted IPv4.
-/// Port of `builtinInetNtoaSig.evalString` in
-/// `pkg/expression/builtin_miscellaneous.go`. The scalar domain has no
-/// planning-time `ETInt` cast, so only its already-integer values are
-/// representable faithfully; other types remain honestly unsupported.
-pub(crate) fn inet_ntoa(value: &Datum, ctx: &dyn crate::Columns) -> Result<Datum, EvalError> {
-    let value = match value {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::Int(value) => *value as u64,
-        Datum::UInt(value) => *value,
-        // go's ETInt argument casts any non-NULL value first; the cast is a
-        // real StrToInt, so a non-numeric string raises go's 1292 truncation
-        // warning on its way to 0 ("0.0.0.0") — captured on the oracle for
-        // `INET_NTOA('a')` inside a multi-function statement.
-        other => {
-            crate::cast::report_int_truncation(other, ctx)?;
-            crate::cast::to_i64_signed(other) as u64
-        }
-    };
-    let Ok(value) = u32::try_from(value) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::new_string_datum(format!(
-        "{}.{}.{}.{}",
-        value >> 24,
-        (value >> 16) & 0xff,
-        (value >> 8) & 0xff,
-        value & 0xff
-    )))
 }
 
 /// `INET6_ATON(expr)`: parse an IPv4 or IPv6 spelling into the raw network
@@ -837,134 +770,10 @@ pub(crate) fn inet6_aton(value: &Datum) -> Result<Datum, EvalError> {
 /// The address bytes, or `None` where Go's `net.ParseIP` is nil (the empty
 /// string included).
 pub(crate) fn inet6_aton_text(text: &str) -> Option<Datum> {
-    // Keep the source's four-byte result only when the original spelling is
-    // plain IPv4.  `Ipv6Addr::from_str` handles all colon-containing forms,
-    // including embedded IPv4 and mapped IPv4, and its octets are exactly the
-    // bytes Go copies from `ip.To16()`/`ip.To4()`.
-    if !text.contains(':') {
-        if let Ok(ip) = Ipv4Addr::from_str(text) {
-            return Some(Datum::new_bytes_datum(ip.octets()));
-        }
-    }
-    Ipv6Addr::from_str(text)
+    sdk::inet6_aton(Some(text.as_bytes()))
         .ok()
-        .map(|ip| Datum::new_bytes_datum(ip.octets()))
-}
-
-/// `INET6_NTOA(expr)`: render a four- or sixteen-byte binary string as the
-/// canonical textual IPv4/IPv6 spelling.  Go first asks `net.IP.String()` to
-/// format the bytes and then prefixes a sixteen-byte mapped IPv4 result with
-/// `::ffff:`; Rust's `Ipv6Addr` formatter emits that same canonical mapped
-/// spelling.  Any other byte length is SQL `NULL`, matching the source's
-/// `net.ParseIP(ip) == nil` branch.  Port of
-/// `builtinInet6NtoaSig.evalString` in `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn inet6_ntoa(value: &Datum) -> Result<Datum, EvalError> {
-    let bytes = match value {
-        Datum::Null => return Ok(Datum::Null),
-        Datum::String(value) => value.bytes().to_vec(),
-        Datum::Bytes(value) => value.clone(),
-        // The Go function's argument is ETString, so numeric constants are
-        // first rendered by EvalString and then interpreted as raw bytes.
-        _ => coerce_str(value)?.expect("non-NULL scalar").into_bytes(),
-    };
-    match bytes.len() {
-        4 => Ok(Datum::new_string_datum(
-            Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
-        )),
-        16 => Ok(Datum::new_string_datum(
-            Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap()).to_string(),
-        )),
-        _ => Ok(Datum::Null),
-    }
-}
-
-/// `IS_IPV4(expr)`: strict four-component decimal IPv4 predicate. Port of
-/// `builtinIsIPv4Sig.evalInt` and its `isIPv4` helper in
-/// `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn is_ipv4_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(is_ipv4(&value))))
-}
-
-fn is_ipv4(value: &str) -> bool {
-    let mut dots = 0;
-    let mut component = 0_u16;
-    let mut previous_dot = true;
-    for byte in value.bytes() {
-        match byte {
-            b'0'..=b'9' => {
-                // Only whether the component exceeds 255 matters. Saturate
-                // rather than letting an arbitrarily long invalid component
-                // overflow Rust's debug arithmetic before we reject it.
-                component = component
-                    .saturating_mul(10)
-                    .saturating_add(u16::from(byte - b'0'));
-                previous_dot = false;
-            }
-            b'.' => {
-                dots += 1;
-                if dots > 3 || component > 255 || previous_dot {
-                    return false;
-                }
-                component = 0;
-                previous_dot = true;
-            }
-            _ => return false,
-        }
-    }
-    dots == 3 && component <= 255 && !previous_dot
-}
-
-/// `IS_IPV4_MAPPED(expr)`: true only for a sixteen-byte binary payload whose
-/// first twelve bytes are the IPv4-mapped prefix (`::ffff:`).  The Go
-/// signature receives an ETString and tests the raw bytes directly; keeping
-/// this helper byte-oriented is important because arbitrary SQL strings are
-/// allowed to contain invalid UTF-8.  Port of
-/// `builtinIsIPv4MappedSig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn is_ipv4_mapped_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    let mapped = bytes.len() == 16 && bytes[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff];
-    Ok(Datum::Int(i64::from(mapped)))
-}
-
-/// `IS_IPV4_COMPAT(expr)`: true only for a sixteen-byte binary payload whose
-/// first twelve bytes are all zero (`::/96`, excluding the mapped `::ffff:`
-/// prefix by construction).  Port of `builtinIsIPv4CompatSig.evalInt` in
-/// `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn is_ipv4_compat_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(bytes) = eval_string_bytes(value)? else {
-        return Ok(Datum::Null);
-    };
-    let compat = bytes.len() == 16 && bytes[..12] == [0; 12];
-    Ok(Datum::Int(i64::from(compat)))
-}
-
-/// Evaluates the ETString argument used by the Go IPv4 binary predicates
-/// without decoding or replacing arbitrary bytes.  Numeric constants still
-/// follow the normal EvalString coercion used by the source signature.
-fn eval_string_bytes(value: &Datum) -> Result<Option<Vec<u8>>, EvalError> {
-    match value {
-        Datum::Null => Ok(None),
-        Datum::String(value) => Ok(Some(value.bytes().to_vec())),
-        Datum::Bytes(value) => Ok(Some(value.clone())),
-        _ => Ok(coerce_str(value)?.map(|text| text.into_bytes())),
-    }
-}
-
-/// `IS_IPV6(expr)`: true for a parseable IPv6 address, including an IPv4
-/// mapped spelling, but false for a pure IPv4 address. Port of
-/// `builtinIsIPv6Sig.evalInt` in `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn is_ipv6_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(
-        Ipv6Addr::from_str(&value).is_ok() && !is_ipv4(&value),
-    )))
+        .flatten()
+        .map(Datum::new_bytes_datum)
 }
 
 #[cfg(test)]
@@ -1237,6 +1046,7 @@ mod tests {
             ("192.168.1.1", 1),
             ("255.255.255.255", 1),
             ("10.t.255.255", 0),
+            ("010.1.2.3", 0),
             ("10.1.2.3.4", 0),
             ("2001:250:207:0:0:eef2::1", 0),
             ("::ffff:1.2.3.4", 0),
@@ -1248,7 +1058,7 @@ mod tests {
         ] {
             assert_eq!(call("IS_IPV4", &[s(ip)]), Datum::Int(want));
         }
-        assert_eq!(call("IS_IPV4", &[Datum::Null]), Datum::Null);
+        assert_eq!(call("IS_IPV4", &[Datum::Null]), Datum::Int(0));
         for (ip, want) in [
             ("2001:250:207:0:0:eef2::1", 1),
             ("2001:0250:0207:0001:0000:0000:0000:ff02", 1),
@@ -1258,7 +1068,7 @@ mod tests {
         ] {
             assert_eq!(call("IS_IPV6", &[s(ip)]), Datum::Int(want));
         }
-        assert_eq!(call("IS_IPV6", &[Datum::Null]), Datum::Null);
+        assert_eq!(call("IS_IPV6", &[Datum::Null]), Datum::Int(0));
     }
 
     /// `TestIsIPv4Mapped` and `TestIsIPv4Compat` operate on raw ETString
@@ -1288,7 +1098,7 @@ mod tests {
                 Datum::Int(want)
             );
         }
-        assert_eq!(call("IS_IPV4_MAPPED", &[Datum::Null]), Datum::Null);
+        assert_eq!(call("IS_IPV4_MAPPED", &[Datum::Null]), Datum::Int(0));
 
         let compat_cases = [
             (vec![], 0),
@@ -1308,7 +1118,7 @@ mod tests {
                 Datum::Int(want)
             );
         }
-        assert_eq!(call("IS_IPV4_COMPAT", &[Datum::Null]), Datum::Null);
+        assert_eq!(call("IS_IPV4_COMPAT", &[Datum::Null]), Datum::Int(0));
     }
 
     /// Go `TestIsNullFunc`; `builtin*IsNullSig.evalInt` in `builtin_op.go`

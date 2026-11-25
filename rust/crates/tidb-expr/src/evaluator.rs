@@ -16,7 +16,9 @@
 //! expressions before transferring any direct input-column owners.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
+
+use crate::rpn::PreparedExpression;
 
 use tidb_chunk::chunk::Chunk;
 use tidb_chunk::chunk_util::ColumnSwapHelper;
@@ -67,6 +69,121 @@ pub fn vectorizable(expressions: &[Expression]) -> bool {
     !((nextval > 0 && (lastval > 0 || setval > 0)) || nextval > 1)
 }
 
+/// Filter definitions and their execution-local programs. One instance
+/// evaluates the same predicates across every batch of a Selection or
+/// residual filter and starts again when that execution reopens.
+pub struct FilterExecution {
+    predicates: Arc<[Expression]>,
+    prepared: RefCell<Vec<Option<Option<PreparedExpression>>>>,
+}
+
+impl FilterExecution {
+    /// Bind the predicates of one filter execution.
+    #[must_use]
+    pub fn new(predicates: Vec<Expression>) -> Self {
+        Self {
+            prepared: RefCell::new(empty_program_slots(predicates.len())),
+            predicates: predicates.into(),
+        }
+    }
+
+    /// Open another execution over the same immutable predicates.
+    #[must_use]
+    pub fn start_execution(&self) -> Self {
+        Self {
+            predicates: Arc::clone(&self.predicates),
+            prepared: RefCell::new(empty_program_slots(self.predicates.len())),
+        }
+    }
+
+    /// Restore fresh execution state when reopening the same filter.
+    pub fn reset(&mut self) {
+        for slot in self.prepared.get_mut() {
+            *slot = None;
+        }
+    }
+
+    /// Borrow the bound predicates.
+    #[must_use]
+    pub fn predicates(&self) -> &[Expression] {
+        &self.predicates
+    }
+
+    /// Match Go's filtered physical mask and intersect the chunk's selection.
+    pub fn filter<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        let (mut selected, nulls) = self.filter_physical(
+            ctx,
+            vec_enabled,
+            input,
+            selected,
+            nulls,
+            !vec_enabled || !vectorizable(&self.predicates),
+        )?;
+        apply_input_selection(input, &mut selected);
+        Ok((selected, nulls))
+    }
+
+    /// Match Go's three-valued physical mask before applying any selection.
+    pub fn vec_eval_bool<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        self.filter_physical(ctx, vec_enabled, input, selected, nulls, false)
+    }
+
+    fn filter_physical<C: Columns>(
+        &self,
+        ctx: &C,
+        vec_enabled: bool,
+        input: &Chunk,
+        selected: Vec<bool>,
+        nulls: Vec<bool>,
+        row_based: bool,
+    ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
+        filter_physical_rows(
+            ctx,
+            vec_enabled,
+            &self.predicates,
+            &mut self.prepared.borrow_mut(),
+            input,
+            selected,
+            nulls,
+            row_based,
+        )
+    }
+
+    /// Evaluate a single predicate when the caller must process rows in order.
+    pub fn predicate_on_row(
+        &self,
+        ctx: &dyn Columns,
+        predicate: usize,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        let expression = &self.predicates[predicate];
+        evaluate_prepared_row(
+            expression,
+            &mut self.prepared.borrow_mut()[predicate],
+            ctx,
+            row,
+        )
+    }
+}
+
+fn empty_program_slots(count: usize) -> Vec<Option<Option<PreparedExpression>>> {
+    (0..count).map(|_| None).collect()
+}
+
 /// Go `expression.VecEvalBool`/`VectorizedFilterConsiderNull`.
 ///
 /// The returned mask is indexed by the physical rows of `input`, just like
@@ -91,6 +208,7 @@ pub fn vectorized_filter_consider_null<C: Columns>(
         ctx,
         vec_enabled,
         filters,
+        &mut empty_program_slots(filters.len()),
         input,
         selected,
         nulls,
@@ -111,13 +229,16 @@ pub fn vec_eval_bool<C: Columns>(
     selected: Vec<bool>,
     nulls: Vec<bool>,
 ) -> Result<(Vec<bool>, Vec<bool>), EvalError> {
-    filter_physical_rows(ctx, vec_enabled, filters, input, selected, nulls, false)
+    filter_physical_rows(
+        ctx, vec_enabled, filters, &mut empty_program_slots(filters.len()), input, selected, nulls, false,
+    )
 }
 
 fn filter_physical_rows<C: Columns>(
     ctx: &C,
     vec_enabled: bool,
     filters: &[Expression],
+    programs: &mut [Option<Option<PreparedExpression>>],
     input: &Chunk,
     mut selected: Vec<bool>,
     mut nulls: Vec<bool>,
@@ -140,7 +261,7 @@ fn filter_physical_rows<C: Columns>(
     // filter is not vectorizable. Keep the same filter-major order and
     // three-valued truth handling in that branch.
     if row_based {
-        for filter in filters {
+        for (filter, slot) in filters.iter().zip(programs) {
             let int_type = filter
                 .static_type()
                 .is_some_and(|ty| ty.eval_type() == tidb_datatype::EvalType::Int);
@@ -148,7 +269,7 @@ fn filter_physical_rows<C: Columns>(
                 if !selected[row_index] {
                     continue;
                 }
-                let value = filter.eval(ctx, input.physical_row(row_index))?;
+                let value = evaluate_prepared_row(filter, slot, ctx, input.physical_row(row_index))?;
                 let truth = crate::truthy_of(&value)?;
                 if truth.is_none() && int_type {
                     nulls[row_index] = true;
@@ -175,13 +296,36 @@ fn filter_physical_rows<C: Columns>(
             },
         )
     };
-    for filter in filters {
+    for (filter, slot) in filters.iter().zip(programs) {
         if sel.is_empty() {
             break;
         }
         let column_wise = vec_enabled && crate::chunk_executor::vectorized(filter);
         is_zero.clear();
-        if column_wise {
+        let prepared = if matches!(filter, Expression::ScalarFunction(_)) {
+            prepare_expression(slot, filter, ctx, input.num_cols())?
+        } else {
+            None
+        };
+        if let Some(prepared) = prepared {
+            let emit = |value| {
+                let value = filter.apply_enum_set_as_int(value);
+                let value = if column_wise {
+                    crate::scalar_function::can_implicit_eval_int(
+                        filter, &value, tidb_datatype::EvalType::Real,
+                    ).unwrap_or(value)
+                } else {
+                    value
+                };
+                is_zero.push(typed_truth_code(&value, filter)?);
+                Ok(())
+            };
+            if column_wise {
+                prepared.evaluate_rows(ctx, input, &sel, true, emit)?;
+            } else {
+                prepared.evaluate_scalar_selection(ctx, input, &sel, emit)?;
+            }
+        } else if column_wise {
             let mut selected_input = input.clone();
             selected_input.set_sel(Some(sel.clone()));
             let field = filter.static_type().expect("typed filter");
@@ -310,6 +454,7 @@ pub struct EvaluatorProgram {
     calculated_output_indexes: Vec<usize>,
     calculated: Vec<Expression>,
     vectorizable: bool,
+    parallelizable: bool,
     column_mapping: HashMap<usize, Vec<usize>>,
 }
 
@@ -342,16 +487,23 @@ impl EvaluatorProgram {
         }
 
         let vectorizable = vectorizable(&calculated);
+        let parallelizable = vectorizable && !calculated.iter().any(has_mutable_effects);
         Self {
             calculated_output_indexes,
             calculated,
             vectorizable,
+            parallelizable,
             column_mapping,
         }
     }
 }
 
 impl EvaluatorProgram {
+    /// Whether projection batches may run in independent worker executions.
+    pub fn parallelizable(&self) -> bool {
+        self.parallelizable
+    }
+
     /// Go `defaultEvaluator.RequiredOptionalEvalProps`: every optional
     /// evaluation property the calculated (non-column) expressions require.
     #[must_use]
@@ -439,11 +591,67 @@ fn builtin_required_optional_eval_props(name: &str) -> OptionalEvalPropKeySet {
     }
 }
 
+fn prepare_expression<'a>(
+    slot: &'a mut Option<Option<PreparedExpression>>,
+    expr: &Expression,
+    ctx: &dyn Columns,
+    columns: usize,
+) -> Result<Option<&'a mut PreparedExpression>, EvalError> {
+    if slot.is_none() {
+        *slot = Some(PreparedExpression::new(expr, ctx, columns)?);
+    }
+    Ok(slot.as_mut().and_then(Option::as_mut))
+}
+
+fn evaluate_prepared_row(
+    expr: &Expression,
+    slot: &mut Option<Option<PreparedExpression>>,
+    ctx: &dyn Columns,
+    row: tidb_chunk::row::Row<'_>,
+) -> Result<Datum, EvalError> {
+    if matches!(expr, Expression::ScalarFunction(_)) {
+        if let Some(prepared) = prepare_expression(slot, expr, ctx, row.len())? {
+            return prepared
+                .evaluate_row(ctx, row)
+                .map(|value| expr.apply_enum_set_as_int(value));
+        }
+    }
+    expr.eval(ctx, row)
+}
+
+/// Execution state for repeatedly evaluating one bound expression on rows.
+pub struct RowProgram {
+    expression: Expression,
+    prepared: Option<Option<PreparedExpression>>,
+}
+
+impl RowProgram {
+    /// Bind an expression to this execution.
+    pub fn new(expression: Expression) -> Self {
+        Self { expression, prepared: None }
+    }
+
+    /// Return the bound expression's declaration.
+    pub fn expression(&self) -> &Expression {
+        &self.expression
+    }
+
+    /// Evaluate the bound expression on the current row.
+    pub fn evaluate(
+        &mut self,
+        ctx: &dyn Columns,
+        row: tidb_chunk::row::Row<'_>,
+    ) -> Result<Datum, EvalError> {
+        evaluate_prepared_row(&self.expression, &mut self.prepared, ctx, row)
+    }
+}
+
 /// Go `EvaluatorSuite`: executes a projection program with an execution-local
 /// column ownership cache. Calculated expressions finish before owner moves,
 /// so an evaluation error cannot leave the input chunk half-consumed.
 pub struct EvaluatorSuite {
     program: Arc<EvaluatorProgram>,
+    prepared: RefCell<Vec<Option<Option<PreparedExpression>>>>,
     column_swap_helper: Option<ColumnSwapHelper>,
 }
 
@@ -464,8 +672,16 @@ impl EvaluatorSuite {
         let column_swap_helper = (!program.column_mapping.is_empty())
             .then(|| ColumnSwapHelper::from_mapping(program.column_mapping.clone()));
         Self {
+            prepared: RefCell::new(program.calculated.iter().map(|_| None).collect()),
             program,
             column_swap_helper,
+        }
+    }
+
+    /// Reopen the projection with fresh expression execution state.
+    pub fn reset(&mut self) {
+        for slot in self.prepared.get_mut() {
+            *slot = None;
         }
     }
 
@@ -495,40 +711,58 @@ impl EvaluatorSuite {
     ) -> Result<(), EvaluatorError> {
         let rows = input.num_rows();
         let program = &self.program;
+        let mut prepared = self.prepared.borrow_mut();
         if program.vectorizable {
-            let vec_enabled = ctx.enable_vectorized_expression();
-            for (output_index, expression) in program
+            for (position, (output_index, expression)) in program
                 .calculated_output_indexes
                 .iter()
                 .zip(&program.calculated)
+                .enumerate()
             {
-                // Go `defaultEvaluator.run`: each expression independently
-                // selects its signature's typed vector kernel or row evaluation.
-                let vectorized = vec_enabled && crate::chunk_executor::vectorized(expression);
-                if vectorized
+                if rows != 0 && ctx.enable_vectorized_expression() {
+                    if let Some(source) = crate::rpn::batch_source(expression, ctx)? {
+                        if let Some(shared) = prepare_expression(
+                            &mut prepared[position],
+                            source,
+                            ctx,
+                            input.num_cols(),
+                        )? {
+                            shared.append_projection(ctx, input, output, *output_index)?;
+                            continue;
+                        }
+                    }
+                }
+                if ctx.enable_vectorized_expression()
                     && crate::scalar_function::vec_eval::eval_one(
-                        expression,
-                        ctx,
-                        input,
-                        output,
-                        *output_index,
+                        expression, ctx, input, output, *output_index,
                     )?
                 {
                     continue;
                 }
                 for row_index in 0..rows {
-                    let value = expression.eval(ctx, input.get_row(row_index))?;
+                    let value = evaluate_prepared_row(
+                        expression,
+                        &mut prepared[position],
+                        ctx,
+                        input.get_row(row_index),
+                    )?;
                     output.append_datum(*output_index, &value);
                 }
             }
         } else {
             for row_index in 0..rows {
-                for (output_index, expression) in program
+                for (position, (output_index, expression)) in program
                     .calculated_output_indexes
                     .iter()
                     .zip(&program.calculated)
+                    .enumerate()
                 {
-                    let value = expression.eval(ctx, input.get_row(row_index))?;
+                    let value = evaluate_prepared_row(
+                        expression,
+                        &mut prepared[position],
+                        ctx,
+                        input.get_row(row_index),
+                    )?;
                     output.append_datum(*output_index, &value);
                 }
             }
@@ -545,6 +779,36 @@ impl EvaluatorSuite {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn row_programs_keep_their_bound_arithmetic_across_rows() {
+        use tidb_datatype::{FieldType, FieldTypeCode};
+
+        let field = FieldType::new(FieldTypeCode::LongLong);
+        let mut input = Chunk::new_chunk_with_capacity(std::slice::from_ref(&field), 2);
+        input.append_int64(0, 7);
+        input.append_int64(0, 3);
+        let mut column = crate::column::Column::new(1, field.clone());
+        column.index = 0;
+        let bind = |name| {
+            let expression = crate::new_function::new_function_base(
+                &crate::NoColumns,
+                name,
+                field.clone(),
+                vec![
+                    Expression::Column(column.clone()),
+                    Expression::Constant(crate::constant::Constant::new(Datum::Int(1), field.clone())),
+                ],
+            ).unwrap();
+            RowProgram::new(expression)
+        };
+        let mut add = bind("plus");
+        let mut subtract = bind("minus");
+        for (row, value) in [7, 3].into_iter().enumerate() {
+            assert_eq!(add.evaluate(&crate::NoColumns, input.get_row(row)).unwrap(), Datum::Int(value + 1));
+            assert_eq!(subtract.evaluate(&crate::NoColumns, input.get_row(row)).unwrap(), Datum::Int(value - 1));
+        }
+    }
+
     use std::cell::Cell;
 
     use super::*;
@@ -1407,7 +1671,7 @@ mod tests {
     /// evaluator appends, for nested `+`/`-`/`*` over decimal and integer
     /// columns and constants, NULLs included.
     #[test]
-    fn projection_decimal_arithmetic_matches_the_row_evaluator_cell_for_cell() {
+    fn projection_decimal_arithmetic_preserves_values_and_result_scale() {
         let mut price_type = FieldType::new(FieldTypeCode::NewDecimal);
         price_type.set_flen(15);
         price_type.set_decimal(2);
@@ -1482,119 +1746,52 @@ mod tests {
                 &result_type,
             ),
         ];
-        let ctx = NoColumns;
+        let check = |expression: &Expression, input: &Chunk| {
+            let field = expression.static_type().unwrap();
+            let rows = input.num_rows();
+            let mut output = Chunk::new_chunk_with_capacity(std::slice::from_ref(field), rows);
+            assert!(crate::scalar_function::vec_eval::eval_one(
+                expression, &NoColumns, input, &mut output, 0,
+            ).unwrap());
+            assert_eq!(output.num_rows(), rows);
+            for row in 0..rows {
+                let expected = expression.eval(&NoColumns, input.get_row(row)).unwrap();
+                let actual = output.get_row(row);
+                assert_eq!(actual.get_datum(0, field), expected);
+                if let Datum::Decimal(value) = expected {
+                    assert_eq!(actual.get_my_decimal(0).result_frac(), value.to_my_decimal().unwrap().result_frac());
+                }
+            }
+        };
         for expression in &expressions {
-            let Expression::ScalarFunction(function) = expression else {
-                unreachable!()
-            };
-            let mut expected = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &expression.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
-            // A selection on the input is honored.
+            check(expression, &input);
             input.set_sel(Some(vec![1, 3, 6]));
-            let mut expected = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                3,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &expression.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                3,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
+            check(expression, &input);
             input.set_sel(None);
         }
-        // Go `builtinCastIntAsDecimalSig.vecEvalDecimal`: an integer column
-        // cast to a DECIMAL wide enough for every integer is the padded
-        // integer, at scale 0 and at a positive scale.
-        let mut wide = FieldType::new(FieldTypeCode::NewDecimal);
-        wide.set_flen(20);
-        wide.set_decimal(0);
-        let mut wide_scaled = FieldType::new(FieldTypeCode::NewDecimal);
-        wide_scaled.set_flen(22);
-        wide_scaled.set_decimal(2);
-        for target in [&wide, &wide_scaled] {
+
+        // Exercise wide and narrowing integer-to-DECIMAL casts inside the
+        // production batch evaluator, alongside the separate integer domain.
+        for (flen, scale) in [(20, 0), (22, 2), (9, 0)] {
+            let mut target = FieldType::new(FieldTypeCode::NewDecimal);
+            target.set_flen(flen);
+            target.set_decimal(scale);
             let product = typed(
                 "mul",
                 vec![
                     decimal_column(0, &price_type),
                     Expression::ScalarFunction(crate::builtin_cast::cast_function_for_test(
                         input_column(2),
-                        target.clone(),
+                        target,
                     )),
                 ],
                 &result_type,
             );
-            let Expression::ScalarFunction(function) = &product else {
-                unreachable!()
-            };
-            let mut expected = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            for row in 0..input.num_rows() {
-                expected.append_datum(0, &product.eval(&ctx, input.get_row(row)).unwrap());
-            }
-            let mut output = Chunk::new_chunk_with_capacity(
-                std::slice::from_ref(function.get_static_type().unwrap()),
-                8,
-            );
-            assert!(function
-                .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-                .unwrap());
-            assert_eq!(output, expected);
+            check(&product, &input);
         }
-        // A target that can clamp (`ProduceDecWithSpecifiedTp`) keeps the
-        // row path.
-        let mut narrow = FieldType::new(FieldTypeCode::NewDecimal);
-        narrow.set_flen(9);
-        narrow.set_decimal(0);
-        let Expression::ScalarFunction(clamping) = typed(
-            "mul",
-            vec![
-                decimal_column(0, &price_type),
-                Expression::ScalarFunction(crate::builtin_cast::cast_function_for_test(
-                    input_column(2),
-                    narrow.clone(),
-                )),
-            ],
-            &result_type,
-        ) else {
-            unreachable!()
-        };
-        let mut output = Chunk::new_chunk_with_capacity(&[result_type.clone()], 8);
-        assert!(!clamping
-            .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-            .unwrap());
-        assert_eq!(output.num_rows(), 0);
-        // Two integers stay integer arithmetic: not covered.
-        let Expression::ScalarFunction(ints) =
-            typed("plus", vec![input_column(2), int_const(1)], &result_type)
-        else {
-            unreachable!()
-        };
-        let mut output = Chunk::new_chunk_with_capacity(&[result_type.clone()], 8);
-        assert!(!ints
-            .vec_eval_decimal_arithmetic(&input, &mut output, 0)
-            .unwrap());
-        assert_eq!(output.num_rows(), 0);
+        let integers = typed("plus", vec![input_column(2), int_const(1)], &result_type);
+        assert_eq!(integers.static_type().unwrap().eval_type(), tidb_datatype::EvalType::Int);
+        check(&integers, &input);
     }
 
     /// Go `builtinGTDecimalSig.vecEvalInt`: a decimal column against an
@@ -1755,5 +1952,45 @@ mod tests {
             // exposes NULL only for equality rewritten from IN.
             assert_eq!(row_nulls, expected_nulls, "{name} row evaluator");
         }
+    }
+}
+
+
+fn scalar_requires_order(function: &crate::scalar_function::ScalarFunction) -> bool {
+    // Seeded streams belong to the program. Preserve the established
+    // per-mode demand order when NULLIF shares a seeded occurrence.
+    function.requires_row_order()
+        && (function.func_name.lowercase() != "rand" || function.args.is_empty())
+}
+
+pub(crate) fn has_scalar_effects(expression: &Expression) -> bool {
+    contains_effect(expression, &scalar_requires_order)
+}
+
+pub(crate) fn scalar_has_effects(function: &crate::scalar_function::ScalarFunction) -> bool {
+    scalar_requires_order(function) || function.args.iter().any(has_scalar_effects)
+}
+
+pub(crate) fn has_mutable_effects(expression: &Expression) -> bool {
+    contains_effect(expression, &|function| function.requires_row_order())
+}
+
+fn contains_effect(
+    expression: &Expression,
+    matches: &impl Fn(&crate::scalar_function::ScalarFunction) -> bool,
+) -> bool {
+    match expression {
+        Expression::ScalarFunction(function) => {
+            matches(function)
+                || function
+                    .args
+                    .iter()
+                    .any(|arg| contains_effect(arg, matches))
+        }
+        Expression::Constant(constant) => constant
+            .deferred_expr
+            .as_deref()
+            .is_some_and(|arg| contains_effect(arg, matches)),
+        Expression::Column(_) | Expression::CorrelatedColumn(_) | Expression::ScalarSubQuery(_) => false,
     }
 }

@@ -2,103 +2,16 @@
 
 //! Go `baseDateArithmetical.vecGetInterval*` / `vecGetDate*` and ADD/SUB kernels.
 
-use super::{vec_eval, ScalarFunction};
 use crate::{Columns, EvalError};
-use tidb_chunk::{chunk::Chunk, column::Column, row::Row};
-use tidb_datatype::{Datum, EvalType, Time, TimeType};
-
-/// Go `builtinAddSubDate{AsString,DatetimeAny,DurationAny}Sig.vecEval*`.
-pub(super) fn eval(
-    function: &ScalarFunction,
-    subtract: bool,
-    ctx: &dyn Columns,
-    input: &Chunk,
-    result: &mut Column,
-) -> Result<(), EvalError> {
-    let unit = {
-        super::super::eval_numeric_row(&function.args[2], ctx, Row::empty(), EvalType::String)?
-    };
-    let target = function
-        .get_static_type()
-        .expect("date arithmetic type")
-        .eval_type();
-    let Some(unit) = crate::arg_eval_type::eval_string(&unit)? else {
-        crate::chunk_executor::allocate(target, input.num_rows(), result);
-        for row in 0..input.num_rows() {
-            vec_eval::put(result, row, target, &Datum::Null)?;
-        }
-        return Ok(());
-    };
-    let unit = tidb_goruntime::GoString::from_bytes(unit).to_utf8_lossy_go();
-    let amount_field = function.args[1].static_type().expect("interval type");
-    let amounts = vec_eval::argument(&function.args[1], amount_field.eval_type(), ctx, input)?;
-    let mut intervals = Column::default();
-    intervals.reserve_string(input.num_rows());
-    for row in 0..input.num_rows() {
-        let mut amount =
-            vec_eval::value(&amounts, row, amount_field.eval_type(), Some(amount_field));
-        // Go's decimal single-unit amendment explicitly reads EvalDecimal again.
-        if amount_field.eval_type() == EvalType::Decimal
-            && !amount.is_null()
-            && !crate::time_fn::calendar::is_composite_unit(&unit)
-            && !unit.eq_ignore_ascii_case("SECOND")
-        {
-            amount = super::super::eval_numeric_row(
-                &function.args[1],
-                ctx,
-                input.get_row(row),
-                EvalType::Decimal,
-            )?;
-        }
-        let interval = interval(&unit, amount, amount_field.decimal(), ctx)?;
-        vec_eval::put(&mut intervals, row, EvalType::String, &interval)?;
-    }
-    let date_field = function.args[0].static_type().expect("date input type");
-    let domain = date_field.eval_type();
-    let reuse = matches!(domain, EvalType::Datetime | EvalType::Timestamp)
-        || (domain == EvalType::Duration && target == EvalType::Duration);
-    let mut dates = Column::default();
-    if reuse {
-        // Go `vecGetDateFromDatetime` / the duration kernel: `result.Resize
-        // {Time,GoDuration}(n, false)` before the date column is copied in.
-        crate::chunk_executor::allocate(domain, input.num_rows(), result);
-    }
-    vec_eval::eval_into(
-        &function.args[0],
-        domain,
-        ctx,
-        input,
-        if reuse { &mut *result } else { &mut dates },
-    )?;
-    if !reuse {
-        crate::chunk_executor::allocate(target, input.num_rows(), result);
-    }
-    // Date parsing is a complete column step before any date arithmetic.
-    let mut parsed = Vec::with_capacity(input.num_rows());
-    for row in 0..input.num_rows() {
-        let value = vec_eval::value(
-            if reuse { &*result } else { &dates },
-            row,
-            domain,
-            Some(date_field),
-        );
-        parsed.push(date(&unit, value, ctx)?);
-    }
-    for (row, date) in parsed.into_iter().enumerate() {
-        let amount = vec_eval::value(&intervals, row, EvalType::String, None);
-        let value = operation(function, &unit, subtract, date, amount, ctx)?;
-        vec_eval::put(result, row, target, &value)?;
-    }
-    Ok(())
-}
+use tidb_datatype::{Datum, EvalType, FieldType, TimeType};
 
 /// Go `intervalReformatString`, `intervalDecimalToString`, and numeric formatting.
-fn interval(unit: &str, value: Datum, decimal: i64, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+pub(crate) fn interval(unit: &str, value: Datum, decimal: i64, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     let text = match value {
         Datum::Null => return Ok(Datum::Null),
         Datum::Int(value) => value.to_string(),
         Datum::UInt(value) => value.to_string(),
-        Datum::Real(value) => tidb_goruntime::go_strconv::format_float(
+        Datum::Real(value) | Datum::Float32(value) => tidb_goruntime::go_strconv::format_float(
             value,
             b'f',
             i32::try_from(decimal).unwrap_or(-1),
@@ -163,7 +76,7 @@ fn interval(unit: &str, value: Datum, decimal: i64, ctx: &dyn Columns) -> Result
 }
 
 /// Go `vecGetDateFrom{Int,Real,Decimal,String,Datetime}` before `timeOp`.
-fn date(unit: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
+pub(crate) fn date(unit: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError> {
     if value.is_null() || matches!(value, Datum::Duration(_)) {
         return Ok(value);
     }
@@ -177,7 +90,7 @@ fn date(unit: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError>
         Datum::UInt(number) => {
             tidb_datatype::parse_time_from_int64(*number as i64, zero, invalid, &zone)
         }
-        Datum::Real(number) => {
+        Datum::Real(number) | Datum::Float32(number) => {
             tidb_datatype::parse_time_from_float64(*number, zero, invalid, &zone)
         }
         Datum::Decimal(number) => {
@@ -244,8 +157,9 @@ fn date(unit: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum, EvalError>
 }
 
 /// Go `baseDateArithmetical.add`, `sub`, `addDate`, and `opDuration`.
-fn operation(
-    function: &ScalarFunction,
+pub(crate) fn operation(
+    field: &FieldType,
+    date_field: &FieldType,
     unit: &str,
     subtract: bool,
     mut date: Datum,
@@ -255,7 +169,6 @@ fn operation(
     if date.is_null() || amount.is_null() {
         return Ok(Datum::Null);
     }
-    let field = function.get_static_type().expect("date result type");
     let interval = amount
         .sql_string()
         .map_err(|_| EvalError::Unsupported("interval string"))?;
@@ -284,7 +197,7 @@ fn operation(
         ));
     }
     if matches!(date, Datum::Duration(_)) {
-        date = crate::cast::cast_arg_as_datetime(&date, function.args[0].static_type(), ctx)?;
+        date = crate::cast::cast_arg_as_datetime(&date, Some(date_field), ctx)?;
     }
     let Datum::Time(mut time) = date else {
         return Ok(Datum::Null);
