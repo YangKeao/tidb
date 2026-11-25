@@ -73,7 +73,6 @@ pub mod value_expr;
 pub use value_expr::ValueExprDatum;
 pub mod constant_fold;
 pub mod constant_propagation;
-mod go_flate;
 pub use constant_fold::{
     derive_constant_null_flag, fold_constant_in_mode,
     fold_constant_in_mode_preserving_warning_casts, ConstantFoldMode,

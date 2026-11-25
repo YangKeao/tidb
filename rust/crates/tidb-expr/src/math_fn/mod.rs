@@ -18,12 +18,8 @@
 //! ROUND/TRUNCATE, CONV, and SQL-specific transcendental functions over
 //! already-evaluated argument values.
 
-mod go_exp_log;
-mod go_trig;
-
-
-use crate::coerce::{coerce_str, coerce_str_bytes};
-use crate::ops::{finite_float, to_f64, to_f64_with_mysql_string};
+use crate::coerce::coerce_str;
+use crate::ops::{to_f64, to_f64_with_mysql_string};
 use crate::{Columns, Datum, EvalError, MysqlRng};
 
 
@@ -205,184 +201,6 @@ pub(crate) fn numeric_arg(v: &Datum, ctx: &dyn Columns) -> Result<Option<f64>, E
             .map(|converted| Some(converted.value))
             .map_err(|_| EvalError::Unsupported("numeric argument conversion")),
     }
-}
-
-/// `NULL` if `x <= 0` (MySQL's own domain check for `LN`/`LOG`/`LOG2`/
-/// `LOG10`), else `Ok(x.ln())`.
-fn checked_ln(x: f64) -> Datum {
-    if x <= 0.0 {
-        Datum::Null
-    } else {
-        Datum::Real(x.ln())
-    }
-}
-
-pub(crate) fn ln(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog1ArgSig`: a non-positive argument warns
-        // `ErrInvalidArgumentForLogarithm` (3020) on its way to NULL.
-        Some(x) if x <= 0.0 => {
-            ctx.append_go_warning(
-                &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                "Invalid argument for logarithm",
-            );
-            Datum::Null
-        }
-        Some(x) => checked_ln(x),
-        None => Datum::Null,
-    })
-}
-
-pub(crate) fn log10(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        // go `builtinLog10Sig.evalReal`: a non-positive argument warns
-        // `ErrInvalidArgumentForLogarithm` (3020) on its way to NULL.
-        Some(x) if x <= 0.0 => {
-            ctx.append_go_warning(
-                &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                "Invalid argument for logarithm",
-            );
-            Datum::Null
-        }
-        Some(x) => Datum::Real(go_exp_log::go_log10(x)),
-        None => Datum::Null,
-    })
-}
-
-pub(crate) fn pow(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [base, exp] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let (Some(b), Some(e)) = (numeric_arg(base, ctx)?, numeric_arg(exp, ctx)?) else {
-        return Ok(Datum::Null);
-    };
-    let power = go_exp_log::go_pow(b, e);
-    if power.is_finite() {
-        return Ok(Datum::Real(power));
-    }
-    // Go `builtinPowSig.evalReal`: the message always names `pow` (also for
-    // POWER) and prints both operands as `FormatFloat(v, 'f', -1, 64)`.
-    Err(EvalError::DataOutOfRange {
-        value: "DOUBLE",
-        expression: format!(
-            "pow({}, {})",
-            tidb_goruntime::go_strconv::format_float(b, b'f', -1, 64),
-            tidb_goruntime::go_strconv::format_float(e, b'f', -1, 64)
-        ),
-    })
-}
-
-pub(crate) fn exp(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    match numeric_arg(v, ctx)? {
-        Some(x) => match go_exp_log::go_exp(x) {
-            value if value.is_finite() => Ok(Datum::Real(value)),
-            // go `builtinExpSig.evalReal` formats its overflow with the
-            // EVALUATED argument, not the source text (oracle g-err3:
-            // exp('2020-01-01') truncates to 2020 and errors `DOUBLE value
-            // is out of range in 'exp(2020)'`).
-            _ => Err(EvalError::DataOutOfRange {
-                value: "DOUBLE",
-                expression: format!("exp({})", tidb_datatype::format_float_g_shortest(x)),
-            }),
-        },
-        None => Ok(Datum::Null),
-    }
-}
-
-/// The shape shared by every unary trig function with
-/// NO explicit MySQL domain check (unlike `ASIN`/`ACOS` below): `NULL` if
-/// the argument is `NULL`, else `f(x)` wrapped through `finite_float`.
-fn unary_finite(
-    vals: &[Datum],
-    ctx: &dyn Columns,
-    f: impl FnOnce(f64) -> f64,
-) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    match numeric_arg(v, ctx)? {
-        Some(x) => finite_float(f(x)),
-        None => Ok(Datum::Null),
-    }
-}
-
-pub(crate) fn sin(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_sin)
-}
-
-pub(crate) fn cos(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_cos)
-}
-
-pub(crate) fn tan(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    unary_finite(vals, ctx, go_trig::go_tan)
-}
-
-/// Go `builtinCotSig.evalReal`: a zero tangent or a non-finite cotangent is
-/// `ErrOverflow` quoting the EVALUATED argument as `FormatFloat(x, 'f', -1, 64)`.
-pub(crate) fn cot(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(x) = numeric_arg(v, ctx)? else {
-        return Ok(Datum::Null);
-    };
-    let tan = go_trig::go_tan(x);
-    if tan != 0.0 {
-        let cot = 1.0 / tan;
-        if cot.is_finite() {
-            return Ok(Datum::Real(cot));
-        }
-    }
-    Err(EvalError::DataOutOfRange {
-        value: "DOUBLE",
-        expression: format!(
-            "cot({})",
-            tidb_goruntime::go_strconv::format_float(x, b'f', -1, 64)
-        ),
-    })
-}
-
-/// Go `builtinDegreesSig.evalReal`: `val * 180 / math.Pi` (that association,
-/// which differs from `val * (180 / Pi)` in the last place), with no range
-/// check: `DEGREES(1e308)` is `+Inf`.
-pub(crate) fn degrees(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [v] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(match numeric_arg(v, ctx)? {
-        Some(x) => Datum::Real(x * 180.0 / std::f64::consts::PI),
-        None => Datum::Null,
-    })
-}
-
-/// `ATAN(x)` (1 argument) or `ATAN(y, x)` (2 arguments, exactly `ATAN2(y,
-/// x)` — same argument order, confirmed via `goeval`, not assumed).
-pub(crate) fn atan(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    match vals {
-        [_] => unary_finite(vals, ctx, go_trig::go_atan),
-        [_, _] => atan2(vals, ctx),
-        _ => Err(EvalError::Unsupported("bad function arity")),
-    }
-}
-
-pub(crate) fn atan2(vals: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    let [y, x] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let (Some(y), Some(x)) = (numeric_arg(y, ctx)?, numeric_arg(x, ctx)?) else {
-        return Ok(Datum::Null);
-    };
-    finite_float(go_trig::go_atan2(y, x))
 }
 
 /// The value-level half of [`eval_rand`], shared with the chunk-row bridge
@@ -705,7 +523,6 @@ fn go_truncate_uint(val: u64, dec: i64) -> u64 {
 mod tests {
     use std::cell::Cell;
 
-    use super::{cot, sin};
     use crate::{Columns, Datum, EvalError};
 
     struct RandColumns {
@@ -764,10 +581,7 @@ mod tests {
             Ok(Datum::Real(2.0))
         );
         assert_eq!(
-            sin(
-                &[Datum::new_string_datum("not numeric".to_owned())],
-                &crate::NoColumns
-            ),
+            crate::tests::builtin("sin", &[Datum::new_string_datum("not numeric")]),
             Ok(Datum::Real(0.0))
         );
         assert_eq!(
@@ -781,9 +595,9 @@ mod tests {
     }
 
     #[test]
-    fn cot_preserves_go_overflow_after_string_coercion() {
+    fn cot_overflows_after_string_coercion() {
         assert_eq!(
-            cot(&[Datum::new_string_datum("tidb".to_owned())], &crate::NoColumns),
+            crate::tests::builtin("cot", &[Datum::new_string_datum("tidb")]),
             Err(EvalError::DataOutOfRange {
                 value: "DOUBLE",
                 expression: "cot(0)".to_owned(),

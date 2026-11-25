@@ -2184,7 +2184,7 @@ fn local_typed_kernel(function: &ScalarFunction) -> bool {
 // The baseline callbacks for these signatures omit TiDB's per-statement
 // packet policy or use different character/NULL conventions.
 fn needs_sql_value_kernel(name: &str) -> bool {
-    binding::uses_native_real_math(name) || matches!(
+    matches!(
         name,
         "aes_encrypt"
             | "aes_decrypt"
@@ -2201,7 +2201,6 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "ord"
             | "repeat"
             | "password"
-            | "compress"
             | "uncompress"
             | "extract"
             | "like"

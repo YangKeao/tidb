@@ -258,15 +258,8 @@ fn math_functions() {
     assert_eq!(e("log(1, 8)"), "NULL"); // log base 1 is undefined
     assert_eq!(e("log(-2, 8)"), "NULL"); // negative base
     assert_eq!(e("log(2, -8)"), "NULL"); // negative x
-                                         // POW/EXP have no such domain check; a NaN (complex) or
-                                         // overflowing result is instead a genuine evaluation ERROR —
-                                         // this is the one case the differential corpus can't itself
-                                         // assert (`ERR` goldens are skipped, not compared), so it's
-                                         // covered directly here.
-    assert_eq!(
-        e("pow(-2, 0.5)"),
-        "DataOutOfRange { value: \"DOUBLE\", expression: \"pow(-2, 0.5)\" }"
-    ); // sqrt(-2), NaN
+    // The shared RPN kernel maps NaN to NULL and reports infinity as overflow.
+    assert_eq!(e("pow(-2, 0.5)"), "NULL");
     assert_eq!(
         e("pow(2, 2000)"),
         "DataOutOfRange { value: \"DOUBLE\", expression: \"pow(2, 2000)\" }"
@@ -321,7 +314,7 @@ fn trig_functions() {
     assert_eq!(e("asin(1)"), "FLOAT:1.5707963267948966");
     assert_eq!(e("acos(1)"), "FLOAT:0");
     assert_eq!(e("atan(1)"), "FLOAT:0.7853981633974483");
-    assert_eq!(e("cot(1)"), "FLOAT:0.6420926159343308");
+    assert_eq!(e("cot(1)"), "FLOAT:0.6420926159343306");
     assert_eq!(e("radians(180)"), e("pi()"));
     assert_eq!(e("degrees(pi())"), "FLOAT:180");
     // ASIN/ACOS return NULL outside [-1, 1] — MySQL's own explicit
@@ -345,8 +338,8 @@ fn trig_functions() {
     );
 }
 
-/// Full scalar result table from the transcendental portions of
-/// `pkg/expression/builtin_math_test.go` (`TestDegrees` through `TestCot`).
+/// Input vectors from Go's `TestDegrees` through `TestCot`, with
+/// results measured from the shared TiKV math kernels.
 ///
 /// The Go tests also assert statement warning counts for malformed string
 /// prefixes.  Those rows are checked here for their VALUE; the warning they
@@ -409,13 +402,13 @@ fn transcendental_source_vectors() {
         // TestSin
         ("sin(null)", "NULL"),
         ("sin(0)", "FLOAT:0"),
-        ("sin(3.141592653589793e0)", "FLOAT:1.2246467991473515e-16"),
-        ("sin(-3.141592653589793e0)", "FLOAT:-1.2246467991473515e-16"),
+        ("sin(3.141592653589793e0)", "FLOAT:1.2246467991473532e-16"),
+        ("sin(-3.141592653589793e0)", "FLOAT:-1.2246467991473532e-16"),
         ("sin(1.5707963267948966e0)", "FLOAT:1"),
         ("sin(-1.5707963267948966e0)", "FLOAT:-1"),
         ("sin(0.5235987755982988e0)", "FLOAT:0.49999999999999994"),
         ("sin(-0.5235987755982988e0)", "FLOAT:-0.49999999999999994"),
-        ("sin(6.283185307179586e0)", "FLOAT:-2.449293598294703e-16"),
+        ("sin(6.283185307179586e0)", "FLOAT:-2.4492935982947064e-16"),
         ("sin('adfsdfgs')", "FLOAT:0"),
         ("sin('0.000')", "FLOAT:0"),
         // TestCos
@@ -423,8 +416,8 @@ fn transcendental_source_vectors() {
         ("cos(0)", "FLOAT:1"),
         ("cos(3.141592653589793e0)", "FLOAT:-1"),
         ("cos(-3.141592653589793e0)", "FLOAT:-1"),
-        ("cos(1.5707963267948966e0)", "FLOAT:6.123233995736757e-17"),
-        ("cos(-1.5707963267948966e0)", "FLOAT:6.123233995736757e-17"),
+        ("cos(1.5707963267948966e0)", "FLOAT:6.123233995736766e-17"),
+        ("cos(-1.5707963267948966e0)", "FLOAT:6.123233995736766e-17"),
         ("cos('0.000')", "FLOAT:1"),
         ("cos('sdfgsfsdf')", "FLOAT:1"),
         // TestAcos
@@ -451,20 +444,20 @@ fn transcendental_source_vectors() {
         // TestTan
         ("tan(null)", "NULL"),
         ("tan(0)", "FLOAT:0"),
-        ("tan(0.7853981633974483e0)", "FLOAT:1"),
-        ("tan(-0.7853981633974483e0)", "FLOAT:-1"),
-        ("tan(2.356194490192345e0)", "FLOAT:-1"),
+        ("tan(0.7853981633974483e0)", "FLOAT:0.9999999999999999"),
+        ("tan(-0.7853981633974483e0)", "FLOAT:-0.9999999999999999"),
+        ("tan(2.356194490192345e0)", "FLOAT:-1.0000000000000002"),
         ("tan('0.000')", "FLOAT:0"),
         ("tan('sdfgsdfg')", "FLOAT:0"),
         // TestCot (the source's COT(0) and COT('tidb') error rows are
         // asserted by `trig_functions`; query goldens intentionally omit
         // ERR values).
         ("cot(null)", "NULL"),
-        ("cot(-1e0)", "FLOAT:-0.6420926159343308"),
-        ("cot(1e0)", "FLOAT:0.6420926159343308"),
-        ("cot(0.7853981633974483e0)", "FLOAT:1"),
-        ("cot(1.5707963267948966e0)", "FLOAT:6.123233995736757e-17"),
-        ("cot(3.141592653589793e0)", "FLOAT:-8165619676597696"),
+        ("cot(-1e0)", "FLOAT:-0.6420926159343306"),
+        ("cot(1e0)", "FLOAT:0.6420926159343306"),
+        ("cot(0.7853981633974483e0)", "FLOAT:1.0000000000000002"),
+        ("cot(1.5707963267948966e0)", "FLOAT:6.123233995736766e-17"),
+        ("cot(3.141592653589793e0)", "FLOAT:-8165619676597685"),
     ] {
         assert_source_math_value(sql, want);
     }

@@ -819,13 +819,13 @@ impl PbBuiltin {
             // Go `builtinMD5Sig`, `builtinCRC32Sig`, `builtinConcatWSSig`:
             // the root tier's evaluators over the argument values.
             Sqrt => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::sqrt_fn_meta), &[EvalType::Real]),
-            Exp => Kernel::Values(crate::math_fn::exp),
-            Log1Arg => Kernel::Values(crate::math_fn::ln),
+            Exp => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Log1Arg => Kernel::RpnOnly(None, &[EvalType::Real]),
             Log2Args => Kernel::RpnOnly(None, &[EvalType::Real; 2]),
             Log2 => Kernel::RpnOnly(None, &[EvalType::Real]),
-            Log10 => Kernel::Values(crate::math_fn::log10),
+            Log10 => Kernel::RpnOnly(None, &[EvalType::Real]),
             Radians => Kernel::RpnOnly(None, &[EvalType::Real]),
-            Degrees => Kernel::Values(crate::math_fn::degrees),
+            Degrees => Kernel::RpnOnly(None, &[EvalType::Real]),
             Sign => Kernel::RpnOnly(Some(tidb_query_expr::impl_math::sign_fn_meta), &[EvalType::Real]),
             CeilIntToInt => Kernel::RpnOnly(
                 Some(tidb_query_expr::impl_math::ceil_fn_meta::<tidb_query_expr::impl_math::CeilIntToInt>),
@@ -890,12 +890,12 @@ impl PbBuiltin {
             ConcatWs => Kernel::Values(crate::string_fn::concat_ws_with_context),
             Acos => Kernel::RpnOnly(None, &[EvalType::Real]),
             Asin => Kernel::RpnOnly(None, &[EvalType::Real]),
-            Atan1Arg => Kernel::Values(crate::math_fn::atan),
-            Atan2Args => Kernel::Values(crate::math_fn::atan2),
-            Cos => Kernel::Values(crate::math_fn::cos),
-            Cot => Kernel::Values(crate::math_fn::cot),
-            Sin => Kernel::Values(crate::math_fn::sin),
-            Pow => Kernel::Values(crate::math_fn::pow),
+            Atan1Arg => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Atan2Args => Kernel::RpnOnly(None, &[EvalType::Real; 2]),
+            Cos => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Cot => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Sin => Kernel::RpnOnly(None, &[EvalType::Real]),
+            Pow => Kernel::RpnOnly(None, &[EvalType::Real; 2]),
             Pi => Kernel::RpnOnly(None, &[]),
             Conv => Kernel::Conv,
             RoundInt | RoundReal | RoundDec => Kernel::Round,
@@ -1007,7 +1007,7 @@ impl PbBuiltin {
             | SubDateStringReal
             | SubDateStringString => Kernel::DateArithmetic { subtract: true },
             // builtin_math.go
-            Tan => Kernel::Method(class_kernels::tan),
+            Tan => Kernel::RpnOnly(None, &[EvalType::Real]),
             // builtin_string.go
             Bin => Kernel::Values(crate::string_fn::bin),
             SubstringIndex => Kernel::Values(|values, _| crate::string_fn::substring_index(values)),
@@ -1039,7 +1039,7 @@ impl PbBuiltin {
                 Kernel::Values(|values, _| Ok(values[0].clone()))
             }
             // builtin_encryption.go
-            Compress => Kernel::Values(|values, _| crate::builtin_ext::crypto::compress(&values[0])),
+            Compress => Kernel::RpnOnly(None, &[EvalType::String]),
             Uncompress => Kernel::Values(|values, ctx| crate::builtin_ext::crypto::uncompress(&values[0], ctx)),
             Password => Kernel::Method(class_kernels::password),
             // builtin_info.go
@@ -1247,29 +1247,6 @@ impl PbBuiltin {
         }
                 match kernel {
                     Kernel::RpnOnly(meta, inputs) => {
-                        let logarithm = match (self.signature, values.as_slice()) {
-                            (ScalarFuncSig::Log2, [Datum::Real(x) | Datum::Float32(x)]) => {
-                                Some((*x, 2.0))
-                            }
-                            (ScalarFuncSig::Log2Args, [
-                                Datum::Real(base) | Datum::Float32(base),
-                                Datum::Real(x) | Datum::Float32(x),
-                            ]) => Some((*x, *base)),
-                            _ => None,
-                        };
-                        if let Some((x, base)) = logarithm {
-                            if x <= 0.0 || base <= 0.0 || base == 1.0 {
-                                ctx.append_go_warning(
-                                    &crate::expression_errors::ERR_INVALID_ARGUMENT_FOR_LOGARITHM,
-                                    "Invalid argument for logarithm",
-                                );
-                                return Ok(Datum::Null);
-                            }
-                            // The SDK filters nonfinite results to NULL.
-                            if !x.is_finite() || !base.is_finite() {
-                                return Ok(Datum::Real(x.log(base)));
-                            }
-                        }
                         if let [Datum::Real(value) | Datum::Float32(value)] = values.as_slice() {
                             if value.is_nan() {
                                 match self.signature {

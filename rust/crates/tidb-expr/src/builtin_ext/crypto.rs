@@ -23,7 +23,7 @@
 //!
 //! `COMPRESS`, `UNCOMPRESS`, and `UNCOMPRESSED_LENGTH` implement TiDB's binary
 //! framing: a 4-byte little-endian original-length prefix followed by a zlib
-//! stream. COMPRESS preserves the bytes emitted by Go's encoder. UNCOMPRESS
+//! stream. COMPRESS uses TiKV's encoder. UNCOMPRESS
 //! requires a complete checksummed stream, caps inflation at the framed
 //! length, and appends TiDB's corruption warnings to the statement context.
 //!
@@ -51,44 +51,11 @@ pub(crate) fn dispatch(
         ("VALIDATE_PASSWORD_STRENGTH", 1) => Some(validate_password_strength(&vals[0], ctx)),
         ("ENCODE", 2) => Some(sql_encode(&vals[0], &vals[1])),
         ("DECODE", 2) => Some(sql_decode(&vals[0], &vals[1])),
-        ("COMPRESS", 1) => Some(compress(&vals[0])),
+        ("COMPRESS", 1) => crate::tests::eval_builtin_func(name, vals, ctx),
         ("UNCOMPRESS", 1) => Some(uncompress(&vals[0], ctx)),
         ("UNCOMPRESSED_LENGTH", 1) => crate::tests::eval_builtin_func(name, vals, ctx),
         _ => None,
     }
-}
-
-/// `COMPRESS(payload)`. Empty input remains empty. Non-empty input is framed
-/// as the original byte length followed by a zlib stream. A trailing dot keeps
-/// a stream ending in ASCII space from being changed by SQL trailing-space
-/// handling, matching TiDB's public format.
-pub(crate) fn compress(arg: &Datum) -> Result<Datum, EvalError> {
-    let Some(payload) = sql_string_bytes(arg)? else {
-        return Ok(Datum::Null);
-    };
-    if payload.is_empty() {
-        return Ok(Datum::new_string_datum(Vec::new()));
-    }
-
-    // go's `deflate()` helper: zlib.NewWriter (level 6) + Write + Close —
-    // transcribed bit-exactly in [`go_flate`]; a generic rust zlib backend
-    // makes different encoder choices and diverges on the wire.
-    let compressed = crate::go_flate::go_zlib_deflate(&payload);
-    Ok(Datum::new_string_datum(frame_compressed(
-        payload.len() as u32,
-        compressed,
-    )))
-}
-
-fn frame_compressed(original_len: u32, compressed: Vec<u8>) -> Vec<u8> {
-    let append_suffix = compressed.last() == Some(&b' ');
-    let mut framed = Vec::with_capacity(4 + compressed.len() + usize::from(append_suffix));
-    framed.extend_from_slice(&original_len.to_le_bytes());
-    framed.extend_from_slice(&compressed);
-    if append_suffix {
-        framed.push(b'.');
-    }
-    framed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -636,7 +603,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    use super::{dispatch, frame_compressed, inflate};
+    use super::{dispatch, inflate};
     use crate::{Columns, Datum, Decimal, EvalError};
 
     fn call(name: &str, vals: &[Datum]) -> Datum {
@@ -896,12 +863,9 @@ mod tests {
             bytes_of(&large)
         );
 
-        // The suffix rule is part of the SQL framing, independent of which
-        // inputs a particular zlib implementation happens to encode that way.
-        assert_eq!(
-            frame_compressed(1, vec![0x78, b' ']),
-            vec![1, 0, 0, 0, 0x78, b' ', b'.']
-        );
+        // Adler-32 for one 0x1f byte ends with 0x20.
+        let trailing_space = call("COMPRESS", &[Datum::new_bytes_datum([0x1f])]);
+        assert!(bytes_of(&trailing_space).ends_with(b" ."));
 
         // compress('hello') = LE(5) + zlib stream.
         let hello = hex_bytes("05000000789CCA48CDC9C907040000FFFF062C0215");
@@ -915,7 +879,7 @@ mod tests {
         );
 
         // Empty input -> empty string / 0.
-        assert_eq!(call("COMPRESS", &[s("")]), s(""));
+        assert_eq!(call("COMPRESS", &[s("")]), Datum::new_bytes_datum([]));
         assert_eq!(call("UNCOMPRESS", &[s("")]), s(""));
         assert_eq!(call("UNCOMPRESSED_LENGTH", &[s("")]), Datum::Int(0));
 

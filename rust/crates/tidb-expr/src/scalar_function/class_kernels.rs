@@ -658,11 +658,6 @@ pub(crate) fn not_yet_ported(_: &[Datum], _: &dyn Columns) -> Result<Datum, Eval
     Err(EvalError::Unsupported("this scalar function is not yet ported"))
 }
 
-/// Go `builtinTanSig`.
-pub(crate) fn tan(function: &ScalarFunction, values: &[Datum], ctx: &dyn Columns) -> Result<Datum, EvalError> {
-    crate::math_fn::tan(values, ctx).map_err(|error| super::math_overflow_error(function, error, ctx))
-}
-
 /// Go `builtinQuoteSig`: a NULL argument is the string `NULL`.
 pub(crate) fn quote(_: &ScalarFunction, values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     crate::string_fn::quote(values)

@@ -105,27 +105,6 @@ pub(super) fn preserves_direct_row_contract(function: &ScalarFunction) -> bool {
     )
 }
 
-// The Go builtins retain exact results from their floating-point routines.
-pub(super) fn uses_native_real_math(name: &str) -> bool {
-    matches!(
-        name,
-        "sin"
-            | "cos"
-            | "tan"
-            | "atan"
-            | "atan2"
-            | "degrees"
-            | "exp"
-            | "cot"
-            | "ln"
-            | "log"
-            | "log2"
-            | "log10"
-            | "pow"
-            | "power"
-    )
-}
-
 pub(super) fn function_signature(function: &ScalarFunction) -> Option<ScalarFuncSig> {
     let signature = function.pb_code();
     if signature != ScalarFuncSig::Unspecified {
