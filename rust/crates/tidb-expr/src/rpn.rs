@@ -943,7 +943,13 @@ pub(crate) fn evaluate_required_kernel(
     let mut input_types = Vec::with_capacity(inputs.len());
     for ((argument, &domain), value) in function.args.iter().zip(inputs).zip(&values) {
         let actual = argument.static_type().ok_or(EvalError::Unsupported("RPN kernel input type"))?;
-        let carrier = if actual.eval_type() != domain
+        // SQL numeric signatures read an ENUM or SET's unsigned index.
+        // The SDK selects its carrier from the physical type code.
+        let carrier = if domain == NativeEvalType::Int
+            && matches!(actual.code(), FieldTypeCode::Enum | FieldTypeCode::Set)
+        {
+            FieldType::new(FieldTypeCode::LongLong).with_added_flags(FieldTypeFlags::UNSIGNED)
+        } else if actual.eval_type() != domain
             && (value.is_null() || matches!(
                 (domain, value),
                 (NativeEvalType::Int, Datum::Int(_) | Datum::UInt(_))
