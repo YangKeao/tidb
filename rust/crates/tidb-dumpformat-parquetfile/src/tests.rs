@@ -96,3 +96,41 @@ fn parquet_matches_go_capture() {
     }
     assert_eq!(checked, 18);
 }
+
+#[test]
+fn reads_gzip_compressed_parquet() {
+    use parquet::{
+        basic::{Compression, GzipLevel},
+        data_type::Int64Type,
+        file::{properties::WriterProperties, writer::SerializedFileWriter},
+        schema::parser::parse_message_type,
+    };
+
+    let schema = Arc::new(parse_message_type("message sample { REQUIRED INT64 Value; }").unwrap());
+    let properties = Arc::new(
+        WriterProperties::builder()
+            .set_compression(Compression::GZIP(GzipLevel::default()))
+            .build(),
+    );
+    let mut writer = SerializedFileWriter::new(Vec::new(), schema, properties).unwrap();
+    let mut row_group = writer.next_row_group().unwrap();
+    let mut column = row_group.next_column().unwrap().unwrap();
+    column.typed::<Int64Type>().write_batch(&[7, -3], None, None).unwrap();
+    column.close().unwrap();
+    let metadata = row_group.close().unwrap();
+    assert!(matches!(metadata.column(0).compression(), Compression::GZIP(_)));
+    let data = writer.into_inner().unwrap();
+
+    let ctx = Context::background();
+    let store = Arc::new(tidb_objstore::MemStorage::new());
+    store.write_file(&ctx, "gzip.parquet", &data).unwrap();
+    assert_eq!(read_row_count(&ctx, store.clone(), "gzip.parquet").unwrap(), 2);
+    let mut parser =
+        Parser::new(&ctx, store, "gzip.parquet", data.len() as i64, FileMeta { loc: None }).unwrap();
+    assert_eq!(parser.columns(), ["value"]);
+    for value in [7, -3] {
+        assert!(parser.read_row().unwrap());
+        assert_eq!(parser.last_row().row, [Datum::Int(value)]);
+    }
+    assert!(!parser.read_row().unwrap());
+}

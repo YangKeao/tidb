@@ -13,6 +13,14 @@ autotests = false
 workspace = true
 
 [dependencies]
+base64.workspace = true
+tidb_query_common = { git = "https://github.com/tikv/tikv.git", rev = "548812e1ef57aef077a2062a9cc356640a6347f5" }
+tidb_query_expr = { git = "https://github.com/tikv/tikv.git", rev = "548812e1ef57aef077a2062a9cc356640a6347f5" }
+tipb = { git = "https://github.com/pingcap/tipb.git" }
+scoped-tls-hkt = "0.1.5"
+protobuf = "=2.8.0"
+tidb_query_datatype = { git = "https://github.com/tikv/tikv.git", rev = "548812e1ef57aef077a2062a9cc356640a6347f5" }
+tikv_util = { git = "https://github.com/tikv/tikv.git", rev = "548812e1ef57aef077a2062a9cc356640a6347f5" }
 tidb-failpoint = { path = "../tidb-failpoint" }
 tikv-client.workspace = true
 tidb-dbterror = { path = "../tidb-dbterror" }
@@ -65,7 +73,6 @@ getrandom = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 regex = { workspace = true }
-md-5 = { workspace = true }
 sha1 = { workspace = true }
 sha2 = { workspace = true }
 serde_json = { workspace = true }

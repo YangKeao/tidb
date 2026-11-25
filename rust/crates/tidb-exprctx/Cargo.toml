@@ -11,6 +11,7 @@ description = "TiDB expression/exprctx: Go pkg/expression/exprctx (Rust rewrite)
 workspace = true
 
 [dependencies]
+tidb-mathutil = { path = "../tidb-mathutil" }
 tidb-ast = { path = "../tidb-ast" }
 tidb-context = { path = "../tidb-context" }
 tidb-datatype = { path = "../tidb-datatype" }
