@@ -34,6 +34,7 @@ use engine::{resolve_rpn_function, scalar_func_sig, RpnArgTypes};
 
 mod binding;
 mod rows;
+pub(crate) mod sql_host;
 pub(crate) use rows::to_query_time;
 
 use tidb_exprctx::context::StatementSeededRandom;

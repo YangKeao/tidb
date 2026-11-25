@@ -1256,7 +1256,7 @@ impl ScalarFunction {
                 return Ok(value);
             }
         }
-        self.eval_native(ctx, row)
+        crate::rpn::sql_host::evaluate(self, ctx, row)
     }
 
     fn can_use_shared_row_program(&self) -> bool {
@@ -1312,7 +1312,7 @@ impl ScalarFunction {
         matches!(first.literal_value(), Some(Datum::BinaryLiteral(_))).then_some(first)
     }
 
-    pub(crate) fn eval_native(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
+    pub(crate) fn invoke_sql_kernel(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         let value = self.pb_builtin.eval(self, ctx, row)?;
         self.finish_value(value)
     }
@@ -3935,7 +3935,7 @@ impl PreparedContextInput {
     }
 
     pub(crate) fn read(&self, ctx: &dyn Columns) -> Result<Datum, EvalError> {
-        self.0.eval_native(ctx, Row::empty())
+        self.0.invoke_sql_kernel(ctx, Row::empty())
     }
 }
 
@@ -4034,7 +4034,7 @@ impl PreparedLocalBuiltin {
                 for (i, value) in values.iter().enumerate() {
                     input.append_datum(i, value);
                 }
-                function.eval_native(ctx, input.get_row(0))
+                function.invoke_sql_kernel(ctx, input.get_row(0))
             }
         }
     }

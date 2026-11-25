@@ -1254,7 +1254,7 @@ fn is_null(value: ScalarValueRef<'_>) -> bool {
     }
 }
 
-fn integer_root(value: i64) -> RpnExpression {
+pub(super) fn integer_root(value: i64) -> RpnExpression {
     RpnExpression::from(vec![RpnExpressionNode::Constant {
         value: ScalarValue::Int(Some(value)),
         field_type: index_field(),

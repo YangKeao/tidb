@@ -780,9 +780,12 @@ impl Expression {
         ctx: &dyn tidb_exprctx::context::Columns,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<tidb_datatype::Datum, tidb_exprctx::context::EvalError> {
-        let value = match crate::rpn::try_evaluate_direct_row(self, ctx, row)? {
-            Some(value) => value,
-            None => self.eval_string(ctx, row)?,
+        let value = if let Some(value) = crate::rpn::sql_host::read_operand(self, ctx, row, false) {
+            value?
+        } else if let Some(value) = crate::rpn::try_evaluate_direct_row(self, ctx, row)? {
+            value
+        } else {
+            self.eval_string(ctx, row)?
         };
         Ok(self.apply_enum_set_as_int(value))
     }
@@ -795,13 +798,16 @@ impl Expression {
         ctx: &dyn tidb_exprctx::context::Columns,
         row: tidb_chunk::row::Row<'_>,
     ) -> Result<tidb_datatype::Datum, tidb_exprctx::context::EvalError> {
+        if let Some(value) = crate::rpn::sql_host::read_operand(self, ctx, row, true) {
+            return value;
+        }
         match self {
             Expression::Column(c) => c.eval(row),
             Expression::Constant(c) => c
                 .eval_on_row_with_error_value(ctx, row)
                 .map_err(|(_, error)| error),
             Expression::CorrelatedColumn(c) => Ok(c.eval()),
-            Expression::ScalarFunction(c) => c.eval_native(ctx, row),
+            Expression::ScalarFunction(c) => crate::rpn::sql_host::evaluate(c, ctx, row),
             Expression::ScalarSubQuery(c) => c.eval(),
         }
     }
