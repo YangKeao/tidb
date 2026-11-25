@@ -106,7 +106,7 @@ pub(super) fn json_contains(
 }
 
 /// `JSON_OVERLAPS(left, right)`, port of `builtinJSONOverlapsSig.evalInt`.
-pub(super) fn json_overlaps(
+pub(crate) fn json_overlaps(
     vals: &[Datum],
     arg_types: &[Option<FieldType>],
 ) -> Result<Datum, EvalError> {

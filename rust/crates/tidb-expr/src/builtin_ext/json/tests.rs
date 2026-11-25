@@ -1912,17 +1912,20 @@ fn string_literals_agree_between_the_row_and_chunk_evaluators() {
     );
 }
 
-/// `dispatch_typed`'s BINARY-charset value rendering. Every expected
+/// BINARY-charset value rendering for the JSON host kernels. Every expected
 /// string is captured verbatim from a real TiDB server
 /// (`zz_dump_frozjson_test.go`, `TestZZDumpFrozJSONBinaryOpaque`) over a
 /// one-row table with `vb varbinary(8)`, `b binary(3)`, `bl blob`, `vc
 /// varchar(8)`, each holding `'ab'`.
 #[test]
-fn dispatch_typed_renders_binary_charset_arguments_as_opaque() {
-    use super::dispatch_typed;
+fn json_host_kernels_render_binary_charset_arguments_as_opaque() {
+    use tidb_charset::Collation;
     use tidb_datatype::{FieldType, FieldTypeCode};
-use tidb_charset::Collation;
+    use tidb_proto::tipb::ScalarFuncSig::{JsonArraySig, JsonInsertSig, JsonObjectSig};
 
+    let eval = |signature, values: &[Datum], fields: &[Option<FieldType>]| {
+        super::eval_pb(signature, values, fields, &crate::NoColumns, None).unwrap()
+    };
     let varbinary = FieldType::new(FieldTypeCode::Varchar).with_collation(Collation::Binary);
     let mut binary = FieldType::new(FieldTypeCode::String).with_collation(Collation::Binary);
     binary.set_flen(3);
@@ -1943,46 +1946,38 @@ use tidb_charset::Collation;
         ),
         (blob.clone(), b"ab".as_slice(), r#"["base64:type252:YWI="]"#),
     ] {
-        let got = dispatch_typed(
-            "JSON_ARRAY",
+        let got = eval(
+            JsonArraySig,
             &[Datum::Bytes(bytes.to_vec())],
             &[Some(field_type)],
-        )
-        .expect("JSON_ARRAY is owned")
-        .expect("valid vector");
+        );
         // The element stays Go's Opaque value (`CreateBinaryJSONWithCheck`
         // appends the cast's BinaryJSON as is); TiDB renders it as the
         // captured string.
         assert_eq!(rendered(got), expected);
     }
     // An ordinary (non-binary-charset) STRING datum is unaffected.
-    let plain = dispatch_typed(
-        "JSON_ARRAY",
+    let plain = eval(
+        JsonArraySig,
         &[Datum::new_string_datum("ab".to_string())],
         &[Some(varchar)],
-    )
-    .expect("JSON_ARRAY is owned")
-    .expect("valid vector");
+    );
     assert_eq!(plain, j(r#"["ab"]"#));
 
     // `JSON_OBJECT('k', vb)`.
-    let object = dispatch_typed(
-        "JSON_OBJECT",
+    let object = eval(
+        JsonObjectSig,
         &[s("k"), Datum::Bytes(b"ab".to_vec())],
         &[None, Some(varbinary.clone())],
-    )
-    .expect("JSON_OBJECT is owned")
-    .expect("valid vector");
+    );
     assert_eq!(rendered(object), r#"{"k": "base64:type15:YWI="}"#);
 
     // `JSON_INSERT('{}', '$.a', vb)`.
-    let inserted = dispatch_typed(
-        "JSON_INSERT",
+    let inserted = eval(
+        JsonInsertSig,
         &[s("{}"), s("$.a"), Datum::Bytes(b"ab".to_vec())],
         &[None, None, Some(varbinary)],
-    )
-    .expect("JSON_INSERT is owned")
-    .expect("valid vector");
+    );
     // Go stores the cast's opaque value itself (`json_type` of the member
     // answers BLOB), which only renders like the string.
     assert_eq!(rendered(inserted.clone()), r#"{"a": "base64:type15:YWI="}"#);
@@ -1990,7 +1985,7 @@ use tidb_charset::Collation;
 }
 
 /// [`cast_as_json_typed`]'s BINARY-charset rendering, the same capture as
-/// `dispatch_typed_renders_binary_charset_arguments_as_opaque`:
+/// `json_host_kernels_render_binary_charset_arguments_as_opaque`:
 /// `SELECT CAST(vb AS JSON) FROM t`.
 #[test]
 fn cast_as_json_typed_renders_binary_charset_argument_as_opaque() {

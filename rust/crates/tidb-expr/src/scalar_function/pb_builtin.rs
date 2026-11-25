@@ -855,9 +855,12 @@ impl PbBuiltin {
 
 
             UncompressedLength => Kernel::RpnOnly(None, &[EvalType::String]),
-            JsonTypeSig | JsonUnquoteSig | JsonLengthSig | JsonObjectSig | JsonArraySig
+            JsonTypeSig | JsonDepthSig | JsonValidJsonSig => Kernel::RpnOnly(None, &[EvalType::Json]),
+            JsonUnquoteSig => Kernel::RpnOnly(None, &[EvalType::String]),
+            JsonValidOthersSig => Kernel::RpnOnly(None, &[]),
+            JsonLengthSig | JsonObjectSig | JsonArraySig | JsonQuoteSig
             | JsonMergeSig | JsonSetSig | JsonInsertSig | JsonRemoveSig | JsonContainsSig
-            | JsonValidJsonSig | JsonValidStringSig | JsonValidOthersSig => Kernel::Json,
+            | JsonValidStringSig => Kernel::Json,
             DayOfYear => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             WeekOfYear => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             MonthName => Kernel::RpnOnly(None, &[EvalType::Datetime]),
@@ -1096,8 +1099,8 @@ impl PbBuiltin {
                 Kernel::Method(truncate_method)
             }
             // builtin_json.go
-            JsonMergePreserveSig | JsonArrayInsertSig | JsonContainsPathSig | JsonDepthSig
-            | JsonKeysSig | JsonKeys2ArgsSig | JsonPrettySig | JsonQuoteSig | JsonSearchSig
+            JsonMergePreserveSig | JsonArrayInsertSig | JsonContainsPathSig
+            | JsonKeysSig | JsonKeys2ArgsSig | JsonPrettySig | JsonSearchSig
             | JsonStorageFreeSig | JsonStorageSizeSig => Kernel::Json,
             // builtin_compare.go
             GreatestInt | GreatestReal | GreatestDecimal | GreatestString | GreatestTime

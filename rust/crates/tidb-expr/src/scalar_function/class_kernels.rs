@@ -323,8 +323,7 @@ pub(crate) fn utc_date(function: &ScalarFunction, values: &[Datum], ctx: &dyn Co
 pub(crate) fn json_overlaps(function: &ScalarFunction, values: &[Datum], _: &dyn Columns) -> Result<Datum, EvalError> {
     let types: Vec<Option<FieldType>> =
         function.args.iter().map(|arg| arg.static_type().cloned()).collect();
-    crate::builtin_ext::json_dispatch_typed("JSON_OVERLAPS", values, &types)
-        .expect("the native JSON family registers JSON_OVERLAPS")
+    crate::builtin_ext::json::json_overlaps(values, &types)
 }
 
 /// Go `builtinJSONSchemaValidSig`: the compiled schema is cached per node.

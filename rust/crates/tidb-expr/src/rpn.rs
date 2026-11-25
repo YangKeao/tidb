@@ -885,6 +885,17 @@ pub(crate) fn evaluate_required_kernel(
 ) -> Result<Datum, EvalError> {
     use tidb_query_expr::{RpnFnCallExtra, RpnStackNode, RpnStackNodeVectorValue};
 
+    // Polymorphic raw signatures use the SQL builder's declared operand types.
+    let declared;
+    let inputs = if inputs.is_empty() && !values.is_empty() {
+        declared = function.args.iter()
+            .map(|argument| argument.static_type().map(FieldType::eval_type))
+            .collect::<Option<Vec<_>>>()
+            .ok_or(EvalError::Unsupported("RPN kernel input type"))?;
+        declared.as_slice()
+    } else {
+        inputs
+    };
     if values.len() != inputs.len() {
         return Err(EvalError::Unsupported("RPN kernel arity"));
     }
@@ -2222,18 +2233,16 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "str_to_date"
             | "timediff"
             | "convert_tz"
-            | "json_extract"
             | "json_length"
+            | "json_extract"
             | "json_keys"
             | "json_remove"
             | "json_contains"
             | "json_contains_path"
-            | "json_type"
             | "json_pretty"
             | "json_storage_free"
             | "json_storage_size"
             | "json_quote"
-            | "json_unquote"
             | "json_object"
             | "json_merge_preserve"
             | "json_merge"

@@ -43,21 +43,22 @@ mod report;
 mod search;
 mod value;
 
-use construct::{json_array, json_object, json_quote, json_unquote};
-use document::{json_extract, json_keys, json_length, json_pretty, json_type};
+use construct::{json_array, json_object, json_quote};
+use document::{json_extract, json_keys, json_length, json_pretty};
 use merge::{json_merge, json_merge_patch};
 use modify::{
     json_array_append, json_array_insert, json_modify, json_modify_with_document,
-    json_modify_with_paths, json_remove, JsonModifyMode,
+    json_remove, JsonModifyMode,
 };
-use predicate::{json_contains, json_contains_path, json_member_of, json_overlaps};
+use predicate::{json_contains, json_contains_path, json_member_of};
+pub(crate) use predicate::json_overlaps;
 use report::json_valid;
 use search::json_search;
 
 use crate::{Datum, EvalError};
 use tidb_datatype::FieldType;
 
-pub(crate) use document::{json_depth, json_storage_free, json_storage_size};
+use document::{json_storage_free, json_storage_size};
 pub(crate) use modify::{json_document, parse_json_modify_paths};
 
 /// Go `verifyJSONArgsType` (`builtin_json.go`): each argument at
@@ -154,78 +155,6 @@ pub(crate) fn verify_json_schema_valid_constants(
 pub(crate) use report::JsonSchemaCache;
 pub(crate) use value::{cast_as_json, cast_as_json_typed, cast_as_json_value_typed};
 
-/// The typed sibling of [`dispatch`] for the function class whose value
-/// arguments Go builds through an implicit `CAST(... AS JSON)` with
-/// `ParseToJSONFlag` disabled (`newBaseBuiltinFuncWithTp(ctx, ..., ETJson,
-/// ...)` followed by `DisableParseJSONFlag4Expr`): `JSON_ARRAY`,
-/// `JSON_OBJECT`, `JSON_SET`/`JSON_INSERT`/`JSON_REPLACE`,
-/// `JSON_ARRAY_APPEND`, `JSON_ARRAY_INSERT`. `arg_types[i]` is argument `i`'s
-/// static `FieldType` when the caller has one (the chunk rewriter's
-/// `ScalarFunction::args[i].static_type()`); `None` falls back to
-/// [`json_sql_string`]'s plain-text rendering, same as the untyped
-/// [`dispatch`].
-///
-/// Every other JSON function either takes no value-domain argument that can
-/// carry a column's charset (`JSON_TYPE`, `JSON_LENGTH`, ...) or has its
-/// binary-charset arguments rejected at Go's build time by
-/// `verifyJSONArgsType` before evaluation ever sees them (`JSON_CONTAINS`,
-/// `JSON_EXTRACT`, `JSON_MEMBER_OF`, ...) -- a plan-build-time check this
-/// evaluator does not perform, and out of scope here since it never reaches
-/// this Datum-only dispatch either way.
-pub(crate) fn dispatch_typed(
-    name: &str,
-    vals: &[Datum],
-    arg_types: &[Option<FieldType>],
-) -> Option<Result<Datum, EvalError>> {
-    dispatch_typed_with_paths(name, vals, arg_types, None)
-}
-
-/// Typed JSON dispatch with an optional context-cached path list for the three
-/// `JSON_{SET,INSERT,REPLACE}` modifiers. All other families keep the ordinary
-/// typed path, and a missing path cache falls back to per-call parsing.
-pub(crate) fn dispatch_typed_with_paths(
-    name: &str,
-    vals: &[Datum],
-    arg_types: &[Option<FieldType>],
-    cached_paths: Option<&[tidb_datatype::JSONPathExpression]>,
-) -> Option<Result<Datum, EvalError>> {
-    debug_assert_eq!(vals.len(), arg_types.len());
-    match (name, vals.len()) {
-        ("JSON_ARRAY", 0..) => Some(json_array(vals, arg_types)),
-        ("JSON_OBJECT", 0..) => Some(json_object(vals, arg_types)),
-        ("JSON_SET", 3..) => Some(match cached_paths {
-            Some(paths) => json_modify_with_paths(vals, arg_types, JsonModifyMode::Set, paths),
-            None => json_modify(vals, arg_types, JsonModifyMode::Set),
-        }),
-        ("JSON_INSERT", 3..) => Some(match cached_paths {
-            Some(paths) => json_modify_with_paths(vals, arg_types, JsonModifyMode::Insert, paths),
-            None => json_modify(vals, arg_types, JsonModifyMode::Insert),
-        }),
-        ("JSON_REPLACE", 3..) => Some(match cached_paths {
-            Some(paths) => json_modify_with_paths(vals, arg_types, JsonModifyMode::Replace, paths),
-            None => json_modify(vals, arg_types, JsonModifyMode::Replace),
-        }),
-        ("JSON_REMOVE", 2..) => Some(json_remove(vals, arg_types)),
-        ("JSON_ARRAY_APPEND", 3..) => Some(json_array_append(vals, arg_types)),
-        ("JSON_ARRAY_INSERT", 3..) => Some(json_array_insert(vals, arg_types)),
-        ("JSON_PRETTY", 1) => Some(json_pretty(vals, arg_types)),
-        ("JSON_TYPE", 1) => Some(json_type(vals, arg_types)),
-        ("JSON_LENGTH", 1 | 2) => Some(json_length(vals, arg_types)),
-        ("JSON_EXTRACT", 2..) => Some(json_extract(vals, arg_types)),
-        ("JSON_KEYS", 1 | 2) => Some(json_keys(vals, arg_types)),
-        ("JSON_DEPTH", 1) => Some(json_depth(&vals[0], arg_types[0].as_ref())),
-        ("JSON_STORAGE_SIZE", 1) => Some(json_storage_size(&vals[0], arg_types[0].as_ref())),
-        ("JSON_STORAGE_FREE", 1) => Some(json_storage_free(&vals[0], arg_types[0].as_ref())),
-        ("JSON_MEMBER_OF", 2) => Some(json_member_of(vals, arg_types)),
-        ("JSON_CONTAINS", 2 | 3) => Some(json_contains(vals, arg_types)),
-        ("JSON_CONTAINS_PATH", 3..) => Some(json_contains_path(vals, arg_types)),
-        ("JSON_OVERLAPS", 2) => Some(json_overlaps(vals, arg_types)),
-        ("JSON_MERGE_PATCH", 2..) => Some(json_merge_patch(vals, arg_types)),
-        ("JSON_SEARCH", 3..) => Some(json_search(vals, arg_types)),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
@@ -264,8 +193,6 @@ pub(crate) fn eval_pb(
                 json_modify(vals, arg_types, mode)
             }
         }
-        ScalarFuncSig::JsonTypeSig => json_type(vals, arg_types),
-        ScalarFuncSig::JsonUnquoteSig => json_unquote(&vals[0]),
         ScalarFuncSig::JsonLengthSig => json_length(vals, arg_types),
         ScalarFuncSig::JsonObjectSig => json_object(vals, arg_types),
         ScalarFuncSig::JsonArraySig => json_array(vals, arg_types),
@@ -283,16 +210,13 @@ pub(crate) fn eval_pb(
         }
         ScalarFuncSig::JsonRemoveSig => json_remove(vals, arg_types),
         ScalarFuncSig::JsonContainsSig => json_contains(vals, arg_types),
-        ScalarFuncSig::JsonValidJsonSig
-        | ScalarFuncSig::JsonValidStringSig
-        | ScalarFuncSig::JsonValidOthersSig => json_valid(&vals[0]),
+        ScalarFuncSig::JsonValidStringSig => json_valid(&vals[0]),
         ScalarFuncSig::JsonExtractSig => json_extract(vals, arg_types),
         ScalarFuncSig::JsonArrayAppendSig => json_array_append(vals, arg_types),
         ScalarFuncSig::JsonMergePatchSig => json_merge_patch(vals, arg_types),
         ScalarFuncSig::JsonMergePreserveSig => json_merge(vals, arg_types),
         ScalarFuncSig::JsonArrayInsertSig => json_array_insert(vals, arg_types),
         ScalarFuncSig::JsonContainsPathSig => json_contains_path(vals, arg_types),
-        ScalarFuncSig::JsonDepthSig => json_depth(&vals[0], arg_types[0].as_ref()),
         ScalarFuncSig::JsonKeysSig | ScalarFuncSig::JsonKeys2ArgsSig => json_keys(vals, arg_types),
         ScalarFuncSig::JsonPrettySig => json_pretty(vals, arg_types),
         ScalarFuncSig::JsonQuoteSig => json_quote(&vals[0]),
