@@ -2804,6 +2804,30 @@ mod tests {
     }
 
     #[test]
+    fn scalar_if_uses_the_shared_program_and_skips_the_unselected_branch() {
+        let integer = FieldType::new(FieldTypeCode::LongLong);
+        let real = FieldType::new(FieldTypeCode::Double);
+        let mut input = Chunk::new_chunk_with_capacity(std::slice::from_ref(&integer), 1);
+        input.append_int64(0, 0);
+        let literal = |value| {
+            Expression::Constant(crate::constant::Constant::new(Datum::Real(value), real.clone()))
+        };
+        let overflow = build_function(CiString::new("exp"), real.clone(), vec![literal(10_000.0)]);
+        let function = build_function(
+            CiString::new("if"),
+            real.clone(),
+            vec![
+                Expression::Column(Column::new(0, integer)),
+                Expression::ScalarFunction(overflow),
+                literal(7.0),
+            ],
+        );
+        DIRECT_ROW_EXECUTIONS.with(|count| count.set(0));
+        assert_eq!(function.eval(&crate::NoColumns, input.get_row(0)), Ok(Datum::Real(7.0)));
+        DIRECT_ROW_EXECUTIONS.with(|count| assert_eq!(count.get(), 1));
+    }
+
+    #[test]
     fn prepared_enum_literal_reads_the_native_member_name() {
         let value = Datum::new_enum(
             tidb_datatype::MysqlEnum::new("member", 1),

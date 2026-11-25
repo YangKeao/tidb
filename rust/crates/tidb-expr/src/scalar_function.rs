@@ -1266,19 +1266,32 @@ impl ScalarFunction {
 
     fn can_use_shared_row_program(&self) -> bool {
         let kernel = self.pb_builtin.kernel;
-        // The selected SQL signature owns coercion when its operands are
-        // polymorphic or retain an input domain different from the output.
-        matches!(kernel, Kernel::Binary(..)
-            | Kernel::IntegerMod { .. } | Kernel::IntegerMultiply { .. }
-            | Kernel::Cast {
-                source: EvalType::Int | EvalType::Real | EvalType::Decimal,
-                target: EvalType::Int | EvalType::Real | EvalType::Decimal,
-                in_union: false,
-            })
+        let short_circuit = matches!(
+            kernel,
+            Kernel::Case(_)
+                | Kernel::If(_)
+                | Kernel::IfNull(_)
+                | Kernel::Coalesce(_)
+                | Kernel::Logic(_)
+        );
+        let numeric = matches!(
+            kernel,
+            Kernel::Binary(..)
+                | Kernel::IntegerMod { .. }
+                | Kernel::IntegerMultiply { .. }
+                | Kernel::Cast {
+                    source: EvalType::Int | EvalType::Real | EvalType::Decimal,
+                    target: EvalType::Int | EvalType::Real | EvalType::Decimal,
+                    in_union: false,
+                }
+        );
+        // Keep the exact SQL read for hybrid carriers and dynamic operands.
+        (short_circuit || numeric)
             && self.args.iter().all(|arg| {
                 arg.static_type().is_some_and(|field| {
-                    matches!(field.eval_type(), EvalType::Int | EvalType::Decimal | EvalType::Real)
-                        && !field.is_hybrid()
+                    !field.is_hybrid()
+                        && (short_circuit
+                            || matches!(field.eval_type(), EvalType::Int | EvalType::Decimal | EvalType::Real))
                 })
             })
     }
