@@ -1436,9 +1436,9 @@ mod tests {
                 false,
             ),
             (
-                "yearweek_nullable_mode_uses_default_mode_zero",
+                "yearweek_nullable_mode_rejects_null",
                 null_reject_predicate("ge", vec![yearweek_with_nullable_mode, null_reject_int(0)]),
-                false,
+                true,
             ),
             (
                 "week_nullable_date_rejects_null_even_with_outer_mode",

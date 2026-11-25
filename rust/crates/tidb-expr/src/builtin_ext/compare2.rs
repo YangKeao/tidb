@@ -776,45 +776,6 @@ pub(crate) fn inet6_aton_text(text: &str) -> Option<Datum> {
         .map(Datum::new_bytes_datum)
 }
 
-/// `IS_IPV4(expr)`: strict four-component decimal IPv4 predicate. Port of
-/// `builtinIsIPv4Sig.evalInt` and its `isIPv4` helper in
-/// `pkg/expression/builtin_miscellaneous.go`.
-pub(crate) fn is_ipv4_value(value: &Datum) -> Result<Datum, EvalError> {
-    let Some(value) = coerce_str(value)? else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(is_ipv4(&value))))
-}
-
-fn is_ipv4(value: &str) -> bool {
-    let mut dots = 0;
-    let mut component = 0_u16;
-    let mut previous_dot = true;
-    for byte in value.bytes() {
-        match byte {
-            b'0'..=b'9' => {
-                // Only whether the component exceeds 255 matters. Saturate
-                // rather than letting an arbitrarily long invalid component
-                // overflow Rust's debug arithmetic before we reject it.
-                component = component
-                    .saturating_mul(10)
-                    .saturating_add(u16::from(byte - b'0'));
-                previous_dot = false;
-            }
-            b'.' => {
-                dots += 1;
-                if dots > 3 || component > 255 || previous_dot {
-                    return false;
-                }
-                component = 0;
-                previous_dot = true;
-            }
-            _ => return false,
-        }
-    }
-    dots == 3 && component <= 255 && !previous_dot
-}
-
 #[cfg(test)]
 mod tests {
     use crate::tests::eval_builtin_func;
@@ -1085,6 +1046,7 @@ mod tests {
             ("192.168.1.1", 1),
             ("255.255.255.255", 1),
             ("10.t.255.255", 0),
+            ("010.1.2.3", 0),
             ("10.1.2.3.4", 0),
             ("2001:250:207:0:0:eef2::1", 0),
             ("::ffff:1.2.3.4", 0),
@@ -1096,7 +1058,7 @@ mod tests {
         ] {
             assert_eq!(call("IS_IPV4", &[s(ip)]), Datum::Int(want));
         }
-        assert_eq!(call("IS_IPV4", &[Datum::Null]), Datum::Null);
+        assert_eq!(call("IS_IPV4", &[Datum::Null]), Datum::Int(0));
         for (ip, want) in [
             ("2001:250:207:0:0:eef2::1", 1),
             ("2001:0250:0207:0001:0000:0000:0000:ff02", 1),
@@ -1106,7 +1068,7 @@ mod tests {
         ] {
             assert_eq!(call("IS_IPV6", &[s(ip)]), Datum::Int(want));
         }
-        assert_eq!(call("IS_IPV6", &[Datum::Null]), Datum::Null);
+        assert_eq!(call("IS_IPV6", &[Datum::Null]), Datum::Int(0));
     }
 
     /// `TestIsIPv4Mapped` and `TestIsIPv4Compat` operate on raw ETString
@@ -1136,7 +1098,7 @@ mod tests {
                 Datum::Int(want)
             );
         }
-        assert_eq!(call("IS_IPV4_MAPPED", &[Datum::Null]), Datum::Null);
+        assert_eq!(call("IS_IPV4_MAPPED", &[Datum::Null]), Datum::Int(0));
 
         let compat_cases = [
             (vec![], 0),
@@ -1156,7 +1118,7 @@ mod tests {
                 Datum::Int(want)
             );
         }
-        assert_eq!(call("IS_IPV4_COMPAT", &[Datum::Null]), Datum::Null);
+        assert_eq!(call("IS_IPV4_COMPAT", &[Datum::Null]), Datum::Int(0));
     }
 
     /// Go `TestIsNullFunc`; `builtin*IsNullSig.evalInt` in `builtin_op.go`

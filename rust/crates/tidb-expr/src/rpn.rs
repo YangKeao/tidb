@@ -896,6 +896,7 @@ pub(crate) fn evaluate_required_kernel(
             | IntIsNull | RealIsNull | DecimalIsNull | StringIsNull | TimeIsNull | DurationIsNull
             | JsonIsNull | VectorFloat32IsNull | NullEqString | IntIsTrue | RealIsTrue | DecimalIsTrue
             | IntIsFalse | RealIsFalse | DecimalIsFalse
+            | IsIPv4 | IsIPv4Compat | IsIPv4Mapped | IsIPv6
     );
     if !reads_null && values.iter().any(Datum::is_null) {
         return Ok(Datum::Null);
@@ -2212,10 +2213,6 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_insert"
             | "json_replace"
             | "json_merge_patch"
-            | "is_ipv4"
-            | "is_ipv4_compat"
-            | "is_ipv4_mapped"
-            | "is_ipv6"
             | "conv"
             | "date"
             | "instr"
@@ -2240,17 +2237,8 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "json_object"
             | "json_merge_preserve"
             | "json_merge"
-            | "day"
-            | "dayofmonth"
-            | "weekday"
-            | "weekofyear"
             | "utc_timestamp"
             | "week"
-            | "year"
-            | "yearweek"
-            | "month"
-            | "monthname"
-            | "quarter"
             | "unix_timestamp"
             | "makedate"
             | "last_day"

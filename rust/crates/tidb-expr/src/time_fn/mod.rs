@@ -467,38 +467,6 @@ fn zero_or_invalid_zero(time: tidb_datatype::Time) -> bool {
     time.is_zero() || time.invalid_zero()
 }
 
-/// `builtinDayOfYearSig.evalInt`: one-based day within the calendar year;
-/// an invalid zero date warns and is NULL.
-pub(crate) fn day_of_year(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    Ok(
-        checked_date_arg(value, cols, tidb_datatype::Time::invalid_zero)?.map_or(
-            Datum::Null,
-            // Go `builtinDayOfYearSig`: `arg.YearDay()`.
-            |time| Datum::Int(i64::from(time.core_time().year_day())),
-        ),
-    )
-}
-
-/// `builtinWeekWithModeSig` / `builtinWeekWithoutModeSig` in
-/// `pkg/expression/builtin_time.go`. Only the no-mode branch uses the
-/// supplied session `default_week_format`; a caller with no session passes
-/// TiDB's default zero.
-/// `WEEKOFYEAR(date)`. Port of `builtinWeekOfYearSig.evalInt`, which is
-/// `date.Week(3)` — the ISO-like mode-3 week number. Zero and invalid dates are
-/// NULL after a warning, matching `week`.
-pub(crate) fn week_of_year_builtin(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let Some(date) = checked_date_arg(value, cols, zero_or_invalid_zero)?.map(date_fields) else {
-        return Ok(Datum::Null);
-    };
-    Ok(Datum::Int(i64::from(week_core(date.0, date.1, date.2).week(3))))
-}
-
 /// `TIDB_PARSE_TSO_LOGICAL(tso)`. Port of `builtinTidbParseTsoLogicalSig` =
 /// `oracle.ExtractLogical`: the low 18 bits of the timestamp oracle value. A
 /// non-positive or NULL argument yields NULL. Session-independent (the physical
@@ -593,49 +561,6 @@ pub(crate) fn week(
         default_week_format
     };
     Ok(Datum::Int(i64::from(week_core(date.0, date.1, date.2).week(mode as u8))))
-}
-
-/// `builtinYearWeekWithModeSig` / `builtinYearWeekWithoutModeSig` in
-/// `pkg/expression/builtin_time.go`.
-pub(crate) fn yearweek(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    if !(1..=2).contains(&vals.len()) {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    // The one-argument signature checks only InvalidZero, which a zero date
-    // also is.
-    let rejects = if vals.len() == 2 {
-        zero_or_invalid_zero
-    } else {
-        tidb_datatype::Time::invalid_zero
-    };
-    let Some(date) = checked_date_arg(&vals[0], cols, rejects)?.map(date_fields) else {
-        return Ok(Datum::Null);
-    };
-    let mode = if vals.len() == 2 {
-        int_arg(&vals[1])?.unwrap_or(0)
-    } else {
-        0
-    };
-    let (year, number) = week_core(date.0, date.1, date.2).year_week(mode as u8);
-    let result = i64::from(year) * 100 + i64::from(number);
-    Ok(Datum::Int(if result < 0 {
-        i64::from(u32::MAX)
-    } else {
-        result
-    }))
-}
-
-/// `builtinMonthNameSig` in `pkg/expression/builtin_time.go`: a zero date
-/// warns under NO_ZERO_DATE and is otherwise NULL, as a zero month is.
-pub(crate) fn monthname(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, EvalError> {
-    let [value] = vals else {
-        return Err(EvalError::Unsupported("bad function arity"));
-    };
-    let no_zero_date = cols.date_modes().no_zero_date;
-    match checked_date_arg(value, cols, |time| time.is_zero() && no_zero_date)? {
-        Some(time) if time.core_time().month() != 0 => calendar::render_date_format(time, "%M"),
-        _ => Ok(Datum::Null),
-    }
 }
 
 /// `builtinLastDaySig` in `pkg/expression/builtin_time.go`: a zero month,

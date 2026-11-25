@@ -260,14 +260,12 @@ fn regexp_argument_failures_are_go_err_regexp() {
 }
 
 #[test]
-fn date_format_mask_zero_and_zero_in_date_follow_go() {
+fn date_format_checks_zero_dates_before_rendering() {
     let mut session = Session::new();
-    // MySQL compatibility (#11203): the mask "0" answers "0" before the
-    // zero-date check, but any other mask on a zero-in-date value is NULL
-    // with a 1292 warning naming the time.
+    // TiKV checks the date before formatting even a constant mask.
     assert_eq!(
         one(&mut session, "SELECT date_format(0, '0'), date_format('2020-00-00', '0')"),
-        ["0", "0"]
+        ["NULL", "NULL"]
     );
     assert_eq!(
         one(&mut session, "SELECT date_format('2020-00-00', '%Y')"),

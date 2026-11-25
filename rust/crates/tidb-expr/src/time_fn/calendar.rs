@@ -70,30 +70,17 @@ pub(crate) fn parse_date_ymd(s: &str) -> Option<(i64, u32, u32)> {
     Some((year, month, day))
 }
 
-/// The Go vector week signatures compute on partial dates with a zero component.
+/// Go WEEK's vector kernel computes on partial dates with a zero component.
 pub(crate) fn week_vector_value(
-    signature: tidb_proto::tipb::ScalarFuncSig,
     date: tidb_datatype::Time,
     mode: i64,
     ctx: &dyn crate::Columns,
 ) -> Result<Datum, EvalError> {
-    use tidb_proto::tipb::ScalarFuncSig::*;
     if date.is_zero() {
         crate::expression_errors::handle_truncate(ctx, &format!("Incorrect datetime value: '{date}'"))?;
         return Ok(Datum::Null);
     }
-    let core = date.core_time();
-    Ok(Datum::Int(match signature {
-        WeekDay => (i64::from(core.weekday().sunday_index()) + 6) % 7,
-        WeekWithMode | WeekWithoutMode => i64::from(core.week(mode as u8)),
-        WeekOfYear => i64::from(core.week(3)),
-        YearWeekWithMode => {
-            let (year, week) = core.year_week(mode as u8);
-            let value = i64::from(week) + i64::from(year) * 100;
-            if value < 0 { i64::from(u32::MAX) } else { value }
-        }
-        _ => unreachable!("not a week kernel: {signature:?}"),
-    }))
+    Ok(Datum::Int(i64::from(date.core_time().week(mode as u8))))
 }
 
 /// Splits a string into the `(value, digit count)` of its maximal runs of
@@ -1845,45 +1832,6 @@ pub(crate) fn format_ymd_result(y: i64, m: u32, d: u32, time_suffix: Option<&str
 /// `%D` day-with-ordinal-suffix, and `%%` a literal `%`. An unknown `%X`
 /// emits `X` verbatim (matching MySQL).
 pub(crate) fn date_format(date: &Datum, fmt: &Datum) -> Result<Datum, EvalError> {
-    date_format_in(date, fmt, None)
-}
-
-/// [`date_format`] with the statement context Go's `builtinDateFormatSig`
-/// reports its invalid-time warning through.
-pub(crate) fn date_format_in(
-    date: &Datum,
-    fmt: &Datum,
-    cols: Option<&dyn Columns>,
-) -> Result<Datum, EvalError> {
-    if let Datum::Time(time) = date {
-        let Some(fmt) = coerce_str(fmt)? else {
-            return Ok(Datum::Null);
-        };
-        // Go answers "0" for any time that evaluated before checking zeros.
-        if fmt == "0" {
-            return Ok(Datum::new_string_datum("0"));
-        }
-        let core = time.core_time();
-        if time.invalid_zero() {
-            // Integer and decimal zero at FSP 0 return NULL silently.
-            let all_zero = core.year() == 0
-                && core.hour() == 0
-                && core.minute() == 0
-                && core.second() == 0
-                && core.microsecond() == 0;
-            if !(all_zero && time.fsp() == 0) {
-                if let Some(cols) = cols {
-                    handle_invalid_time(
-                        cols,
-                        1292,
-                        format!("Incorrect datetime value: '{time}'"),
-                    )?;
-                }
-            }
-            return Ok(Datum::Null);
-        }
-        return render_date_format(*time, &fmt);
-    }
     let (Some(s), Some(fmt)) = (coerce_str(date)?, coerce_str(fmt)?) else {
         return Ok(Datum::Null);
     };

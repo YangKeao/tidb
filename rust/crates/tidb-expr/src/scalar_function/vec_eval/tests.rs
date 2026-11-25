@@ -1769,17 +1769,15 @@ fn zero_month_datetime() -> Datum {
     )
 }
 
-/// Go `builtin{WeekDay,WeekWithMode,YearWeekWithMode,WeekOfYear}Sig.vecEvalInt`
-/// reject only a zero date: a zero-month date computes on (`Weekday`
-/// normalizing 2020-00-10 to 2019-12-10, a Tuesday; `Week` answering 0),
-/// where the row forms warn and answer NULL.
+/// Shared WEEKDAY and WEEKOFYEAR reject a partial zero date. WEEK retains
+/// TiDB's default-mode and invalid-date behavior.
 #[test]
-fn week_vector_kernels_compute_on_an_invalid_zero_date() {
+fn week_vector_kernels_handle_an_invalid_zero_date() {
     let int = FieldType::new(FieldTypeCode::LongLong);
     let date = zero_month_datetime();
     for (name, fields, row, vector) in [
-        ("weekday", vec![datetime_field()], vec![date.clone()], Datum::Int(1)),
-        ("weekofyear", vec![datetime_field()], vec![date.clone()], Datum::Int(0)),
+        ("weekday", vec![datetime_field()], vec![date.clone()], Datum::Null),
+        ("weekofyear", vec![datetime_field()], vec![date.clone()], Datum::Null),
         ("week", vec![datetime_field(), int.clone()], vec![date.clone(), Datum::Int(0)], Datum::Int(0)),
     ] {
         let (expression, cells) = vec_cells(name, &fields, &[row.clone()]);

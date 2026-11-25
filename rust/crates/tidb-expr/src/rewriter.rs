@@ -3819,8 +3819,6 @@ mod builtin_type_tests {
             "sha2(null, 224)",
             "inet_aton(null)",
             "inet_ntoa(null)",
-            "is_ipv4(null)",
-            "is_ipv6(null)",
             "is_uuid(null)",
             "uuid_version(null)",
             "to_base64(null)",
@@ -3830,6 +3828,8 @@ mod builtin_type_tests {
         ] {
             assert_eq!(eval(expr), Datum::Null, "{expr}");
         }
+        assert_eq!(eval("is_ipv4(null)"), Datum::Int(0));
+        assert_eq!(eval("is_ipv6(null)"), Datum::Int(0));
         // `ORD('')` is 0, not NULL -- the empty string has no first code
         // point but the signature still returns an integer.
         assert_eq!(eval("ord('')"), Datum::Int(0));

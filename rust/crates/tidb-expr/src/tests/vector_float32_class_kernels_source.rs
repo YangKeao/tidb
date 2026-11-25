@@ -123,7 +123,7 @@ fn the_classes_that_set_no_pb_code_evaluate_as_go_does() {
     check(&mut f, "name_const('a',5)", eval("name_const", vec![Some(s("a")), Some(i(5))], int), i(5));
     check(&mut f, "quote(null)", eval("quote", vec![Some(Datum::Null)], string), s("NULL"));
     for name in ["is_ipv4", "is_ipv6", "is_ipv4_compat", "is_ipv4_mapped"] {
-        check(&mut f, name, eval(name, vec![Some(Datum::Null)], int), Datum::Null);
+        check(&mut f, name, eval(name, vec![Some(Datum::Null)], int), i(0));
     }
     check(&mut f, "period_add(202401,3)", eval("period_add", vec![Some(i(202401)), Some(i(3))], int), i(202404));
     check(&mut f, "period_diff(202403,202401)", eval("period_diff", vec![Some(i(202403)), Some(i(202401))], int), i(2));

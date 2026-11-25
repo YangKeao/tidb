@@ -73,23 +73,23 @@ fn get_format_table() {
 #[test]
 fn week_of_year_source_vectors() {
     assert_eq!(
-        week_of_year_builtin(&datetime_str_arg("2024-03-15"), &crate::NoColumns).unwrap(),
+        calendar_component("weekofyear", &datetime_str_arg("2024-03-15")).unwrap(),
         Datum::Int(11)
     );
     assert_eq!(
-        week_of_year_builtin(&datetime_str_arg("2024-01-01"), &crate::NoColumns).unwrap(),
+        calendar_component("weekofyear", &datetime_str_arg("2024-01-01")).unwrap(),
         Datum::Int(1)
     );
     assert_eq!(
-        week_of_year_builtin(&datetime_str_arg("2020-12-31"), &crate::NoColumns).unwrap(),
+        calendar_component("weekofyear", &datetime_str_arg("2020-12-31")).unwrap(),
         Datum::Int(53)
     );
     assert_eq!(
-        week_of_year_builtin(&datetime_str_arg("0000-00-00"), &crate::NoColumns).unwrap(),
+        calendar_component("weekofyear", &datetime_str_arg("0000-00-00")).unwrap(),
         Datum::Null
     );
     assert_eq!(
-        week_of_year_builtin(&datetime_arg(Datum::Null), &crate::NoColumns).unwrap(),
+        calendar_component("weekofyear", &datetime_arg(Datum::Null)).unwrap(),
         Datum::Null
     );
 }
@@ -153,7 +153,7 @@ fn calendar_part_source_vectors() {
     ];
     for (input, want) in day_of_year_cases {
         assert_eq!(
-            day_of_year(&datetime_str_arg(input), &crate::NoColumns).unwrap(),
+            calendar_component("dayofyear", &datetime_str_arg(input)).unwrap(),
             want,
             "{input}"
         );
@@ -220,7 +220,7 @@ fn calendar_part_source_vectors() {
         Datum::Null
     );
     assert_eq!(
-        day_of_year(&datetime_arg(Datum::Null), &crate::NoColumns).unwrap(),
+        calendar_component("dayofyear", &datetime_arg(Datum::Null)).unwrap(),
         Datum::Null
     );
     assert_eq!(
@@ -237,7 +237,7 @@ fn calendar_part_source_vectors() {
         Datum::Int(6)
     );
     assert_eq!(
-        day_of_year(&datetime_arg(Datum::Int(20_240_315)), &crate::NoColumns).unwrap(),
+        calendar_component("dayofyear", &datetime_arg(Datum::Int(20_240_315))).unwrap(),
         Datum::Int(75)
     );
     assert_eq!(
@@ -316,7 +316,7 @@ fn zero_datetime_column_matches_recorded_tidb() {
         Datum::Null
     );
     assert_eq!(
-        day_of_year(std::slice::from_ref(&zero), &crate::NoColumns).unwrap(),
+        calendar_component("dayofyear", std::slice::from_ref(&zero)).unwrap(),
         Datum::Null
     );
     assert_eq!(
@@ -328,7 +328,7 @@ fn zero_datetime_column_matches_recorded_tidb() {
         Datum::Null
     );
     assert_eq!(
-        monthname(std::slice::from_ref(&zero), &crate::NoColumns).unwrap(),
+        calendar_component("monthname", std::slice::from_ref(&zero)).unwrap(),
         Datum::Null
     );
 
@@ -401,7 +401,7 @@ fn month_and_monthname_source_vectors() {
     ];
     for (input, want) in monthname_cases {
         assert_eq!(
-            monthname(&datetime_str_arg(input), &crate::NoColumns).unwrap(),
+            calendar_component("monthname", &datetime_str_arg(input)).unwrap(),
             want,
             "{input}"
         );
@@ -409,7 +409,7 @@ fn month_and_monthname_source_vectors() {
 
     assert_eq!(crate::tests::builtin("month", &datetime_arg(Datum::Null)).unwrap(), Datum::Null);
     assert_eq!(
-        monthname(&datetime_arg(Datum::Null), &crate::NoColumns).unwrap(),
+        calendar_component("monthname", &datetime_arg(Datum::Null)).unwrap(),
         Datum::Null
     );
     assert_eq!(
@@ -417,7 +417,7 @@ fn month_and_monthname_source_vectors() {
         Datum::Int(3)
     );
     assert_eq!(
-        monthname(&datetime_arg(Datum::Int(20_240_315)), &crate::NoColumns).unwrap(),
+        calendar_component("monthname", &datetime_arg(Datum::Int(20_240_315))).unwrap(),
         Datum::new_string_datum("March".to_string())
     );
     assert!(crate::simple_expr::parse_simple_expr(
@@ -425,11 +425,7 @@ fn month_and_monthname_source_vectors() {
         "MONTH()",
         &crate::simple_expr::BuildOptions::new(),
     ).is_err());
-    assert!(monthname(
-        &[string_datum("2008-01-01"), Datum::Int(1)],
-        &crate::NoColumns
-    )
-    .is_err());
+    assert!(calendar_component("monthname", &[string_datum("2008-01-01"), Datum::Int(1)]).is_err());
 }
 
 struct FractionalClock;
@@ -615,10 +611,7 @@ fn go_week_vectors_cover_year_boundaries() {
     assert_eq!(week_core(2008, 2, 20).week(1), 8);
     assert_eq!(week_core(2020, 1, 1).year_week(3), (2020, 1));
     assert_eq!(
-        yearweek(
-            &[datetime_str_arg("2000-01-01").remove(0), Datum::Int(0)],
-            &crate::NoColumns
-        )
+        calendar_component("yearweek", &[datetime_str_arg("2000-01-01").remove(0), Datum::Int(0)])
         .unwrap(),
         Datum::Int(199_952)
     );

@@ -858,9 +858,9 @@ impl PbBuiltin {
             JsonTypeSig | JsonUnquoteSig | JsonLengthSig | JsonObjectSig | JsonArraySig
             | JsonMergeSig | JsonSetSig | JsonInsertSig | JsonRemoveSig | JsonContainsSig
             | JsonValidJsonSig | JsonValidStringSig | JsonValidOthersSig => Kernel::Json,
-            DayOfYear => Kernel::Values(crate::time_fn::day_of_year),
-            WeekOfYear => Kernel::Values(crate::time_fn::week_of_year_builtin),
-            MonthName => Kernel::Values(crate::time_fn::monthname),
+            DayOfYear => Kernel::RpnOnly(None, &[EvalType::Datetime]),
+            WeekOfYear => Kernel::RpnOnly(None, &[EvalType::Datetime]),
+            MonthName => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             DayName => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             FromDays => Kernel::Values(from_days_values),
             MakeDate => Kernel::Values(make_date_values),
@@ -901,12 +901,7 @@ impl PbBuiltin {
             RoundInt | RoundReal | RoundDec => Kernel::Round,
             Date => Kernel::Values(crate::time_fn::date),
             DateDiff => Kernel::RpnOnly(None, &[EvalType::Datetime; 2]),
-            DateFormatSig => Kernel::Values(|values, cols| {
-                let [date, format] = values else {
-                    return Err(EvalError::WrongParameterCount("date_format"));
-                };
-                crate::time_fn::calendar::date_format_in(date, format, Some(cols))
-            }),
+            DateFormatSig => Kernel::RpnOnly(None, &[EvalType::Datetime, EvalType::String]),
             Hour | Minute | Second | MicroSecond => Kernel::RpnOnly(None, &[EvalType::Duration]),
             Year | Month | DayOfMonth | Quarter | DayOfWeek | WeekDay | ToDays | ToSeconds => {
                 Kernel::RpnOnly(None, &[EvalType::Datetime])
@@ -1028,7 +1023,7 @@ impl PbBuiltin {
             InetNtoa => Kernel::RpnOnly(None, &[EvalType::Int]),
             Inet6Aton => Kernel::Values(|values, _| crate::builtin_ext::compare2::inet6_aton(&values[0])),
             Inet6Ntoa => Kernel::RpnOnly(None, &[EvalType::String]),
-            IsIPv4 => Kernel::Method(|_, values, _| crate::builtin_ext::compare2::is_ipv4_value(&values[0])),
+            IsIPv4 => Kernel::RpnOnly(None, &[EvalType::String]),
             IsIPv4Compat => Kernel::RpnOnly(None, &[EvalType::String]),
             IsIPv4Mapped => Kernel::RpnOnly(None, &[EvalType::String]),
             IsIPv6 => Kernel::RpnOnly(None, &[EvalType::String]),
@@ -1148,7 +1143,8 @@ impl PbBuiltin {
             }
             ConvertTz => Kernel::Row(convert_tz_row),
             Time => Kernel::Values(crate::time_fn::time),
-            YearWeekWithMode | YearWeekWithoutMode => Kernel::Values(crate::time_fn::yearweek),
+            YearWeekWithMode => Kernel::RpnOnly(None, &[EvalType::Datetime, EvalType::Int]),
+            YearWeekWithoutMode => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             UnixTimestampCurrent => Kernel::Values(crate::time_fn::session_tz::unix_timestamp_current),
             TimestampAdd => Kernel::Values(crate::time_fn::add_sub::timestamp_add),
             _ => return None,
@@ -1197,13 +1193,13 @@ impl PbBuiltin {
             if self.signature == UtcTimestampWithArg && values.first().is_some_and(Datum::is_null) {
                 return Ok(Datum::Null);
             }
-            if matches!(self.signature, WeekDay | WeekWithMode | WeekWithoutMode | YearWeekWithMode | WeekOfYear) {
+            if matches!(self.signature, WeekWithMode | WeekWithoutMode) {
                 if let [Datum::Time(date), args @ ..] = values.as_slice() {
                     let mode = match args.first() {
                         Some(mode) => crate::arg_eval_type::eval_int(mode)?.unwrap_or(0),
                         None => ctx.default_week_format(),
                     };
-                    return crate::time_fn::calendar::week_vector_value(self.signature, *date, mode, ctx);
+                    return crate::time_fn::calendar::week_vector_value(*date, mode, ctx);
                 }
             }
             if matches!(self.signature, GreatestString | LeastString) {
@@ -1935,7 +1931,8 @@ mod tests {
                     | DurationIsNull | JsonIsNull | VectorFloat32IsNull, _) => Datum::Int(1),
                     (NullEqInt | NullEqReal | NullEqDecimal | NullEqTime | NullEqDuration
                     | NullEqJson | NullEqJson | NullEqVectorFloat32 | IntIsTrue | RealIsTrue | DecimalIsTrue
-                    | IntIsFalse | RealIsFalse | DecimalIsFalse, _) => Datum::Int(0),
+                    | IntIsFalse | RealIsFalse | DecimalIsFalse
+                    | IsIPv4 | IsIPv4Compat | IsIPv4Mapped | IsIPv6, _) => Datum::Int(0),
                     _ => Datum::Null,
                 };
                 assert_eq!(eval(sig, children), expect, "{sig:?} {position}");
