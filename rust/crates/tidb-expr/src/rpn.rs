@@ -1453,6 +1453,32 @@ fn lower_declared(
         // SQL domain, which need not match the declared column carrier.
         return None;
     }
+    use tidb_proto::tipb::ScalarFuncSig::{CastStringAsInt, CastStringAsReal, DayName};
+    if matches!(function.pb_code(), CastStringAsInt | CastStringAsReal) {
+        if let [Expression::ScalarFunction(day_name)] = function.args.as_slice() {
+            if day_name.pb_code() == DayName {
+                // Go reads DAYNAME as the weekday index when casting it to a
+                // number. Bind that projection directly from the date operand.
+                let argument = lower_declared(
+                    day_name.args.first()?.into(),
+                    environment,
+                    bindings,
+                    host_calls,
+                    diagnostic_calls,
+                    seed_keys,
+                )?;
+                if result_type.eval_type() == NativeEvalType::Int {
+                    return unary_call(ScalarFuncSig::WeekDay, result_type, argument);
+                }
+                let weekday = unary_call(
+                    ScalarFuncSig::WeekDay,
+                    &FieldType::new(FieldTypeCode::LongLong),
+                    argument,
+                )?;
+                return unary_call(ScalarFuncSig::CastIntAsReal, result_type, weekday);
+            }
+        }
+    }
     if function.args.iter().any(|argument| {
         matches!(argument, Expression::ScalarFunction(child)
             if child.func_name.lowercase() == "dayname")
@@ -2693,6 +2719,56 @@ mod tests {
             Ok(Datum::Int(9))
         );
         DIRECT_ROW_EXECUTIONS.with(|count| assert_eq!(count.get(), 2));
+    }
+
+    #[test]
+    fn dayname_numeric_casts_use_the_weekday_projection() {
+        let date_type = FieldType::new(FieldTypeCode::Datetime);
+        let day_name = Expression::ScalarFunction(build_function(
+            CiString::new("dayname"),
+            FieldType::new(FieldTypeCode::VarString),
+            vec![Expression::Column(Column::new(0, date_type.clone()))],
+        ));
+        let mut input = Chunk::new_chunk_with_capacity(&[date_type], 2);
+        let date = tidb_datatype::CoreTime::from_date(2024, 3, 15, 0, 0, 0, 0);
+        input.append_time(
+            0,
+            tidb_datatype::Time::new(date, tidb_datatype::TimeType::DateTime, 0).unwrap(),
+        );
+        input.append_null(0);
+        DIRECT_ROW_EXECUTIONS.with(|count| count.set(0));
+        for (target, expected) in [
+            (FieldTypeCode::LongLong, Datum::Int(4)),
+            (FieldTypeCode::Double, Datum::Real(4.0)),
+        ] {
+            let expression = crate::wrap_cast::build_cast_to(
+                &crate::builtin::UnfoldedBuildContext,
+                day_name.clone(),
+                FieldType::new(target),
+            )
+            .unwrap();
+            assert_eq!(
+                expression.eval(&crate::NoColumns, input.get_row(0)),
+                Ok(expected.clone())
+            );
+            assert_eq!(
+                expression.eval(&crate::NoColumns, input.get_row(1)),
+                Ok(Datum::Null)
+            );
+            let mut values = Vec::new();
+            assert!(PreparedExpression::try_eval_typed_batch(
+                &expression,
+                &crate::NoColumns,
+                &input,
+                |value| {
+                    values.push(value);
+                    Ok(())
+                },
+            )
+            .unwrap());
+            assert_eq!(values, [expected, Datum::Null]);
+        }
+        DIRECT_ROW_EXECUTIONS.with(|count| assert_eq!(count.get(), 4));
     }
 
     #[test]
