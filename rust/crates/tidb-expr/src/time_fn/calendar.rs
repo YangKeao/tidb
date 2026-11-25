@@ -2106,120 +2106,48 @@ pub(crate) fn date_format_in(
         Some((d, t)) => (d, Some(t)),
         None => (s.as_str(), None),
     };
-    // Go `builtinDateFormatSig` (MySQL compatibility, #11203): the format
-    // mask "0" answers "0" for any time that evaluated, the zero time
-    // included, before the zero-date check can turn the row into NULL.
-    if fmt == "0" && (date_part == "0000-00-00" || parse_date_ymd(date_part).is_some()) {
-        return Ok(Datum::new_string_datum("0"));
-    }
-    let Some((y, m, d)) = parse_date_ymd(date_part) else {
+    let Some((year, month, day)) = parse_date_ymd(date_part) else {
         return Ok(Datum::Null);
     };
-    let (h, mi, sec, fraction) =
-        time_part
-            .and_then(parse_time_with_fraction)
-            .unwrap_or((0, 0, 0, String::new()));
-
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    const WEEKDAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    // `days_from_civil + 4 (mod 7)` gives 0=Sunday .. 6=Saturday (the same
-    // offset `DAYOFWEEK` uses, verified against real TiDB).
-    let wd = (days_from_civil(y, m, d) + 4).rem_euclid(7) as usize;
-    // Go `%j`: `t.YearDay()`.
-    let doy = i64::from(week_core(y, m, d).year_day());
-    let h12 = ((h + 11) % 12) + 1;
-    let suffix = |n: u32| -> &'static str {
-        match (n % 100, n % 10) {
-            (11..=13, _) => "th",
-            (_, 1) => "st",
-            (_, 2) => "nd",
-            (_, 3) => "rd",
-            _ => "th",
-        }
+    let (hour, minute, second, micros) =
+        time_parts_with_micros(time_part).unwrap_or((0, 0, 0, 0));
+    let Some(time) = i32::try_from(year).ok().and_then(|year| {
+        tidb_datatype::Time::from_date_checked(
+            year,
+            month as i32,
+            day as i32,
+            hour as i32,
+            minute as i32,
+            second as i32,
+            micros as i32,
+            tidb_datatype::TimeType::DateTime,
+            6,
+        )
+        .ok()
+    }) else {
+        return Ok(Datum::Null);
     };
-    // Go's `convertDateFormat` writes a negative week-year through
-    // `uint32`, exposing MaxUint32 rather than a signed year such as `-001`.
-    let format_week_year = |year: i64| {
-        if year < 0 {
-            u32::MAX.to_string()
-        } else {
-            format!("{year:04}")
-        }
+    // The SQL year-day calculation treats year zero as a common year.
+    let adjusted_format;
+    let layout = if year == 0 && month > 2 && fmt.contains("%j") {
+        let ordinal = format!("{:03}", week_core(year, month, day).year_day());
+        adjusted_format = fmt
+            .split("%%")
+            .map(|part| part.replace("%j", &ordinal))
+            .collect::<Vec<_>>()
+            .join("%%");
+        adjusted_format.as_str()
+    } else {
+        &fmt
     };
-
-    let mut out = String::new();
-    let mut chars = fmt.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            None => out.push('%'),
-            Some('Y') => out.push_str(&format!("{y:04}")),
-            Some('y') => out.push_str(&format!("{:02}", y.rem_euclid(100))),
-            Some('m') => out.push_str(&format!("{m:02}")),
-            Some('c') => out.push_str(&m.to_string()),
-            Some('d') => out.push_str(&format!("{d:02}")),
-            Some('e') => out.push_str(&d.to_string()),
-            Some('H') => out.push_str(&format!("{h:02}")),
-            Some('k') => out.push_str(&h.to_string()),
-            Some('h' | 'I') => out.push_str(&format!("{h12:02}")),
-            Some('l') => out.push_str(&h12.to_string()),
-            Some('i') => out.push_str(&format!("{mi:02}")),
-            Some('S' | 's') => out.push_str(&format!("{sec:02}")),
-            Some('f') => out.push_str(&format!("{fraction:0<6}")),
-            Some('p') => out.push_str(if h < 12 { "AM" } else { "PM" }),
-            Some('T') => out.push_str(&format!("{h:02}:{mi:02}:{sec:02}")),
-            Some('r') => out.push_str(&format!(
-                "{h12:02}:{mi:02}:{sec:02} {}",
-                if h < 12 { "AM" } else { "PM" }
-            )),
-            Some('W') => out.push_str(WEEKDAYS[wd]),
-            Some('a') => out.push_str(&WEEKDAYS[wd][..3]),
-            Some('w') => out.push_str(&wd.to_string()),
-            Some('M') => out.push_str(MONTHS[(m - 1) as usize]),
-            Some('b') => out.push_str(&MONTHS[(m - 1) as usize][..3]),
-            Some('j') => out.push_str(&format!("{doy:03}")),
-            Some('D') => out.push_str(&format!("{d}{}", suffix(d))),
-            // Go's `types.Time.DateFormat` maps these to `CoreTime.Week` /
-            // `YearWeek`, whose exact mode handling is ported in
-            // `week_of_year` above. `%U`/`%u` retain the week number's
-            // possible zero; `%V`/`%v` force the corresponding year-week
-            // mode and `%X`/`%x` render its possibly adjacent calendar year.
-            Some('U') => out.push_str(&format!("{:02}", week_core(y, m, d).week(0))),
-            Some('u') => out.push_str(&format!("{:02}", week_core(y, m, d).week(1))),
-            Some('V') => out.push_str(&format!("{:02}", week_core(y, m, d).week(2))),
-            Some('v') => out.push_str(&format!("{:02}", week_core(y, m, d).year_week(3).1)),
-            Some('X') => out.push_str(&format_week_year(i64::from(week_core(y, m, d).year_week(2).0))),
-            Some('x') => out.push_str(&format_week_year(i64::from(week_core(y, m, d).year_week(3).0))),
-            Some('%') => out.push('%'),
-            // An unknown specifier emits the letter verbatim (MySQL rule).
-            Some(other) => out.push(other),
-        }
+    let mut output = crate::rpn::to_query_time(time)
+        .and_then(|time| time.date_format(layout).map_err(Into::into))
+        .map_err(crate::rpn::query_error)?;
+    // The SQL evaluator preserves an unmatched trailing percent.
+    if fmt.bytes().rev().take_while(|&byte| byte == b'%').count() % 2 != 0 {
+        output.push('%');
     }
-    Ok(Datum::new_string_datum(out))
+    Ok(Datum::new_string_datum(output))
 }
 
 #[cfg(test)]

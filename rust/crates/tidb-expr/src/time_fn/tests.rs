@@ -668,6 +668,8 @@ fn dayname_source_vectors() {
 #[test]
 fn date_format_source_vectors() {
     let cases = [
+        ("2024-02-29", "hé %Y%%%", "hé 2024%%"),
+        ("0000-03-01", "%j %%j %%%j", "060 %j %060"),
         (
             "2010-01-07 23:12:34.12345",
             "%b %M %m %c %D %d %e %j %k %h %i %p %r %T %s %f %U %u %V %v %a %W %w %X %x %Y %y %%",
