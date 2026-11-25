@@ -57,6 +57,10 @@ impl Clone for JsonSchemaCache {
 }
 
 impl JsonSchemaCache {
+    pub(crate) fn share(&self) -> Self {
+        Self(self.0.share())
+    }
+
     fn prepare(
         &self,
         value: &Datum,
@@ -83,22 +87,11 @@ impl JsonSchemaCache {
         let [schema_arg, document_arg] = args else {
             return Err(EvalError::WrongParameterCount("json_schema_valid"));
         };
-        let schema_value = schema_arg.eval(ctx, row)?;
-        if schema_value.is_null() {
-            return Ok(Datum::Null);
-        }
-
-        if schema_arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT {
-            let schema = self
-                .0
-                .get_or_init_cache(ctx.context_id(), || prepare_json_schema(&schema_value))?;
-            let Some(schema) = schema.as_ref().as_ref() else {
-                return Ok(Datum::Null);
-            };
-            return validate_json_schema(schema, &document_arg.eval(ctx, row)?);
-        }
-
-        let schema = prepare_json_schema(&schema_value)?;
+        let schema = self.prepare(
+            &schema_arg.eval(ctx, row)?,
+            schema_arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT,
+            ctx,
+        )?;
         let Some(schema) = schema.as_ref() else {
             return Ok(Datum::Null);
         };
@@ -116,10 +109,10 @@ pub(crate) struct JsonSchemaExecution {
 }
 
 impl JsonSchemaExecution {
-    pub(crate) fn new(constant_schema: bool) -> Self {
+    pub(crate) fn new(constant_schema: bool, cache: JsonSchemaCache) -> Self {
         Self {
             constant_schema,
-            cache: JsonSchemaCache::default(),
+            cache,
             current: std::sync::Mutex::new(None),
         }
     }

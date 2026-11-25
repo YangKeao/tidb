@@ -19,7 +19,7 @@
 //! read lock keeps the ordinary per-row hit path cheap; the write lock is the
 //! once-only construction path used by concurrent evaluators.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 #[derive(Debug)]
 struct CacheItem<T> {
@@ -30,13 +30,13 @@ struct CacheItem<T> {
 /// A single context-keyed lazy value, matching Go's `builtinFuncCache[T]`.
 #[derive(Debug)]
 pub(crate) struct BuiltinFuncCache<T> {
-    cached: RwLock<Option<CacheItem<T>>>,
+    cached: OnceLock<Arc<RwLock<Option<CacheItem<T>>>>>,
 }
 
 impl<T> Default for BuiltinFuncCache<T> {
     fn default() -> Self {
         Self {
-            cached: RwLock::new(None),
+            cached: OnceLock::new(),
         }
     }
 }
@@ -49,9 +49,18 @@ impl<T> Clone for BuiltinFuncCache<T> {
 }
 
 impl<T> BuiltinFuncCache<T> {
+    fn storage(&self) -> &Arc<RwLock<Option<CacheItem<T>>>> {
+        self.cached.get_or_init(|| Arc::new(RwLock::new(None)))
+    }
+
+    /// A compiled view of the same signature keeps its statement cache.
+    pub(crate) fn share(&self) -> Self {
+        Self { cached: OnceLock::from(Arc::clone(self.storage())) }
+    }
+
     /// Returns the value for `context_id` without initializing the cache.
     pub(crate) fn get_cache(&self, context_id: u64) -> Option<Arc<T>> {
-        self.cached
+        self.cached.get()?
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
@@ -71,7 +80,7 @@ impl<T> BuiltinFuncCache<T> {
         }
 
         let mut cached = self
-            .cached
+            .storage()
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(item) = cached.as_ref().filter(|item| item.context_id == context_id) {

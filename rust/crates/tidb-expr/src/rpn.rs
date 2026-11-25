@@ -1895,6 +1895,7 @@ fn lower_declared(
         let ready = FieldType::new(FieldTypeCode::LongLong);
         let validation = Arc::new(crate::builtin_ext::json::JsonSchemaExecution::new(
             schema.const_level() >= crate::expression::ConstLevel::ONLY_IN_CONTEXT,
+            function.share_json_schema_cache(),
         ));
         let schema = bind_host_operand(
             call.mut_children().remove(0),

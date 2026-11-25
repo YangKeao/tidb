@@ -1260,8 +1260,10 @@ impl ScalarFunction {
     }
 
     fn can_use_shared_row_program(&self) -> bool {
-        use tidb_proto::tipb::ScalarFuncSig::{Concat, ConcatWs};
-        if matches!(self.pb_code(), Concat | ConcatWs) {
+        use tidb_proto::tipb::ScalarFuncSig::{Concat, ConcatWs, JsonInsertSig, JsonReplaceSig, JsonSetSig};
+        if matches!(self.pb_code(), Concat | ConcatWs | JsonInsertSig | JsonReplaceSig | JsonSetSig)
+            || self.func_name.lowercase() == "json_schema_valid"
+        {
             return true;
         }
         let kernel = self.pb_builtin.kernel;
@@ -1333,6 +1335,10 @@ impl ScalarFunction {
         crate::expr_util::is_mutable_effects_function(name)
             || advisory_lock_spec(name).is_some()
             || matches!(name, "nextval" | "lastval" | "setval" | "last_insert_id")
+    }
+
+    pub(crate) fn share_json_schema_cache(&self) -> crate::builtin_ext::JsonSchemaCache {
+        self.json_schema_cache.share()
     }
 
     pub(crate) fn accepts_eager_values(&self) -> bool {
@@ -3950,10 +3956,18 @@ impl PreparedLocalBuiltin {
         let fields: Vec<_> = function.args.iter()
             .map(|arg| crate::wrap_cast::type_of(arg))
             .collect();
-        let mut function = function.clone();
-        let uses_argument_label = function.pb_code() == tidb_proto::tipb::ScalarFuncSig::CastRealAsDecimal;
-        for (index, argument) in function.args.iter_mut().enumerate() {
+        use tidb_proto::tipb::ScalarFuncSig::{CastRealAsDecimal, JsonInsertSig, JsonReplaceSig, JsonSetSig};
+        let mut compiled = function.clone();
+        let cache_json_paths = matches!(function.pb_code(), JsonInsertSig | JsonReplaceSig | JsonSetSig)
+            && function.args.iter().skip(1).step_by(2)
+                .all(|arg| arg.const_level() >= ConstLevel::ONLY_IN_CONTEXT);
+        if cache_json_paths {
+            compiled.json_modify_path_cache = function.json_modify_path_cache.share();
+        }
+        let uses_argument_label = function.pb_code() == CastRealAsDecimal;
+        for (index, argument) in compiled.args.iter_mut().enumerate() {
             if uses_argument_label
+                || (cache_json_paths && index % 2 == 1)
                 || matches!(argument, Expression::Constant(value) if value.literal_value().is_some())
             {
                 continue;
@@ -3962,7 +3976,7 @@ impl PreparedLocalBuiltin {
             column.index = index as i64;
             *argument = Expression::Column(column);
         }
-        Self { function, fields }
+        Self { function: compiled, fields }
     }
 
     pub(crate) fn evaluate(
