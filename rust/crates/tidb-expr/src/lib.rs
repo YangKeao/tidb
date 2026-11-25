@@ -360,22 +360,6 @@ pub fn eval_expression_once(
     expression.eval(ctx, dual.get_row(0))
 }
 
-// Folding uses the native expression API to preserve the saved Datum and
-// declaration that the function classes and the plan cache observe.
-pub(crate) fn eval_constant_for_folding(
-    expression: &expression::Expression,
-    ctx: &dyn Columns,
-) -> Result<Datum, EvalError> {
-    let mut dual = tidb_chunk::chunk::Chunk::new_empty_chunk(&[]);
-    dual.set_num_virtual_rows(1);
-    let row = dual.get_row(0);
-    let value = match expression {
-        expression::Expression::ScalarFunction(function) => function.eval(ctx, row)?,
-        _ => expression.eval_string(ctx, row)?,
-    };
-    Ok(expression.apply_enum_set_as_int(value))
-}
-
 /// Applies a binary operator to already-evaluated operands. Exposed so callers
 /// that intercept some sub-expressions (e.g. aggregates during grouping) can
 /// still reuse the operator semantics.

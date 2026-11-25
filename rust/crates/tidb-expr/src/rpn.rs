@@ -745,7 +745,13 @@ pub(crate) fn try_evaluate_scalar_function(
     };
     #[cfg(test)]
     DIRECT_ROW_EXECUTIONS.with(|count| count.set(count.get() + 1));
-    execution.evaluate_row(ctx, row).map(Some)
+    let value = execution.evaluate_row(ctx, row)?;
+    // Go reads FLOAT CAST via EvalReal. The projection writer owns the
+    // storage-width conversion.
+    Ok(Some(match value {
+        Datum::Float32(real) if function.is_cast() => Datum::Real(real),
+        value => value,
+    }))
 }
 
 #[cfg(test)]
@@ -1159,7 +1165,7 @@ enum HostOperation {
     SeedAsSigned,
     NumericCast(NativeEvalType),
     TemporalFsp(i64),
-    RejectVectorCast,
+    RejectVectorCast(FieldTypeCode),
     RejectVectorJsonCast,
     PrepareJsonSchema(Arc<crate::builtin_ext::json::JsonSchemaExecution>),
     ValidateJsonSchema(Arc<crate::builtin_ext::json::JsonSchemaExecution>),
@@ -1572,6 +1578,21 @@ fn lower_declared(
         }
     }
 
+    if matches!(
+        function.signature_fields(),
+        crate::builtin::SigFields::CastUnsupportedAsVectorFloat32
+    ) {
+        let [argument] = function.args.as_slice() else {
+            return None;
+        };
+        call.set_tp(QueryExprType::ScalarFunc);
+        return bind_host_call(
+            call,
+            HostOperation::RejectVectorCast(argument.static_type()?.code()),
+            Vec::new(),
+            host_calls,
+        );
+    }
     if function.rejects_vector_json_cast() {
         call.set_tp(QueryExprType::ScalarFunc);
         return bind_host_call(
@@ -2159,10 +2180,6 @@ fn lower_declared(
         [value] if name == "load_file" => {
             (HostOperation::LoadFile, vec![value.static_type()?.clone()])
         }
-        [value] if name == "cast_vector" => (
-            HostOperation::RejectVectorCast,
-            vec![value.static_type()?.clone()],
-        ),
         args if weight_input == Some(true)
             || local_kernel
             || vector_operands
@@ -2237,6 +2254,7 @@ fn needs_sql_value_kernel(name: &str) -> bool {
             | "lpad"
             | "rpad"
             | "substring_index"
+            | "uuid_version"
             | "space"
             | "to_base64"
             | "from_base64"

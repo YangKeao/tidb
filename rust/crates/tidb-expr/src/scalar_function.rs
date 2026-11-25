@@ -1253,18 +1253,17 @@ impl ScalarFunction {
     pub fn eval(&self, ctx: &dyn Columns, row: Row<'_>) -> Result<Datum, EvalError> {
         if self.can_use_shared_row_program() {
             if let Some(value) = crate::rpn::try_evaluate_scalar_function(self, ctx, row)? {
-                // Go ScalarFunction.Eval reads FLOAT CAST via EvalReal. The
-                // projection writer performs the storage-width conversion.
-                return Ok(match value {
-                    Datum::Float32(real) if self.is_cast() => Datum::Real(real),
-                    value => value,
-                });
+                return Ok(value);
             }
         }
         self.eval_native(ctx, row)
     }
 
     fn can_use_shared_row_program(&self) -> bool {
+        use tidb_proto::tipb::ScalarFuncSig::{Concat, ConcatWs};
+        if matches!(self.pb_code(), Concat | ConcatWs) {
+            return true;
+        }
         let kernel = self.pb_builtin.kernel;
         let short_circuit = matches!(
             kernel,

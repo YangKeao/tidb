@@ -254,16 +254,9 @@ impl NativeRows<'_> {
                     .map(Datum::new_string_datum)
                 }
                 (HostOperation::LoadFile, [_], [_]) => Ok(Datum::Null),
-                (HostOperation::RejectVectorCast, [value], [field]) => {
-                    let value = from_query_value(value.get_logical_scalar_ref(row), field)?;
-                    if value.is_null() {
-                        Ok(value)
-                    } else {
-                        let source = tidb_datatype::type_str(field.code());
-                        Err(EvalError::Vector(format!(
-                            "cannot cast from {source} to vector"
-                        )))
-                    }
+                (HostOperation::RejectVectorCast(code), [], []) => {
+                    let source = tidb_datatype::type_str(*code);
+                    Err(EvalError::Vector(format!("cannot cast from {source} to vector")))
                 }
                 (HostOperation::LocalBuiltin(function), _, fields)
                     if args.len() == fields.len() =>
