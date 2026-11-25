@@ -910,16 +910,7 @@ impl PbBuiltin {
                 };
                 crate::time_fn::calendar::date_format_in(date, format, Some(cols))
             }),
-            Hour => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.0))
-            }),
-            Minute => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.1))
-            }),
-            Second => Kernel::Values(|values, _| {
-                crate::time_fn::calendar::time_part(values, |time| i64::from(time.2))
-            }),
-            MicroSecond => Kernel::Values(|values, _| crate::time_fn::microsecond(values)),
+            Hour | Minute | Second | MicroSecond => Kernel::RpnOnly(None, &[EvalType::Duration]),
             Year | Month | DayOfMonth | Quarter => Kernel::RpnOnly(None, &[EvalType::Datetime]),
             WeekWithMode | WeekWithoutMode => Kernel::Values(|values, ctx| {
                 crate::time_fn::week(values, ctx.default_week_format(), ctx)

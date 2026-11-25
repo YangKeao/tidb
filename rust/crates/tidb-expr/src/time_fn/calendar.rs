@@ -96,111 +96,6 @@ pub(crate) fn week_vector_value(
     }))
 }
 
-/// The `(hour, minute, second)` extracted from a single-argument time-part
-/// function's argument (`HOUR`/`MINUTE`/`SECOND`): `NULL` if it doesn't
-/// coerce to a string or doesn't parse (see [`parse_hms_extended`]).
-pub(crate) fn time_part(
-    vals: &[Datum],
-    f: impl Fn((u32, u32, u32)) -> i64,
-) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(s) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    match parse_hms_extended(&s) {
-        Some(hms) => Ok(Datum::Int(f(hms))),
-        None => Ok(Datum::Null),
-    }
-}
-
-/// Parses `HOUR`/`MINUTE`/`SECOND`'s single argument into `(hour, minute,
-/// second)`, following real TiDB's own two-path algorithm (confirmed via
-/// `goeval`, not assumed) depending on whether the value contains a `:`:
-///
-/// - WITH a `:`: an optional `[DATE ]` prefix (validated the SAME way
-///   [`parse_date_ymd`] validates a DATE, split on the FIRST whitespace —
-///   `'junk 10:30:45'`'s `junk` prefix makes the WHOLE value invalid, not
-///   just ignored) followed by a REQUIRED `H:M[:S]` time-of-day (`S`
-///   defaults to `0` if omitted). `H` may be MULTI-DIGIT and exceed 23 —
-///   TiDB's `TIME` domain is an ELAPSED-time range, not a wall-clock
-///   hour, confirmed up to its real documented maximum `838:59:59` (a
-///   larger `H`, even with `M`/`S` individually valid, clamps the WHOLE
-///   value to exactly `838:59:59` — not just the hour component,
-///   confirmed via `goeval`: `HOUR('900:30:15')` is `838` but
-///   `MINUTE('900:30:15')` is `59`, not `30`). `M`/`S` must each be
-///   `0..=59` or the WHOLE value is invalid (`NULL`), regardless of `H`'s
-///   own magnitude.
-/// - WITHOUT a `:` (including a bare `DATE`-only value — confirmed via
-///   `goeval` this is NOT `(0, 0, 0)`, a genuinely surprising real TiDB
-///   behavior, not a theoretical corner case this executor invented):
-///   the value's OWN leading contiguous run of ASCII digits (after
-///   trimming whitespace and an optional leading `-`, sign otherwise
-///   irrelevant since `HOUR`/`MINUTE`/`SECOND` always return a
-///   non-negative magnitude) is parsed as a plain integer `N` and
-///   reinterpreted as a right-aligned `HHMMSS`-style number: `SECOND = N
-///   % 100`, `MINUTE = (N / 100) % 100`, `HOUR = N / 10000` — the SAME
-///   rule an integer-literal argument like `HOUR(103045)` already uses,
-///   applied UNIFORMLY regardless of how many digits `N` has (so
-///   `HOUR('2024-01-15')` takes ONLY the leading `'2024'` — stopping at
-///   the first non-digit `-` — decoding to `HOUR=0, MINUTE=20,
-///   SECOND=24`, NOT the calendar date's own values at all). The SAME
-///   `0..=59`-for-`M`/`S`-or-invalid and clamp-to-`838:59:59` rules apply
-///   identically to the decoded `N`.
-fn parse_hms_extended(s: &str) -> Option<(u32, u32, u32)> {
-    let s = s.trim();
-    let s = s.strip_prefix('-').unwrap_or(s);
-    if s.contains(':') {
-        let time_str = match s.split_once(char::is_whitespace) {
-            Some((date_str, time_str)) => {
-                parse_date_ymd(date_str)?;
-                time_str.trim_start()
-            }
-            None => s,
-        };
-        let mut fields = time_str.splitn(3, ':');
-        let h: i64 = fields.next()?.parse().ok()?;
-        let m: u32 = fields.next()?.parse().ok()?;
-        let sec: u32 = match fields.next() {
-            Some(field) => {
-                let (whole, fraction) = field
-                    .split_once('.')
-                    .map_or((field, None), |(whole, fraction)| (whole, Some(fraction)));
-                if fraction.is_some_and(|digits| !digits.bytes().all(|byte| byte.is_ascii_digit()))
-                {
-                    return None;
-                }
-                whole.parse().ok()?
-            }
-            None => 0,
-        };
-        clamp_hms(h, m, sec)
-    } else {
-        let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
-        if digits.is_empty() {
-            return None;
-        }
-        let n: i64 = digits.parse().ok()?;
-        clamp_hms(n / 10_000, ((n / 100) % 100) as u32, (n % 100) as u32)
-    }
-}
-
-/// Shared by both of [`parse_hms_extended`]'s paths: rejects an
-/// out-of-range `m`/`sec`, else clamps `h` (and, if clamped, `m`/`sec`
-/// TOO) to TiDB's real documented `TIME` maximum, `838:59:59` (confirmed
-/// via `goeval`, not assumed, that an overflowing `h` clamps the WHOLE
-/// value, not just `h` alone).
-fn clamp_hms(h: i64, m: u32, sec: u32) -> Option<(u32, u32, u32)> {
-    if h < 0 || m > 59 || sec > 59 {
-        return None;
-    }
-    if h > 838 {
-        return Some((838, 59, 59));
-    }
-    Some((h as u32, m, sec))
-}
-
 /// Splits a string into the `(value, digit count)` of its maximal runs of
 /// ASCII digits, treating every other character as a separator — `None`
 /// if any component is empty (a leading, trailing, or doubled separator)
@@ -2097,26 +1992,6 @@ pub(crate) fn date_format_in(
         output.push('%');
     }
     Ok(Datum::new_string_datum(output))
-}
-
-#[cfg(test)]
-mod clock_source_tests {
-    use super::parse_hms_extended;
-
-    /// Go `TestClock` gives HOUR, MINUTE and SECOND all three fractional
-    /// source inputs. The fraction does not change those fields, but it must
-    /// not make the ETDuration cast NULL; the double-dot row stays invalid.
-    #[test]
-    fn test_clock_time_parts() {
-        for (input, expected) in [
-            ("10:10:10.123456", (10, 10, 10)),
-            ("11:11:11.11", (11, 11, 11)),
-            ("2010-10-10 11:11:11.11", (11, 11, 11)),
-        ] {
-            assert_eq!(parse_hms_extended(input), Some(expected));
-        }
-        assert_eq!(parse_hms_extended("2011-11-11 10:10:10.11.12"), None);
-    }
 }
 
 #[cfg(test)]

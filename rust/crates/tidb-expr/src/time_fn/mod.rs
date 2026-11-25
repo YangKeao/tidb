@@ -273,24 +273,6 @@ pub(crate) fn utc_time(vals: &[Datum], cols: &dyn Columns) -> Result<Datum, Eval
     )))
 }
 
-/// `builtinMicroSecondSig.evalInt`: read the fractional component of the
-/// ETDuration argument. Go deliberately suppresses a duration-cast error and
-/// returns NULL, unlike `TIME()` which reports the same truncation through the
-/// statement context.
-pub(crate) fn microsecond(vals: &[Datum]) -> Result<Datum, EvalError> {
-    if vals.len() != 1 {
-        return Err(EvalError::Unsupported("bad function arity"));
-    }
-    let Some(value) = coerce_str(&vals[0])? else {
-        return Ok(Datum::Null);
-    };
-    let fsp = duration_parse::get_fsp(&value);
-    Ok(match duration_parse::parse_duration(&value, fsp) {
-        Ok(duration) => Datum::Int(duration.micro_second()),
-        Err(_) => Datum::Null,
-    })
-}
-
 /// Go `builtinTimeSig.evalDuration`: `types.ParseDuration` at the text's
 /// written FSP. `ErrTruncatedWrongVal` goes through `tc.HandleTruncate` and
 /// the result stays whatever `ParseDuration` answered with it: the value
