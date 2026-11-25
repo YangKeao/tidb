@@ -528,7 +528,7 @@ pub(crate) enum Kernel {
     RpnOnly(Option<fn() -> tidb_query_expr::RpnFnMeta>, &'static [EvalType]),
     Binary(BinaryOp, EvalType),
     /// Go comparisons evaluate both typed operands before applying NULL semantics.
-    Compare(BinaryOp, EvalType),
+    StringCompare(BinaryOp),
     In(EvalType),
     Like,
     Ilike,
@@ -671,12 +671,12 @@ impl PbBuiltin {
             GeDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpGe),
             EqDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpEq),
             NeDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpNe),
-            LtString => Kernel::Compare(BinaryOp::Lt, EvalType::String),
-            LeString => Kernel::Compare(BinaryOp::Le, EvalType::String),
-            GtString => Kernel::Compare(BinaryOp::Gt, EvalType::String),
-            GeString => Kernel::Compare(BinaryOp::Ge, EvalType::String),
-            EqString => Kernel::Compare(BinaryOp::Eq, EvalType::String),
-            NeString => Kernel::Compare(BinaryOp::Ne, EvalType::String),
+            LtString => Kernel::StringCompare(BinaryOp::Lt),
+            LeString => Kernel::StringCompare(BinaryOp::Le),
+            GtString => Kernel::StringCompare(BinaryOp::Gt),
+            GeString => Kernel::StringCompare(BinaryOp::Ge),
+            EqString => Kernel::StringCompare(BinaryOp::Eq),
+            NeString => Kernel::StringCompare(BinaryOp::Ne),
             LtTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpLt),
             LeTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpLe),
             GtTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpGt),
@@ -721,7 +721,7 @@ impl PbBuiltin {
             NullEqInt => Kernel::RpnOnly(None, &[EvalType::Int; 2]),
             NullEqReal => rpn_comparison!(QueryReal, Real, CmpOpNullEq),
             NullEqDecimal => rpn_comparison!(QueryDecimal, Decimal, CmpOpNullEq),
-            NullEqString => Kernel::Compare(BinaryOp::NullEq, EvalType::String),
+            NullEqString => Kernel::StringCompare(BinaryOp::NullEq),
             NullEqTime => rpn_comparison!(QueryDateTime, Datetime, CmpOpNullEq),
             BitAndSig => Kernel::Binary(BinaryOp::BitAnd, EvalType::Int),
             BitOrSig => Kernel::Binary(BinaryOp::BitOr, EvalType::Int),
@@ -1658,13 +1658,28 @@ impl PbBuiltin {
                 let value = arg.eval(ctx, row)?;
                 crate::ops::eval_unary(op, value, crate::ops::Operand::Expr(arg), ctx)
             }
-            Kernel::Compare(op, domain) => {
-                if args.len() != 2 {
+            Kernel::StringCompare(op) => {
+                let [left, right] = args.as_slice() else {
                     return Err(EvalError::Unsupported("protobuf comparison arity"));
+                };
+                let left = eval_numeric_row(left, ctx, row, EvalType::String)?;
+                let right = eval_numeric_row(right, ctx, row, EvalType::String)?;
+                if matches!(
+                    function.derived_collation(),
+                    tidb_charset::Collation::Gb18030Bin
+                        | tidb_charset::Collation::Utf8Mb4ZhPinyinTiDbAsCs
+                ) {
+                    // These SQL collations need TiDB's comparison semantics.
+                    return function.eval_binary_values(op, left, right, ctx);
                 }
-                let left = eval_numeric_row(&args[0], ctx, row, domain)?;
-                let right = eval_numeric_row(&args[1], ctx, row, domain)?;
-                function.eval_binary_values(op, left, right, ctx)
+                crate::rpn::evaluate_required_kernel(
+                    function,
+                    self.signature,
+                    None,
+                    &[EvalType::String; 2],
+                    vec![left, right],
+                    ctx,
+                )
             }
             Kernel::In(domain) => {
                 let Some(first) = args.first() else {

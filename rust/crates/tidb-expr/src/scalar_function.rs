@@ -1268,7 +1268,7 @@ impl ScalarFunction {
         let kernel = self.pb_builtin.kernel;
         // The selected SQL signature owns coercion when its operands are
         // polymorphic or retain an input domain different from the output.
-        matches!(kernel, Kernel::Binary(..) | Kernel::Compare(..)
+        matches!(kernel, Kernel::Binary(..)
             | Kernel::IntegerMod { .. } | Kernel::IntegerMultiply { .. }
             | Kernel::Cast {
                 source: EvalType::Int | EvalType::Real | EvalType::Decimal,

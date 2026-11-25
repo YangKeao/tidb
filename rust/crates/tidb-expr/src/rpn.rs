@@ -970,7 +970,7 @@ pub(crate) fn evaluate_required_kernel(
         signature,
         NullEqInt | NullEqReal | NullEqTime | NullEqDecimal | NullEqDuration | NullEqJson | NullEqVectorFloat32
             | IntIsNull | RealIsNull | DecimalIsNull | StringIsNull | TimeIsNull | DurationIsNull
-            | JsonIsNull | VectorFloat32IsNull | IntIsTrue | RealIsTrue | DecimalIsTrue
+            | JsonIsNull | VectorFloat32IsNull | NullEqString | IntIsTrue | RealIsTrue | DecimalIsTrue
             | IntIsFalse | RealIsFalse | DecimalIsFalse
     );
     if !reads_null && values.iter().any(Datum::is_null) {
@@ -987,8 +987,11 @@ pub(crate) fn evaluate_required_kernel(
         }
     }
     let output = function.get_static_type().ok_or(EvalError::Unsupported("RPN kernel output type"))?;
-    let output_type = rows::query_field_type(output)
+    let mut output_type = rows::query_field_type(output)
         .ok_or(EvalError::Unsupported("RPN kernel output carrier"))?;
+    if matches!(signature, LtString | LeString | GtString | GeString | EqString | NeString | NullEqString) {
+        output_type.set_collate(-function.derived_collation().id());
+    }
     let mut input_types = Vec::with_capacity(inputs.len());
     for ((argument, &domain), value) in function.args.iter().zip(inputs).zip(&values) {
         let actual = argument.static_type().ok_or(EvalError::Unsupported("RPN kernel input type"))?;

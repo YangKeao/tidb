@@ -30,7 +30,7 @@ pub(crate) fn has_kernel(function: &ScalarFunction) -> bool {
             | Kernel::Binary(..)
             | Kernel::IntegerMultiply { .. }
             | Kernel::IntegerMod { .. }
-            | Kernel::Compare(..)
+            | Kernel::StringCompare(..)
             | Kernel::In(_)
             | Kernel::Case(_)
             | Kernel::Coalesce(_)
