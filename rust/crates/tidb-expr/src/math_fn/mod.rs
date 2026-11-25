@@ -15,8 +15,8 @@
 //! Source-family implementation for the currently translated portion of
 //! `pkg/expression/builtin_math.go`.
 //!
-//! ABS, SIGN, CEIL/FLOOR, ROUND/TRUNCATE, CONV, CRC32, and the
-//! transcendental functions, over already-evaluated argument values.
+//! ROUND/TRUNCATE, CONV, and SQL-specific transcendental functions over
+//! already-evaluated argument values.
 
 mod go_exp_log;
 mod go_trig;

@@ -438,10 +438,6 @@ fn password_eval_error(error: tidb_password_validation::PwdError<EvalError>) -> 
     }
 }
 
-fn identity_username(identity: &str) -> &str {
-    identity.rsplit_once('@').map_or(identity, |(user, _)| user)
-}
-
 /// Go `builtinValidatePasswordStrengthSig.evalInt`: the user and session
 /// first; a password under four characters is 0 before the globals are
 /// read.
