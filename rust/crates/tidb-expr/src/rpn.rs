@@ -548,7 +548,6 @@ fn bind_wire_fields(expr: &mut WireExpr, columns: &[FieldType]) -> Option<()> {
                 let meta = resolve_rpn_function(
                     partial.get_sig(),
                     partial.get_field_type(),
-                    partial.get_children(),
                 )
                 .ok()?;
                 // Historical scan predicates omitted the result declaration.
@@ -2065,7 +2064,7 @@ fn lower_declared(
         None
     } else if signature.is_some() {
         // The SQL constructor selects the overload before lowering.
-        resolve_rpn_function(call.get_sig(), call.get_field_type(), call.get_children())
+        resolve_rpn_function(call.get_sig(), call.get_field_type())
             .ok()
             .and_then(|meta| {
                 if function.pb_code() == tidb_proto::tipb::ScalarFuncSig::Unspecified

@@ -1208,12 +1208,8 @@ impl Signature {
 pub(super) fn resolve_rpn_function(
     sig: ScalarFuncSig,
     field: &FieldType,
-    _: &[Expr],
 ) -> Result<Signature> {
-    let recorded = (!format!("{sig:?}").starts_with("Cast"))
-        .then(|| shapes::shape(sig))
-        .flatten();
-    let (return_type, argument_types) = match recorded {
+    let (return_type, argument_types) = match shapes::shape(sig) {
         Some(shape) => shape,
         None => (
             EvalType::try_from(field.as_accessor().tp()).map_err(|err| error(err.to_string()))?,

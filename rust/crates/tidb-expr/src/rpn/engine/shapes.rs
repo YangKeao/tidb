@@ -11,56 +11,7 @@ pub(super) fn shape(sig: ScalarFuncSig) -> Option<(EvalType, RpnArgTypes)> {
     use RpnArgTypes::*;
     use ScalarFuncSig::*;
     Some(match sig {
-        CastIntAsInt
-        | CastIntAsReal
-        | CastIntAsString
-        | CastIntAsDecimal
-        | CastIntAsTime
-        | CastIntAsDuration
-        | CastIntAsJson
-        | CastRealAsInt
-        | CastRealAsReal
-        | CastRealAsString
-        | CastRealAsDecimal
-        | CastRealAsTime
-        | CastRealAsDuration
-        | CastRealAsJson
-        | CastDecimalAsInt
-        | CastDecimalAsReal
-        | CastDecimalAsString
-        | CastDecimalAsDecimal
-        | CastDecimalAsTime
-        | CastDecimalAsDuration
-        | CastDecimalAsJson
-        | CastStringAsInt
-        | CastStringAsReal
-        | CastStringAsString
-        | CastStringAsDecimal
-        | CastStringAsTime
-        | CastStringAsDuration
-        | CastStringAsJson
-        | CastTimeAsInt
-        | CastTimeAsReal
-        | CastTimeAsString
-        | CastTimeAsDecimal
-        | CastTimeAsTime
-        | CastTimeAsDuration
-        | CastTimeAsJson
-        | CastDurationAsInt
-        | CastDurationAsReal
-        | CastDurationAsString
-        | CastDurationAsDecimal
-        | CastDurationAsTime
-        | CastDurationAsDuration
-        | CastDurationAsJson
-        | CastJsonAsInt
-        | CastJsonAsReal
-        | CastJsonAsString
-        | CastJsonAsDecimal
-        | CastJsonAsTime
-        | CastJsonAsDuration
-        | CastJsonAsJson
-        | AbsInt
+        AbsInt
         | AbsUInt
         | CeilIntToInt
         | FloorIntToInt
@@ -73,9 +24,7 @@ pub(super) fn shape(sig: ScalarFuncSig) -> Option<(EvalType, RpnArgTypes)> {
         | IntIsFalse
         | IntIsTrueWithNull
         | IntIsFalseWithNull
-        | BitCount
-        | CastVectorFloat32AsString
-        | CastVectorFloat32AsVectorFloat32 => (Int, Fixed(&[Int])),
+        | BitCount => (Int, Fixed(&[Int])),
         CoalesceInt | GreatestInt | LeastInt | IntervalInt | InInt | IntAnyValue | FieldInt => {
             (Int, Uniform(Int))
         }
