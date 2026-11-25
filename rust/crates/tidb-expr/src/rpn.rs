@@ -2186,7 +2186,8 @@ fn local_typed_kernel(function: &ScalarFunction) -> bool {
                     | NativeEvalType::Real
             )
         )
-    ) || (name == "strcmp" && uses_native_comparison_collation(collation))
+    ) || function.pb_code() == tidb_proto::tipb::ScalarFuncSig::OctString
+        || (name == "strcmp" && uses_native_comparison_collation(collation))
         || (matches!(name, "greatest" | "least")
             && (function.get_static_type().is_some_and(|field| {
                 matches!(

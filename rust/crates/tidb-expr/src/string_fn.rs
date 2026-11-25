@@ -491,94 +491,32 @@ pub(crate) fn bin(vals: &[Datum], ctx: &dyn crate::Columns) -> Result<Datum, Eva
         .map_or(Datum::Null, Datum::new_string_datum))
 }
 
-/// `OCT(n)`: the base-8 form of an integer as an unsigned 64-bit value.
-/// Go has two signatures here: the integer path renders the raw `u64` bits,
-/// while every non-integer source first goes through `builtinOctStringSig`.
-/// That second path is deliberately *not* the `BIN` integer cast: an empty
-/// original string is `NULL`, a whitespace-only/invalid nonempty string is
-/// zero, and a decimal-prefix overflow stays at `u64::MAX` even if it had a
-/// leading minus sign.  Keeping that conversion local makes those cases the
-/// normal signature split rather than test-specific exceptions.
-///
-/// The split is Go's own build-time test, and it is a SIGNATURE choice rather
-/// than an argument cast, which is why `OCT` is not a member of
-/// `crate::arg_eval_type`'s `types.ETInt` layer:
-///
-/// ```go
-/// if IsBinaryLiteral(args[0]) || args[0].GetType(ctx.GetEvalCtx()).EvalType() == types.ETInt {
-/// ```
-///
-/// (`builtin_string.go:3005`). `IsBinaryLiteral` is `con.Value.Kind() ==
-/// types.KindBinaryLiteral`, this tier's [`Datum::BinaryLiteral`], and
-/// `mysql.TypeBit`'s eval type is `types.ETInt`, this tier's [`Datum::Bit`];
-/// both therefore take the INTEGER signature and render their big-endian
-/// value. ENUM and SET do NOT -- their eval type is `types.ETString` until
-/// something adds `EnumSetAsIntFlag`, and `OCT` never does. Captured from
-/// real TiDB (`gorun`) over `enum('x','y','z')` holding `'y'`,
-/// `set('a','b','c')` holding `'a,c'` and `bit(8)` holding `b'00000011'`:
-/// `oct(e)` is `0` and `oct(s)` is `0` (the STRINGS parsed), while `oct(b)`
-/// is `3` and `oct(b'01000001')` is `101`.
+/// OCT formats raw integer bits or takes the decimal prefix of a string.
 pub(crate) fn oct(vals: &[Datum]) -> Result<Datum, EvalError> {
-    let bits = match &vals[0] {
-        Datum::Null => None,
-        Datum::Int(value) => Some(*value as u64),
-        Datum::UInt(value) => Some(*value),
-        Datum::Bit(bits) | Datum::BinaryLiteral(bits) => Some(bits.to_int().value()),
-        value => oct_string_bits(value)?,
-    };
-    let Some(bits) = bits else {
-        return Ok(Datum::Null);
-    };
-    Ok(sdk_bytes(|writer| tidb_query_expr::impl_string::oct_int(&(bits as i64), writer))?
-        .map_or(Datum::Null, Datum::new_string_datum))
-}
+    use tidb_query_expr::impl_string::{oct_int, oct_string};
 
-/// The `ETString` conversion inside Go's `builtinOctStringSig`.
-/// `getValidPrefix(..., 10)` retains only a leading sign and decimal digits;
-/// `strconv.ParseUint` returns `MaxUint64` together with `ErrRange` on
-/// overflow.  A negative in-range magnitude is negated in the `u64` domain,
-/// but a negative overflow is intentionally left as `MaxUint64` by the Go
-/// implementation.
-fn oct_string_bits(value: &Datum) -> Result<Option<u64>, EvalError> {
-    let Some(value) = coerce_str_bytes(value)? else {
-        return Ok(None);
+    let output = match &vals[0] {
+        Datum::Null => return Ok(Datum::Null),
+        Datum::Int(value) => sdk_bytes(|writer| oct_int(value, writer))?,
+        Datum::UInt(value) => sdk_bytes(|writer| oct_int(&(*value as i64), writer))?,
+        Datum::Bit(bits) | Datum::BinaryLiteral(bits) => {
+            sdk_bytes(|writer| oct_int(&(bits.to_int().value() as i64), writer))?
+        }
+        value => {
+            let Some(bytes) = coerce_str_bytes(value)? else {
+                return Ok(Datum::Null);
+            };
+            if bytes.is_empty() {
+                return Ok(Datum::Null);
+            }
+            // Go trims Unicode whitespace. An originally nonempty string
+            // with no decimal prefix is still zero.
+            let trimmed = trim_go_space(&bytes);
+            let input = if trimmed.is_empty() { b"0" } else { trimmed };
+            sdk_bytes(|writer| oct_string(input, writer))?
+        }
     };
-    if value.is_empty() {
-        return Ok(None);
-    }
-    // Go's `EvalString` and `strings.TrimSpace` operate on byte strings. A
-    // valid UTF-8 value can use Rust's Unicode-equivalent `trim`; malformed
-    // bytes cannot be decoded, so trim the ASCII whitespace that Go also
-    // recognizes around such a payload and leave every other octet intact.
-    let value = trim_go_space(&value);
-    let prefix_len = value
-        .iter()
-        .enumerate()
-        .take_while(|(index, byte)| {
-            byte.is_ascii_digit() || (*index == 0 && matches!(byte, b'+' | b'-'))
-        })
-        .map(|(index, _)| index + 1)
-        .last()
-        .unwrap_or(0);
-    let prefix = &value[..prefix_len];
-    let prefix = prefix.strip_prefix(b"+").unwrap_or(prefix);
-    let (negative, digits) = match prefix.strip_prefix(b"-") {
-        Some(digits) => (true, digits),
-        None => (false, prefix),
-    };
-    if digits.is_empty() {
-        return Ok(Some(0));
-    }
-    let digits = std::str::from_utf8(digits).expect("OCT decimal prefix is ASCII");
-    let (bits, overflow) = match digits.parse::<u64>() {
-        Ok(bits) => (bits, false),
-        Err(_) => (u64::MAX, true),
-    };
-    Ok(Some(if negative && !overflow {
-        bits.wrapping_neg()
-    } else {
-        bits
-    }))
+    Ok(output.map_or(Datum::Null, Datum::new_string_datum))
 }
 
 /// Trims the same source-visible whitespace around an `ETString` value that
