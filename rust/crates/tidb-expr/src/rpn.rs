@@ -847,13 +847,16 @@ fn new_context(ctx: &dyn Columns, wire_flags: Option<u64>) -> EvalContext {
 fn forward_query_warnings(ctx: &dyn Columns, query_context: &mut EvalContext) {
     query_context.warnings.warning_cnt = 0;
     for warning in query_context.warnings.warnings.drain(..) {
-        ctx.append_warning(
-            u16::try_from(warning.get_code()).unwrap_or(1105),
-            warning
-                .get_msg()
-                .strip_prefix("evaluation failed: ")
-                .unwrap_or_else(|| warning.get_msg()),
-        );
+        let code = u16::try_from(warning.get_code()).unwrap_or(1105);
+        let message = warning
+            .get_msg()
+            .strip_prefix("evaluation failed: ")
+            .unwrap_or_else(|| warning.get_msg());
+        if code == 1365 {
+            ctx.append_go_warning(&crate::expression_errors::ERR_DIVISION_BY_ZERO, message);
+        } else {
+            ctx.append_warning(code, message);
+        }
     }
 }
 
@@ -2182,8 +2185,7 @@ fn local_typed_kernel(function: &ScalarFunction) -> bool {
         )
     ) || matches!(
         function.pb_code(),
-        tidb_proto::tipb::ScalarFuncSig::OctString
-            | tidb_proto::tipb::ScalarFuncSig::JsonValidStringSig
+        OctString | JsonValidStringSig | Locate2ArgsUtf8 | Locate3ArgsUtf8
     )
         || (name == "strcmp" && uses_native_comparison_collation(collation))
         || (matches!(name, "greatest" | "least")

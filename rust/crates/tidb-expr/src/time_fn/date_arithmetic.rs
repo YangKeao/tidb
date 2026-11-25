@@ -11,7 +11,7 @@ pub(crate) fn interval(unit: &str, value: Datum, decimal: i64, ctx: &dyn Columns
         Datum::Null => return Ok(Datum::Null),
         Datum::Int(value) => value.to_string(),
         Datum::UInt(value) => value.to_string(),
-        Datum::Real(value) => tidb_goruntime::go_strconv::format_float(
+        Datum::Real(value) | Datum::Float32(value) => tidb_goruntime::go_strconv::format_float(
             value,
             b'f',
             i32::try_from(decimal).unwrap_or(-1),
@@ -90,7 +90,7 @@ pub(crate) fn date(unit: &str, value: Datum, ctx: &dyn Columns) -> Result<Datum,
         Datum::UInt(number) => {
             tidb_datatype::parse_time_from_int64(*number as i64, zero, invalid, &zone)
         }
-        Datum::Real(number) => {
+        Datum::Real(number) | Datum::Float32(number) => {
             tidb_datatype::parse_time_from_float64(*number, zero, invalid, &zone)
         }
         Datum::Decimal(number) => {
